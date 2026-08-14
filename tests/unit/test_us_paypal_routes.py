@@ -761,8 +761,49 @@ def test_protocol_batch_job_assigns_account_link_phone_and_proxy(monkeypatch):
     assert [cfg.ba_token for cfg in captured] == ["BA-GB12345", "BA-NL12345"]
     assert [cfg.country for cfg in captured] == ["GB", "NL"]
     assert [cfg.phone for cfg in captured] == ["+447700900111", "+31612345678"]
-    assert captured[0].proxy_url == "socks5h://user1:pass1@proxy1.example:1000"
-    assert captured[1].proxy_url == "socks5h://user2:pass2@proxy2.example:1000"
+    assert captured[0].proxy_url == "proxy1.example:1000:user1:pass1"
+    assert captured[1].proxy_url == "proxy2.example:1000:user2:pass2"
+
+
+def test_protocol_batch_account_retries_like_tuned_protocol_chain(monkeypatch):
+    attempts = []
+    job_id = us_paypal._new_protocol_batch_job(["buyer@example.com"], 1)
+
+    def fake_runner(cfg, log, cancel_check):
+        attempts.append(cfg)
+        if len(attempts) < 3:
+            return {"status": "failed", "message": "手机接码平台 OTP 等待超时，本轮 PayPal 协议支付已停止，请重试换号"}
+        return {"status": "success", "protocol_result": {"status": "success"}}
+
+    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", fake_runner)
+    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message="": {"email": email})
+
+    req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "accountEmails": ["buyer@example.com"],
+        "smsProvider": "hero-sms",
+        "proxies": "proxy-one",
+        "country": "TH",
+    })
+    result = us_paypal._run_protocol_batch_account(
+        job_id,
+        req,
+        {
+            "email": "buyer@example.com",
+            "ba_token": "BA-1RETRY12345",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-1RETRY12345",
+            "country": "TH",
+        },
+        1,
+        1,
+        us_paypal._parse_proxies(req.proxies),
+        [],
+        [],
+    )
+
+    assert result["ok"] is True
+    assert len(attempts) == 3
+    assert any("协议支付失败，准备重试 1/3" in line for line in us_paypal.JOBS[job_id]["logs"])
+    assert any("协议支付失败，准备重试 2/3" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
 def test_protocol_batch_sms_record_phone_pool_assigns_unique_numbers_concurrently(monkeypatch):
@@ -2424,7 +2465,7 @@ def test_protocol_job_uses_local_runner_and_sanitizes_logs(monkeypatch):
     job = us_paypal.JOBS[job_id]
     assert job["status"] == "success"
     assert captured["cfg"].country == "US"
-    assert captured["cfg"].proxy_url.startswith("socks5h://")
+    assert captured["cfg"].proxy_url == "proxy.example:10000:user:pass"
     assert captured["sms_wait"] == 600
     assert captured["sms_poll"] == 2
     assert captured["marked"][0] == "buyer@example.com"
@@ -2432,14 +2473,18 @@ def test_protocol_job_uses_local_runner_and_sanitizes_logs(monkeypatch):
     assert all("u:p@" not in line for line in job["logs"])
 
 
-def test_protocol_job_rewrites_proxy_region_and_sid_for_payment_country(monkeypatch):
+def test_protocol_job_passes_proxy_to_tuned_runner_without_preflight_rewrite(monkeypatch):
     captured = {}
+    preflighted: list[str] = []
     job_id = us_paypal._new_protocol_job("buyer@example.com")
 
     def fake_runner(cfg, log, cancel_check):
-        captured["cfg"] = cfg
+        captured.setdefault("configs", []).append(cfg)
+        if len(captured["configs"]) < 2:
+            return {"status": "failed", "message": "手机接码平台 OTP 等待超时，本轮 PayPal 协议支付已停止，请重试换号"}
         return {"status": "success", "protocol_result": {"status": "success"}}
 
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: preflighted.append(proxy_url) or (False, "blocked"))
     monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", fake_runner)
     monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message: None)
     monkeypatch.setattr(us_paypal, "_set_account_status", lambda email, status, **kwargs: {"status": status})
@@ -2453,107 +2498,15 @@ def test_protocol_job_rewrites_proxy_region_and_sid_for_payment_country(monkeypa
     })
     us_paypal._run_protocol_payment_job(job_id, req)
 
-    assert "-custom-region-GB-session-" in captured["cfg"].proxy_url
-    assert "-custom-region-US-session-fixed" not in captured["cfg"].proxy_url
-
-
-def test_protocol_job_preflights_proxy_before_runner(monkeypatch):
-    job_id = us_paypal._new_protocol_job("buyer@example.com")
-    preflighted: list[str] = []
-
-    def fake_preflight(proxy_url):
-        preflighted.append(proxy_url)
-        return (False, "ProxyError: ruleset blocked")
-
-    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
-    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", lambda cfg, log, cancel_check: pytest.fail("should not run protocol engine when proxy preflight fails"))
-
-    req = us_paypal.UsPaypalProtocolStartRequest.model_validate({
-        "baToken": "BA-1PROXYFAIL123",
-        "smsProvider": "hero-sms",
-        "proxyUrl": "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass",
-        "accountEmail": "buyer@example.com",
-        "country": "GB",
-    })
-    us_paypal._run_protocol_payment_job(job_id, req)
-
-    job = us_paypal.JOBS[job_id]
-    assert job["status"] == "error"
-    assert len(preflighted) == 10
-    assert "代理预检失败" in job["error"]
-    assert "ruleset blocked" in job["error"]
-    assert any("代理预检失败" in line for line in job["logs"])
-
-
-def test_protocol_job_uses_configured_proxy_preflight_attempts(monkeypatch):
-    job_id = us_paypal._new_protocol_job("buyer@example.com")
-    preflighted: list[str] = []
-
-    def fake_preflight(proxy_url):
-        preflighted.append(proxy_url)
-        return (False, "ProxyError: ruleset blocked")
-
-    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
-    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", lambda cfg, log, cancel_check: pytest.fail("should not run protocol engine when proxy preflight fails"))
-
-    req = us_paypal.UsPaypalProtocolStartRequest.model_validate({
-        "baToken": "BA-1PROXYFAIL123",
-        "smsProvider": "hero-sms",
-        "proxyUrl": "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass",
-        "accountEmail": "buyer@example.com",
-        "country": "GB",
-        "proxyPreflightAttempts": 4,
-    })
-    us_paypal._run_protocol_payment_job(job_id, req)
-
-    job = us_paypal.JOBS[job_id]
-    assert job["status"] == "error"
-    assert len(preflighted) == 4
-    assert any("协议支付代理预检开始：4/4" in line for line in job["logs"])
-
-
-def test_protocol_proxy_preflight_has_separate_ten_attempt_budget(monkeypatch):
-    captured = {}
-    preflighted: list[str] = []
-    job_id = us_paypal._new_protocol_job("buyer@example.com")
-
-    def fake_preflight(proxy_url):
-        preflighted.append(proxy_url)
-        return (len(preflighted) == 10, "HTTP 200" if len(preflighted) == 10 else "ProxyError: ruleset blocked")
-
-    def fake_runner(cfg, log, cancel_check):
-        captured["cfg"] = cfg
-        return {"status": "success", "protocol_result": {"status": "success"}}
-
-    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
-    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", fake_runner)
-    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message: None)
-    monkeypatch.setattr(us_paypal, "_set_account_status", lambda email, status, **kwargs: {"status": status})
-
-    req = us_paypal.UsPaypalProtocolStartRequest.model_validate({
-        "baToken": "BA-1PROXYPASS123",
-        "smsProvider": "hero-sms",
-        "proxies": "\n".join([
-            "proxy1.example:1000:user-region-US-sid-old1-t-120:pass",
-            "proxy2.example:1000:user-region-US-sid-old2-t-120:pass",
-            "proxy3.example:1000:user-region-US-sid-old3-t-120:pass",
-            "proxy4.example:1000:user-region-US-sid-old4-t-120:pass",
-            "proxy5.example:1000:user-region-US-sid-old5-t-120:pass",
-            "proxy6.example:1000:user-region-US-sid-old6-t-120:pass",
-        ]),
-        "accountEmail": "buyer@example.com",
-        "country": "GB",
-    })
-    us_paypal._run_protocol_payment_job(job_id, req)
-
     assert us_paypal.JOBS[job_id]["status"] == "success"
-    assert len(preflighted) == 10
-    assert "proxy4.example" in captured["cfg"].proxy_url
-    assert "-region-GB-sid-" in captured["cfg"].proxy_url
-    assert any("proxy6.example" in proxy for proxy in preflighted)
+    assert preflighted == []
+    assert len(captured["configs"]) == 2
+    assert captured["configs"][0].proxy_url == "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass"
+    assert captured["configs"][1].proxy_url == "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass"
+    assert any("协议支付失败，准备重试 1/3" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
-def test_protocol_batch_account_rewrites_proxy_region_and_sid_for_link_country(monkeypatch):
+def test_protocol_batch_account_passes_proxy_to_tuned_runner_without_preflight_rewrite(monkeypatch):
     captured = {}
     job_id = us_paypal._new_protocol_batch_job(["buyer@example.com"], 1)
 
@@ -2588,8 +2541,7 @@ def test_protocol_batch_account_rewrites_proxy_region_and_sid_for_link_country(m
     )
 
     assert result["ok"] is True
-    assert "-region-NL-sid-" in captured["cfg"].proxy_url
-    assert "-region-US-sid-oldsid-" not in captured["cfg"].proxy_url
+    assert captured["cfg"].proxy_url == "us.arxlabs.io:3010:user-region-US-sid-oldsid-t-120:pass"
 
 
 def test_protocol_job_ignores_frontend_sms_provider_overrides(monkeypatch):
