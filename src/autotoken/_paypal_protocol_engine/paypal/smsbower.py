@@ -595,13 +595,15 @@ class SMSBowerOtpProvider:
         return None
 
     def abandon(self, activation: SMSBowerActivation, reason: str) -> None:
+        clean_reason = str(reason or "").strip().lower()
+        timeout_change_reason = clean_reason in {"sms_timeout", "pay153_otp_timeout_60s_change_phone"}
         logger.warning(
             "Abandoning SMSBower activation provider={} reused={} reason={}",
             activation.provider_id,
             activation.reused,
             reason,
         )
-        if _env_bool("PAYPAL_SMS_CANCEL_ON_ABANDON", default=not activation.reused):
+        if timeout_change_reason or _env_bool("PAYPAL_SMS_CANCEL_ON_ABANDON", default=not activation.reused):
             try:
                 self._set_status(activation.activation_id, 8)
             except Exception as exc:
@@ -1028,13 +1030,15 @@ class SmsActivateOtpProvider:
         return None
 
     def abandon(self, activation: SMSBowerActivation, reason: str) -> None:
+        clean_reason = str(reason or "").strip().lower()
         logger.warning(
             "Abandoning {} activation provider={} reason={}",
             self.provider_name,
             activation.provider_id,
             reason,
         )
-        if str(reason or "").strip().lower() == "sms_timeout":
+        timeout_change_reason = clean_reason in {"sms_timeout", "pay153_otp_timeout_60s_change_phone"}
+        if timeout_change_reason:
             # A timed-out number must not be selected again in the same auto
             # OTP flow.  The caller expects "60 seconds without an OTP" to mean
             # "switch to a different number"; keeping it in the reusable cache
@@ -1042,19 +1046,20 @@ class SmsActivateOtpProvider:
             # again.
             self.store.abandon(activation.activation_id)
             self.store.record_failure(activation.provider_id)
-            if not activation.reused:
-                try:
-                    self.client.set_status(activation.activation_id, 8)
-                except Exception as exc:
-                    logger.debug("{} activation cancel after sms_timeout soft-failed: {}", self.provider_name, exc)
-            logger.info("{} activation={} removed from reuse cache after sms_timeout", self.provider_name, activation.activation_id)
+            try:
+                self.client.set_status(activation.activation_id, 8)
+            except Exception as exc:
+                logger.debug("{} activation cancel after timeout/change-phone soft-failed: {}", self.provider_name, exc)
+            logger.info("{} activation={} removed from reuse cache after timeout/change-phone", self.provider_name, activation.activation_id)
             return
-        if self.cancel_on_abandon and not activation.reused:
+        should_cancel_unusable = clean_reason in {"paypal_initiation_failed", "paypal_rejected_code", "number_unavailable"}
+        if (self.cancel_on_abandon or should_cancel_unusable or not self.reuse_enabled) and not activation.reused:
             try:
                 self.client.set_status(activation.activation_id, 8)
             except Exception as exc:
                 logger.warning("{} activation cancel failed: {}", self.provider_name, exc)
             self.store.abandon(activation.activation_id)
+            self.store.record_failure(activation.provider_id)
         elif self.reuse_enabled:
             self.store.remember_activation(activation)
             logger.info("Keeping {} activation={} reusable after {}", self.provider_name, activation.activation_id, reason)
@@ -1076,14 +1081,7 @@ class SmsActivateOtpProvider:
                 except Exception as exc:
                     logger.debug("{} setStatus(3) after success soft-failed: {}", self.provider_name, exc)
             return
-        if self.cancel_on_abandon:
-            try:
-                self.client.set_status(activation.activation_id, 8)
-            except Exception as exc:
-                logger.warning("{} activation cancel failed: {}", self.provider_name, exc)
-            self.store.abandon(activation.activation_id)
-        elif self.reuse_enabled:
-            self.store.remember_activation(activation)
+        self.abandon(activation, "paypal_rejected_code")
 
 
 def _sms_provider_base_url(provider: str, explicit: str = "") -> str:

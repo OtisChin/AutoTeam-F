@@ -356,7 +356,7 @@
                   </div>
                   <span class="text-xs font-semibold text-indigo-200/80">可选 {{ protocolLinkAccountOptions.length }} 个</span>
                 </div>
-                <div class="grid gap-3 md:grid-cols-[160px_160px_minmax(0,1fr)]">
+                <div class="grid gap-3 md:grid-cols-[150px_150px_150px_minmax(0,1fr)]">
                   <label class="block">
                     <span class="mb-1.5 block text-xs font-semibold text-indigo-200">国家筛选</span>
                     <select v-model="protocolLinkCountryFilter" class="w-full rounded-lg border border-indigo-500/30 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-400 focus:outline-none" :disabled="protocolBusy">
@@ -371,6 +371,12 @@
                     </select>
                   </label>
                   <label class="block">
+                    <span class="mb-1.5 block text-xs font-semibold text-indigo-200">状态筛选</span>
+                    <select v-model="protocolLinkStatusFilter" class="w-full rounded-lg border border-indigo-500/30 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-400 focus:outline-none" :disabled="protocolBusy">
+                      <option v-for="option in paymentAccountStatusFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                    </select>
+                  </label>
+                  <label class="block">
                     <span class="mb-1.5 block text-xs font-semibold text-indigo-200">已成功提链账号</span>
                     <select v-model="selectedProtocolAccountEmail" @change="applySelectedProtocolAccount" class="w-full rounded-lg border border-indigo-500/30 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-400 focus:outline-none" :disabled="protocolBusy || !protocolLinkAccountOptions.length">
                       <option value="">{{ protocolLinkAccountOptions.length ? '选择账号并填入 BA 链' : '暂无符合条件的成功提链账号' }}</option>
@@ -381,7 +387,15 @@
                   </label>
                 </div>
                 <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button @click="toggleProtocolLinkSortOrder" :disabled="protocolBusy" class="rounded-lg border border-indigo-500/30 bg-gray-950 px-3 py-2 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/10 disabled:opacity-50">
+                    {{ protocolLinkSortOrder === 'desc' ? '倒序：新→旧' : '顺序：旧→新' }}
+                  </button>
                   <button @click="selectAllProtocolAccounts" :disabled="protocolBusy || !protocolLinkSelectableEmails.size" class="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/20 disabled:opacity-50">全选当前</button>
+                  <label class="inline-flex items-center gap-2 rounded-lg border border-indigo-500/20 bg-gray-950 px-2 py-1 text-xs text-indigo-200/80">
+                    <span>前N</span>
+                    <input v-model.number="protocolQuickSelectCount" type="number" min="1" class="w-20 rounded border border-indigo-500/20 bg-gray-900 px-2 py-1 text-xs text-white focus:border-indigo-400 focus:outline-none" placeholder="N" :disabled="protocolBusy" />
+                  </label>
+                  <button @click="selectFirstProtocolAccounts" :disabled="protocolBusy || !protocolLinkSelectableEmails.size" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-200 hover:bg-blue-500/20 disabled:opacity-50">快速勾选前N条</button>
                   <button @click="clearSelectedProtocolAccounts" :disabled="protocolBusy || !selectedProtocolAccountEmails.size" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空协议多选</button>
                   <button @click="refreshPaymentLinks" :disabled="protocolBusy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">刷新链接列表</button>
                   <span class="text-xs font-semibold text-indigo-200/80">已选支付账号 {{ protocolSelectedEmails.length }}</span>
@@ -605,7 +619,7 @@
                   </div>
                   <span class="text-xs font-semibold text-cyan-200/80">可选 {{ pay153LinkAccountOptions.length }} 个</span>
                 </div>
-                <div class="mb-3 flex flex-col gap-3 md:flex-row md:items-center">
+                <div class="mb-3 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center">
                   <select v-model="pay153LinkCountryFilter" class="rounded-lg border border-cyan-500/30 bg-gray-950 px-3 py-2 text-sm text-white focus:border-cyan-400 focus:outline-none" :disabled="pay153Busy">
                     <option value="all">全部国家</option>
                     <option v-for="country in protocolLinkCountryOptions" :key="country" :value="country">{{ country }}</option>
@@ -613,7 +627,18 @@
                   <select v-model="pay153LinkTimeFilter" class="rounded-lg border border-cyan-500/30 bg-gray-950 px-3 py-2 text-sm text-white focus:border-cyan-400 focus:outline-none" :disabled="pay153Busy">
                     <option v-for="option in linkTimeFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                   </select>
+                  <select v-model="pay153LinkStatusFilter" class="rounded-lg border border-cyan-500/30 bg-gray-950 px-3 py-2 text-sm text-white focus:border-cyan-400 focus:outline-none" :disabled="pay153Busy">
+                    <option v-for="option in paymentAccountStatusFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
+                  <button @click="togglePay153LinkSortOrder" :disabled="pay153Busy" class="rounded-lg border border-cyan-500/30 bg-gray-950 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
+                    {{ pay153LinkSortOrder === 'desc' ? '倒序：新→旧' : '顺序：旧→新' }}
+                  </button>
                   <button @click="selectAllPay153Accounts" :disabled="pay153Busy || !pay153LinkSelectableEmails.size" class="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-50">全选当前</button>
+                  <label class="inline-flex items-center gap-2 rounded-lg border border-cyan-500/20 bg-gray-950 px-2 py-1 text-xs text-cyan-200/80">
+                    <span>前N</span>
+                    <input v-model.number="pay153QuickSelectCount" type="number" min="1" class="w-20 rounded border border-cyan-500/20 bg-gray-900 px-2 py-1 text-xs text-white focus:border-cyan-400 focus:outline-none" placeholder="N" :disabled="pay153Busy" />
+                  </label>
+                  <button @click="selectFirstPay153Accounts" :disabled="pay153Busy || !pay153LinkSelectableEmails.size" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-200 hover:bg-blue-500/20 disabled:opacity-50">快速勾选前N条</button>
                   <button @click="clearSelectedPay153Accounts" :disabled="pay153Busy || !selectedPay153AccountEmails.size" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
                   <button @click="refreshPaymentLinks" :disabled="pay153Busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">刷新链接列表</button>
                 </div>
@@ -843,6 +868,15 @@ const linkTimeFilterOptions = [
   { value: '60m', label: '最近1小时' },
   { value: '180m', label: '最近3小时' },
 ]
+const paymentAccountStatusFilterOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'success', label: '已提链/待支付' },
+  { value: 'running', label: '支付中' },
+  { value: 'failed', label: '支付失败' },
+  { value: 'pending', label: '未提链' },
+  { value: 'no_promo', label: '无优惠' },
+  { value: 'non_oaics', label: '非Oaics' },
+]
 const paypalCountryOptions = [
   { value: 'BA', label: 'BA · 波黑' },
   { value: 'US', label: 'US · 美国' },
@@ -905,6 +939,9 @@ const accountVisibleCount = ref(100)
 const linkCountryFilter = ref('all')
 const protocolLinkCountryFilter = ref('all')
 const protocolLinkTimeFilter = ref('all')
+const protocolLinkStatusFilter = ref('all')
+const protocolLinkSortOrder = ref('desc')
+const protocolQuickSelectCount = ref(10)
 const recentResultFilter = ref('all')
 const selectedProtocolAccountEmail = ref('')
 const selectedProtocolAccountEmails = ref(new Set())
@@ -974,6 +1011,9 @@ const pay153AutoPayLastNewAt = ref(0)
 const pay153AutoPayStatusText = ref('')
 const pay153LinkCountryFilter = ref('all')
 const pay153LinkTimeFilter = ref('all')
+const pay153LinkStatusFilter = ref('all')
+const pay153LinkSortOrder = ref('desc')
+const pay153QuickSelectCount = ref(10)
 const pay153ActionInputs = ref({})
 let componentUnmounted = false
 let protocolAutoPayTimer = null
@@ -1020,8 +1060,16 @@ const filteredLinks = computed(() => links.value.filter(link => countryMatchesFi
 const accountCountryOptions = computed(() => Array.from(new Set(accounts.value.map(accountPaypalCountry).filter(country => country && country !== '-'))).sort())
 const linkCountryOptions = computed(() => Array.from(new Set(links.value.map(linkCountry).filter(country => country && country !== '-'))).sort())
 const protocolLinkCountryOptions = computed(() => paypalAccountCountryOptions(accounts.value, links.value))
-const protocolLinkAccountOptions = computed(() => successfulPayPalLinkAccounts(accounts.value, links.value, protocolLinkCountryFilter.value, { timeFilter: protocolLinkTimeFilter.value }))
-const pay153LinkAccountOptions = computed(() => successfulPayPalLinkAccounts(accounts.value, links.value, pay153LinkCountryFilter.value, { timeFilter: pay153LinkTimeFilter.value }))
+const protocolLinkAccountOptions = computed(() => filterPaymentLinkAccountsByStatus(
+  successfulPayPalLinkAccounts(accounts.value, links.value, protocolLinkCountryFilter.value, { timeFilter: protocolLinkTimeFilter.value, sortOrder: protocolLinkSortOrder.value }),
+  protocolLinkStatusFilter.value,
+  protocolPaymentAccountStatus,
+))
+const pay153LinkAccountOptions = computed(() => filterPaymentLinkAccountsByStatus(
+  successfulPayPalLinkAccounts(accounts.value, links.value, pay153LinkCountryFilter.value, { timeFilter: pay153LinkTimeFilter.value, sortOrder: pay153LinkSortOrder.value }),
+  pay153LinkStatusFilter.value,
+  pay153PaymentAccountStatus,
+))
 const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? [...currentResult.value.successes].reverse() : [])
 const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? [...currentResult.value.errors].reverse() : [])
 const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? [...currentResult.value.skipped].reverse() : [])
@@ -1389,6 +1437,19 @@ function paymentAccountStatusClass(status) {
   if (status === 'paid') return 'border-violet-500/30 bg-violet-500/10 text-violet-300'
   if (status === 'failed' || status === 'error') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+}
+function paymentAccountStatusMatchesFilter(status, filter) {
+  const cleanStatus = String(status || '').trim().toLowerCase()
+  const target = String(filter || 'all').trim().toLowerCase()
+  if (!target || target === 'all') return true
+  if (target === 'failed') return cleanStatus === 'failed' || cleanStatus === 'error'
+  return cleanStatus === target
+}
+function filterPaymentLinkAccountsByStatus(items, statusFilter, statusResolver) {
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const status = statusResolver(item)
+    return status !== 'paid' && paymentAccountStatusMatchesFilter(status, statusFilter)
+  })
 }
 function protocolPaymentAccountJobStatus(item) { return paymentAccountJobStatus(protocolJob.value, item.email) || paymentAccountJobStatusFromActive(protocolAutoPayActiveJobs.value, item.email) }
 function protocolPaymentAccountStatus(item) { return protocolPaymentAccountJobStatus(item) || item.paypalStatus }
@@ -1760,6 +1821,17 @@ function selectAllProtocolAccounts() {
     selectedProtocolAccountEmail.value = protocolSelectedEmails.value[0]
     applySelectedProtocolAccount()
   }
+}
+function selectFirstProtocolAccounts() {
+  const limit = Math.max(1, Math.floor(Number(protocolQuickSelectCount.value || 0)))
+  selectedProtocolAccountEmails.value = new Set(protocolLinkAccountOptions.value.filter(item => item.paypalStatus !== 'paid').slice(0, limit).map(item => item.email))
+  if (selectedProtocolAccountEmails.value.size === 1) {
+    selectedProtocolAccountEmail.value = protocolSelectedEmails.value[0]
+    applySelectedProtocolAccount()
+  }
+}
+function toggleProtocolLinkSortOrder() {
+  protocolLinkSortOrder.value = protocolLinkSortOrder.value === 'desc' ? 'asc' : 'desc'
 }
 function clearSelectedProtocolAccounts() {
   selectedProtocolAccountEmails.value = new Set()
@@ -2253,6 +2325,13 @@ function togglePay153Account(email) {
 function selectAllPay153Accounts() {
   selectedPay153AccountEmails.value = new Set(pay153LinkAccountOptions.value.filter(item => item.paypalStatus !== 'paid').map(item => item.email))
 }
+function selectFirstPay153Accounts() {
+  const limit = Math.max(1, Math.floor(Number(pay153QuickSelectCount.value || 0)))
+  selectedPay153AccountEmails.value = new Set(pay153LinkAccountOptions.value.filter(item => item.paypalStatus !== 'paid').slice(0, limit).map(item => item.email))
+}
+function togglePay153LinkSortOrder() {
+  pay153LinkSortOrder.value = pay153LinkSortOrder.value === 'desc' ? 'asc' : 'desc'
+}
 function clearSelectedPay153Accounts() {
   selectedPay153AccountEmails.value = new Set()
 }
@@ -2560,11 +2639,19 @@ watch(protocolLinkTimeFilter, () => {
   const available = protocolLinkSelectableEmails.value
   selectedProtocolAccountEmails.value = new Set(protocolSelectedEmails.value.filter(email => available.has(email)))
 })
+watch(protocolLinkStatusFilter, () => {
+  const available = protocolLinkSelectableEmails.value
+  selectedProtocolAccountEmails.value = new Set(protocolSelectedEmails.value.filter(email => available.has(email)))
+})
 watch(pay153LinkCountryFilter, () => {
   const available = pay153LinkSelectableEmails.value
   selectedPay153AccountEmails.value = new Set(pay153SelectedEmails.value.filter(email => available.has(email)))
 })
 watch(pay153LinkTimeFilter, () => {
+  const available = pay153LinkSelectableEmails.value
+  selectedPay153AccountEmails.value = new Set(pay153SelectedEmails.value.filter(email => available.has(email)))
+})
+watch(pay153LinkStatusFilter, () => {
   const available = pay153LinkSelectableEmails.value
   selectedPay153AccountEmails.value = new Set(pay153SelectedEmails.value.filter(email => available.has(email)))
 })

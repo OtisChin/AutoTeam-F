@@ -10,6 +10,14 @@ function statusOf(account) {
   return String(account?.paypal_status || account?.paypalStatus || account?.status || 'pending').trim().toLowerCase()
 }
 
+function statusMatchesFilter(status, statusFilter = 'all') {
+  const cleanStatus = String(status || '').trim().toLowerCase()
+  const filter = String(statusFilter || 'all').trim().toLowerCase()
+  if (!filter || filter === 'all') return true
+  if (filter === 'failed') return cleanStatus === 'failed' || cleanStatus === 'error'
+  return cleanStatus === filter
+}
+
 function linkCountry(link) {
   const billing = link?.billing && typeof link.billing === 'object' ? link.billing : {}
   return normalizeCountry(link?.target_country || link?.targetCountry || link?.paypal_country || link?.paypalCountry || link?.country || link?.region || billing.country)
@@ -77,6 +85,8 @@ function latestLinksByEmail(links, nowMs = Date.now()) {
 export function successfulPayPalLinkAccounts(accounts, links, countryFilter = 'all', options = {}) {
   const nowMs = Number(options.nowMs || Date.now())
   const timeFilter = options.timeFilter || 'all'
+  const statusFilter = options.statusFilter || 'all'
+  const sortOrder = String(options.sortOrder || 'desc').trim().toLowerCase() === 'asc' ? 'asc' : 'desc'
   const targetCountry = normalizeCountry(countryFilter)
   const byEmail = latestLinksByEmail(
     (Array.isArray(links) ? links : []).filter(link => paypalLinkMatchesTimeFilter(link, timeFilter, nowMs)),
@@ -101,9 +111,13 @@ export function successfulPayPalLinkAccounts(accounts, links, countryFilter = 'a
       item.email
       && item.paypalLink
       && item.paypalStatus !== 'paid'
+      && statusMatchesFilter(item.paypalStatus, statusFilter)
       && (!targetCountry || targetCountry === 'ALL' || item.country === targetCountry)
     ))
-    .sort((a, b) => b.sortAt - a.sortAt || a.email.localeCompare(b.email))
+    .sort((a, b) => {
+      const delta = sortOrder === 'asc' ? a.sortAt - b.sortAt : b.sortAt - a.sortAt
+      return delta || a.email.localeCompare(b.email)
+    })
 }
 
 export function paypalAccountCountryOptions(accounts, links, options = {}) {

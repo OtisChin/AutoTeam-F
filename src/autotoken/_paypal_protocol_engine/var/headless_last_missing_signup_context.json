@@ -3,28 +3,6 @@
     {
       "decision": {
         "action": "allow",
-        "reason": "signup_context_webcaptcha_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/webcaptcha/ngrlCaptcha.min.js",
-          "reason": "signup_context_webcaptcha_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/webcaptcha/ngrlCaptcha.min.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
         "reason": "signup_context_observability_script",
         "rule": {
           "host": "www.paypalobjects.com",
@@ -43,6 +21,28 @@
       "method": "GET",
       "resource_type": "script",
       "url": "https://www.paypalobjects.com/pa/js/min/pa.js"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "signup_context_webcaptcha_script",
+        "rule": {
+          "host": "www.paypalobjects.com",
+          "methods": [
+            "GET"
+          ],
+          "path_contains": "",
+          "path_prefix": "/webcaptcha/ngrlCaptcha.min.js",
+          "reason": "signup_context_webcaptcha_script",
+          "resource_types": [
+            "script"
+          ]
+        }
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "script",
+      "url": "https://www.paypalobjects.com/webcaptcha/ngrlCaptcha.min.js"
     },
     {
       "decision": {
@@ -325,16 +325,6 @@
       },
       "event": "route",
       "method": "GET",
-      "resource_type": "stylesheet",
-      "url": "https://www.paypalobjects.com/paypal-ui/web/fonts-and-normalize/2-0-0/fonts-and-normalize.min.css"
-    },
-    {
-      "decision": {
-        "action": "abort",
-        "reason": "static_resource_blocked"
-      },
-      "event": "route",
-      "method": "GET",
       "resource_type": "font",
       "url": "https://www.paypalobjects.com/paypal-ui/fonts/PayPalPlain-Medium.woff2"
     },
@@ -376,6 +366,16 @@
       "event": "route",
       "method": "GET",
       "resource_type": "stylesheet",
+      "url": "https://www.paypalobjects.com/paypal-ui/web/fonts-and-normalize/2-0-0/fonts-and-normalize.min.css"
+    },
+    {
+      "decision": {
+        "action": "abort",
+        "reason": "static_resource_blocked"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
       "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/vendor.8a73015d3bb0c246e1ed.css"
     },
     {
@@ -387,16 +387,6 @@
       "method": "GET",
       "resource_type": "stylesheet",
       "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/ppreact.8a73015d3bb0c246e1ed.css"
-    },
-    {
-      "decision": {
-        "action": "abort",
-        "reason": "not_allowlisted"
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/ice/widgets/identitySCAWidgets.js"
     }
   ],
   "counts": {
@@ -411,7 +401,7 @@
     "observability": 1,
     "tealeaf": 0
   },
-  "created_at": 1786423947.0433187,
+  "created_at": 1786703196.4914289,
   "cwd": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine",
   "datadog_flushes": [
     {
@@ -437,7 +427,7 @@
       "readyState": "complete",
       "sessionIdPresent": false,
       "stage": "signup_context_headless_before_datadog_flush",
-      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
       "version": "",
       "viewIdPresent": false,
       "viewName": "",
@@ -460,7 +450,7 @@
       "readyState": "complete",
       "sessionIdPresent": false,
       "stage": "signup_context_headless_after_datadog_flush",
-      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
       "version": "",
       "viewIdPresent": false,
       "viewName": "",
@@ -484,7 +474,7 @@
     "readyState": "complete",
     "sessionIdPresent": false,
     "stage": "signup_context_headless_after_datadog_flush",
-    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
     "version": "",
     "viewIdPresent": false,
     "viewName": "",
@@ -494,7 +484,7 @@
   "datadome_cookie_present": true,
   "debug_log_path": "",
   "event": "signup_context_missing_diagnostic",
-  "final_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+  "final_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
   "headless_debug_enabled": false,
   "important_decisions": {
     "analytics_config": {
@@ -768,7 +758,7 @@
   "injected_scripts": [],
   "intercept": {
     "allowed_count": 14,
-    "blocked_count": 8,
+    "blocked_count": 7,
     "debug_log_path": "",
     "fail_open": false
   },
@@ -799,10 +789,10 @@
     "identity_di_log",
     "datadog_rum"
   ],
-  "page_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+  "page_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
   "project_root": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine",
   "proxy_configured": true,
-  "proxy_fingerprint": "2e666423fc422566",
+  "proxy_fingerprint": "753ce2ad08fdfdfe",
   "request_failures_tail": [
     {
       "family": "ddbm",
@@ -887,13 +877,12 @@
     "datadome_cookie_len": 128,
     "datadome_cookie_present": true,
     "host": "www.paypal.com",
-    "html_length": 129406,
+    "html_length": 124259,
     "html_present": true,
     "label": "after_runtime_wait",
     "normal_markers": [
       "checkoutweb/signup",
       "checkoutuinodeweb_onboarding_lite",
-      "create account",
       "weasley",
       "xoonboarding"
     ],
@@ -903,7 +892,7 @@
     "stale_challenge_status_with_normal_doc": false,
     "status": 200,
     "status_ok": true,
-    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
     "url_ok": true
   },
   "signup_context_page_after_runtime": {
@@ -914,13 +903,12 @@
     "datadome_cookie_len": 128,
     "datadome_cookie_present": true,
     "host": "www.paypal.com",
-    "html_length": 129406,
+    "html_length": 124259,
     "html_present": true,
     "label": "after_runtime_wait",
     "normal_markers": [
       "checkoutweb/signup",
       "checkoutuinodeweb_onboarding_lite",
-      "create account",
       "weasley",
       "xoonboarding"
     ],
@@ -930,7 +918,7 @@
     "stale_challenge_status_with_normal_doc": false,
     "status": 200,
     "status_ok": true,
-    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
     "url_ok": true
   },
   "signup_context_seeded_document": {
@@ -940,12 +928,11 @@
       "challenge_by_url": false,
       "challenge_markers": [],
       "host": "www.paypal.com",
-      "html_length": 128837,
+      "html_length": 123694,
       "html_present": true,
       "normal_markers": [
         "checkoutweb/signup",
         "checkoutuinodeweb_onboarding_lite",
-        "create account",
         "weasley",
         "xoonboarding"
       ],
@@ -955,11 +942,11 @@
       "stale_challenge_status_with_normal_doc": false,
       "status": 200,
       "status_ok": true,
-      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=th_TH&country.x=TH&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
       "url_ok": true
     },
     "enabled": true,
-    "html_length": 128837,
+    "html_length": 123694,
     "status": 200
   },
   "source_file": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine\\paypal\\local_headless.py",

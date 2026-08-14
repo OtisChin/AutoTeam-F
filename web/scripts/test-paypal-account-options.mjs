@@ -67,6 +67,17 @@ function testUsesTargetCountryAndHidesPaidOrExpiredLinks() {
   assert.equal(successfulPayPalLinkAccounts(accounts, links, 'BR', { nowMs }).length, 0)
 }
 
+function testPaymentLinkAccountsCanFilterByStatusAndReverseOrder() {
+  assert.deepEqual(
+    successfulPayPalLinkAccounts(accounts, links, 'all', { nowMs, statusFilter: 'failed' }).map((item) => item.email),
+    ['failed-nl@example.com'],
+  )
+  assert.deepEqual(
+    successfulPayPalLinkAccounts(accounts, links, 'all', { nowMs, sortOrder: 'asc' }).map((item) => item.email),
+    ['old-us@example.com', 'new-nl@example.com', 'failed-nl@example.com', 'pending-ca@example.com', 'running-gb@example.com', 'fresh-th@example.com'],
+  )
+}
+
 function testUsPaypalPageSubmitsOnlyOaicsFlag() {
   const page = readFileSync(resolve(__dirname, '../src/components/UsPaypalPage.vue'), 'utf8')
   assert.match(page, /onlyOaics:\s*false/, 'PayPal form defaults onlyOaics to false')
@@ -85,6 +96,7 @@ testSuccessfulAccountsJoinLatestLinkAndFilterByCountry()
 testCountryOptionsComeFromSuccessfulLinkedAccounts()
 testSelectedAccountPopulatesProtocolFormFields()
 testUsesTargetCountryAndHidesPaidOrExpiredLinks()
+testPaymentLinkAccountsCanFilterByStatusAndReverseOrder()
 testUsPaypalPageSubmitsOnlyOaicsFlag()
 testUsPaypalPageCanFilterNonOaicsAccounts()
 console.log('paypal account option tests passed')

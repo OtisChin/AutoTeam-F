@@ -429,6 +429,131 @@ def test_sms_activate_provider_timeout_switches_number(tmp_path):
     assert ("setStatus", {"id": "act-1", "status": 8}) in client.actions
 
 
+@pytest.mark.parametrize("timeout_reason", ["sms_timeout", "pay153_otp_timeout_60s_change_phone"])
+def test_sms_activate_provider_cancels_number_when_timeout_changes_phone(tmp_path, timeout_reason):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    class FakeClient:
+        def __init__(self):
+            self.actions = []
+            self.next_id = 1
+
+        def request_json_or_text(self, action, params=None):
+            self.actions.append((action, dict(params or {})))
+            if action == "getNumberV2":
+                value = self.next_id
+                self.next_id += 1
+                return {
+                    "activationId": f"act-{value}",
+                    "phoneNumber": f"44770090012{value}",
+                    "activationCost": "0.1",
+                }
+            raise AssertionError(action)
+
+        def get_status(self, activation_id):
+            self.actions.append(("getStatus", {"id": activation_id}))
+            return "STATUS_WAIT_CODE"
+
+        def set_status(self, activation_id, status):
+            self.actions.append(("setStatus", {"id": activation_id, "status": status}))
+            return "ACCESS_CANCEL"
+
+    store = smsbower.SMSBowerActivationStore(tmp_path / "sms-cache.json")
+    client = FakeClient()
+    provider = smsbower.SmsActivateOtpProvider(
+        client=client,
+        provider_name="hero_sms",
+        store=store,
+        service="ts",
+        country="16",
+        wait_seconds=0.02,
+        poll_interval_seconds=0.01,
+        reuse_enabled=True,
+        cancel_on_abandon=False,
+    )
+
+    first = provider.reserve_number()
+    provider.register_confirmation_result(first, True)
+    reused = provider.reserve_number()
+    assert reused.activation_id == "act-1"
+    assert reused.reused is True
+
+    provider.abandon(reused, timeout_reason)
+    second = provider.reserve_number()
+
+    assert ("setStatus", {"id": "act-1", "status": 8}) in client.actions
+    assert second.activation_id == "act-2"
+    assert second.reused is False
+
+
+@pytest.mark.parametrize("provider_name", ["hero_sms", "smsbower"])
+def test_sms_activate_provider_cancels_unusable_fresh_number_when_reuse_disabled(tmp_path, provider_name):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    class FakeClient:
+        def __init__(self):
+            self.actions = []
+            self.next_id = 1
+
+        def request_json_or_text(self, action, params=None):
+            self.actions.append((action, dict(params or {})))
+            if action == "getNumberV2":
+                value = self.next_id
+                self.next_id += 1
+                return {
+                    "activationId": f"act-{value}",
+                    "phoneNumber": f"44770090012{value}",
+                    "activationCost": "0.1",
+                }
+            raise AssertionError(action)
+
+        def get_status(self, activation_id):
+            self.actions.append(("getStatus", {"id": activation_id}))
+            return "STATUS_WAIT_CODE"
+
+        def set_status(self, activation_id, status):
+            self.actions.append(("setStatus", {"id": activation_id, "status": status}))
+            return "ACCESS_CANCEL"
+
+    store = smsbower.SMSBowerActivationStore(tmp_path / "sms-cache.json")
+    client = FakeClient()
+    provider = smsbower.SmsActivateOtpProvider(
+        client=client,
+        provider_name=provider_name,
+        store=store,
+        service="ts",
+        country="16",
+        wait_seconds=0.02,
+        poll_interval_seconds=0.01,
+        reuse_enabled=False,
+        cancel_on_abandon=False,
+    )
+
+    initiation_failed = provider.reserve_number()
+    provider.abandon(initiation_failed, "paypal_initiation_failed")
+    rejected_code = provider.reserve_number()
+    provider.register_confirmation_result(rejected_code, False)
+
+    assert ("setStatus", {"id": "act-1", "status": 8}) in client.actions
+    assert ("setStatus", {"id": "act-2", "status": 8}) in client.actions
+
+
 def test_gb_generated_addresses_avoid_known_landmarks():
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
