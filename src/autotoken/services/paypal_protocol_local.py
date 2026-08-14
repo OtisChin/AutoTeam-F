@@ -5,6 +5,8 @@ It must not call third-party wrapper services.
 """
 
 import hashlib
+import importlib
+import importlib.util
 import json
 import os
 import queue
@@ -17,8 +19,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from urllib.parse import quote
+import urllib.request
 
 from autotoken.core.paths import PROJECT_ROOT
 
@@ -33,6 +37,7 @@ USERINFO_RE = re.compile(r"(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s
 
 DEFAULT_ENGINE_ROOT = PROJECT_ROOT / "src" / "autotoken" / "_paypal_protocol_engine"
 DEFAULT_TIMEOUT_SECONDS = 900
+PHONE_INPUT_SETTLE_SECONDS = 2.0
 TERMINAL_BA_FILE = PROJECT_ROOT / "data" / "paypal_protocol_terminal_ba.json"
 SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES = {"US", "GB", "NL", "BR", "AU", "CA", "ID", "JP", "MX", "PH", "TH"}
 SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT = "AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US"
@@ -55,6 +60,11 @@ DEFAULT_PAYPAL_SMS_SERVICE = "ts"
 DEFAULT_HEROSMS_BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 DEFAULT_SMSBOWER_BASE_URL = "https://smsbower.page/stubs/handler_api.php"
 DEFAULT_SIGNUP_CARD_COUNTRIES = {"US", "GB"}
+WEB_MODULE_NAME = "_autoteam_paypal_agreement_protocol_web"
+
+_WEB_MODULE_LOCK = threading.Lock()
+_WEB_MODULE: ModuleType | None = None
+_WEB_MODULE_ROOT: Path | None = None
 
 
 @dataclass(slots=True)
@@ -105,7 +115,7 @@ def normalize_proxy_url(value: str) -> str:
     if len(parts) == 4 and parts[1].isdigit():
         host, port, user, password = parts
         return f"socks5h://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
-    return f"http://{raw}"
+    return f"socks5h://{raw}"
 
 
 def first_proxy(value: str | list[str]) -> str:
@@ -369,7 +379,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     if not re.fullmatch(r"[A-Z]{2}", country):
         country = "US"
     if country not in SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES:
-        raise ValueError(f"当前本地协议支付仅开放 {SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT}")
+        raise ValueError(f"当前 PayPal 协议支付仅开放 {SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT}")
     sms_provider = normalize_sms_provider(cfg.sms_provider)
     if sms_provider == "sms_record":
         if not str(cfg.phone or "").strip():
@@ -500,6 +510,449 @@ def _parse_result_from_output(output: str) -> dict[str, Any]:
         return {}
 
 
+def _protocol_internal_base_url() -> str:
+    explicit = str(
+        os.getenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL")
+        or os.getenv("PAYPAL_WEB_PAY153_INTERNAL_BASE")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit.rstrip("/")
+    api_base = str(os.getenv("AUTOTEAM_API_BASE_URL") or os.getenv("AUTOTOKEN_API_BASE_URL") or "").strip()
+    if api_base:
+        return api_base.rstrip("/")
+    port = str(os.getenv("AUTOTEAM_API_PORT") or os.getenv("AUTOTOKEN_API_PORT") or os.getenv("API_PORT") or "8799").strip()
+    if not re.fullmatch(r"\d{2,5}", port):
+        port = "8799"
+    return f"http://127.0.0.1:{port}"
+
+
+def _load_engine_web_module(root: Path) -> ModuleType:
+    """Load the PayPal protocol engine's local web runner as an in-process module."""
+    global _WEB_MODULE, _WEB_MODULE_ROOT
+    resolved_root = root.resolve()
+    web_py = resolved_root / "web.py"
+    if not web_py.exists():
+        raise RuntimeError(f"本地 PayPal 协议引擎 web.py 不存在: {web_py}")
+    internal_base = _protocol_internal_base_url()
+    os.environ.setdefault("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", internal_base)
+    with _WEB_MODULE_LOCK:
+        if _WEB_MODULE is not None and _WEB_MODULE_ROOT == resolved_root:
+            try:
+                setattr(_WEB_MODULE, "PAYPAL_PROTOCOL_INTERNAL_BASE", str(os.getenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL") or internal_base).rstrip("/"))
+            except Exception:
+                pass
+            return _WEB_MODULE
+        root_text = str(resolved_root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+        spec = importlib.util.spec_from_file_location(WEB_MODULE_NAME, web_py)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载本地 PayPal 协议引擎: {web_py}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[WEB_MODULE_NAME] = module
+        spec.loader.exec_module(module)
+        try:
+            setattr(module, "PAYPAL_PROTOCOL_INTERNAL_BASE", str(os.getenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL") or internal_base).rstrip("/"))
+        except Exception:
+            pass
+        _WEB_MODULE = module
+        _WEB_MODULE_ROOT = resolved_root
+        return module
+
+
+def _extract_sms_code(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("code", "smsCode", "sms_code", "otp", "pin"):
+            code = str(value.get(key) or "").strip()
+            if re.fullmatch(r"\d{4,8}", code):
+                return code
+        for key in ("text", "sms", "message", "lastSms", "content"):
+            match = re.search(r"\b\d{4,8}\b", str(value.get(key) or ""))
+            if match:
+                return match.group(0)
+        for child in value.values():
+            code = _extract_sms_code(child)
+            if code:
+                return code
+    elif isinstance(value, list):
+        for child in value:
+            code = _extract_sms_code(child)
+            if code:
+                return code
+    else:
+        match = re.search(r"\b\d{4,8}\b", str(value or ""))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _read_sms_record_code(record_url: str, timeout_seconds: float, poll_seconds: float) -> str:
+    url = str(record_url or "").strip()
+    if not url:
+        return ""
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds or 1.0))
+    interval = max(0.2, float(poll_seconds or 3.0))
+    while time.monotonic() <= deadline:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AutoToken/PayPalProtocolSmsRecord"})
+            with urllib.request.urlopen(req, timeout=min(20.0, max(1.0, deadline - time.monotonic()))) as resp:
+                body = resp.read(1024 * 1024).decode("utf-8", errors="replace")
+            try:
+                payload: Any = json.loads(body)
+            except Exception:
+                payload = body
+            code = _extract_sms_code(payload)
+            if code:
+                return code
+        except Exception:
+            pass
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+    return ""
+
+
+def _load_paypal_sms_provider_module(root: Path) -> ModuleType:
+    root_text = str(root.resolve())
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    return importlib.import_module("paypal.smsbower")
+
+
+def _build_protocol_sms_provider(cfg: PaypalProtocolRunConfig, *, engine_root: Path) -> Any:
+    sms_provider = normalize_sms_provider(cfg.sms_provider)
+    if sms_provider == "sms_record":
+        return None
+    providers = _load_paypal_sms_provider_module(engine_root)
+    wait_seconds = max(1.0, float(cfg.sms_record_wait_seconds or 300))
+    poll_seconds = max(0.2, float(cfg.sms_record_poll_seconds or 3.0))
+    country = str(cfg.country or "US").strip().upper() or "US"
+    if sms_provider == "hero_sms_rent":
+        return providers.build_hero_sms_rent_provider(
+            phone_number=str(cfg.phone or "").strip(),
+            base_url=_backend_sms_base_url(sms_provider),
+            country=_backend_sms_country(sms_provider, country),
+            paypal_country=country,
+            wait_seconds=wait_seconds,
+            poll_interval_seconds=poll_seconds,
+            reuse_enabled=bool(cfg.phone_pool_reuse_enabled),
+        )
+    if sms_provider in {"hero_sms", "smsbower"}:
+        return providers.build_sms_activate_provider(
+            provider=sms_provider,
+            enabled=True,
+            base_url=_backend_sms_base_url(sms_provider),
+            service=_backend_sms_service(),
+            country=_backend_sms_country(sms_provider, country),
+            paypal_country=country,
+            wait_seconds=wait_seconds,
+            poll_interval_seconds=poll_seconds,
+            min_price=cfg.sms_min_price,
+            max_price=cfg.sms_max_price,
+            preferred_price=cfg.sms_preferred_price,
+            reuse_enabled=bool(cfg.phone_pool_reuse_enabled),
+        )
+    raise ValueError("不支持的 PayPal 手机接码平台")
+
+
+def _job_snapshot(job: Any, *, log_offset: int = 0) -> dict[str, Any]:
+    try:
+        data = job.to_dict(include_logs=True, log_offset=log_offset)
+        return data if isinstance(data, dict) else {}
+    except TypeError:
+        data = job.to_dict()
+        return data if isinstance(data, dict) else {}
+
+
+def _awaiting_prompt(snapshot: dict[str, Any]) -> str:
+    for key in ("awaiting_prompt", "prompt", "input_prompt"):
+        value = str(snapshot.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _prompt_requests_new_phone(prompt: str) -> bool:
+    text = str(prompt or "").strip().lower()
+    if not text:
+        return False
+    if any(
+        marker in text
+        for marker in (
+            "发送验证码失败",
+            "failed to initiate otp",
+            "failed to send",
+            "phone timed out",
+            "retryable with a clean task/session",
+        )
+    ):
+        return True
+    return bool(
+        re.search(r"请(?:重新)?输入新(?:的)?手机(?:号|号码)", text)
+        or re.search(r"(?:enter|input|provide|submit)\s+(?:a\s+)?(?:new|different)\s+phone", text)
+    )
+
+
+def _stop_before_otp_enabled() -> bool:
+    return str(os.getenv("PAYPAL_PROTOCOL_STOP_BEFORE_OTP") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _abandon_otp_activation(otp_provider: Any, activation: Any, reason: str) -> None:
+    if otp_provider is None or activation is None:
+        return
+    if hasattr(otp_provider, "abandon"):
+        try:
+            otp_provider.abandon(activation, reason)
+            return
+        except Exception:
+            pass
+    if hasattr(otp_provider, "register_confirmation_result"):
+        try:
+            otp_provider.register_confirmation_result(activation, False)
+        except Exception:
+            pass
+
+
+def _run_paypal_protocol_web_payment(
+    cfg: PaypalProtocolRunConfig,
+    *,
+    log: LogFn,
+    cancel_check: Callable[[], bool],
+) -> dict[str, Any]:
+    root = _engine_root()
+    web = _load_engine_web_module(root)
+    ba_token = extract_ba_token(cfg.ba_token or cfg.paypal_link)
+    if not ba_token:
+        raise ValueError("缺少有效 PayPal BA token/link")
+    country = str(cfg.country or "US").strip().upper() or "US"
+    sms_provider = normalize_sms_provider(cfg.sms_provider)
+    phone = str(cfg.phone or "").strip()
+    otp_provider = None
+    activation = None
+    if sms_provider == "sms_record":
+        if not phone:
+            raise ValueError("缺少 PayPal 注册手机号")
+        if not str(cfg.sms_record_url or "").strip():
+            raise ValueError("缺少 SMS record URL")
+    else:
+        otp_provider = _build_protocol_sms_provider(cfg, engine_root=root)
+        if otp_provider is None:
+            raise ValueError("不支持的 PayPal 手机接码平台")
+        activation = otp_provider.reserve_number()
+        phone = str(getattr(activation, "phone_number", None) or phone or "").strip()
+        if not phone:
+            raise RuntimeError("手机号供应商未返回可用号码")
+
+    proxy = normalize_proxy_url(cfg.proxy_url)
+    owner_device_id = f"autoteam-local-{os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
+    job = web.create_job(
+        owner_device_id=owner_device_id,
+        ba_token=ba_token,
+        phone=phone,
+        debug=bool(cfg.debug),
+        max_card_attempts=5,
+        manual_funding=False,
+        agreement_only=False,
+        country=country,
+        buyer_mode="identity_elevation",
+        proxy_pool=[proxy] if proxy else [],
+        exclude_public_metrics=True,
+    )
+    log(f"PayPal协议任务已创建：{getattr(job, 'id', '<unknown>')}")
+    started = time.monotonic()
+    timeout = max(60, int(cfg.timeout_seconds or DEFAULT_TIMEOUT_SECONDS))
+    log_offset = 0
+    otp_submitted = False
+    phone_input_settle_until = 0.0
+    last_snapshot: dict[str, Any] = {}
+    confirmed = False
+    try:
+        while True:
+            if cancel_check():
+                try:
+                    job.cancel()
+                except Exception:
+                    pass
+                return {"status": "cancelled", "message": "任务已取消", "elapsed_s": round(time.monotonic() - started, 1)}
+            if time.monotonic() - started > timeout:
+                try:
+                    job.cancel()
+                except Exception:
+                    pass
+                raise TimeoutError(f"PayPal 协议支付超时: {timeout}s")
+
+            snapshot = _job_snapshot(job, log_offset=log_offset)
+            if snapshot:
+                last_snapshot = snapshot
+            logs = snapshot.get("logs") if isinstance(snapshot.get("logs"), list) else []
+            log_offset += len(logs)
+            for entry in logs:
+                message = entry.get("message") if isinstance(entry, dict) else entry
+                if message:
+                    log(str(message))
+
+            status = str(snapshot.get("status") or getattr(job, "status", "") or "").strip().lower()
+            if status in {"completed", "failed", "cancelled"}:
+                break
+
+            if snapshot.get("awaiting_otp") or status == "awaiting_otp":
+                prompt = _awaiting_prompt(snapshot)
+                if _stop_before_otp_enabled():
+                    try:
+                        job.cancel()
+                    except Exception:
+                        pass
+                    log("已按测试开关在 OTP 输入前停止，未读取或提交验证码。")
+                    return {
+                        "status": "awaiting_otp",
+                        "returncode": None,
+                        "elapsed_s": round(time.monotonic() - started, 1),
+                        "ba_token": sanitize_log_text(ba_token),
+                        "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+                        "country": country,
+                        "engine": "paypal-protocol",
+                        "engine_root": str(root),
+                        "protocol_result": sanitize_result(last_snapshot.get("result") or {}),
+                        "awaiting_prompt": sanitize_log_text(prompt),
+                        "message": "已按测试开关在 OTP 输入前停止",
+                    }
+                if _prompt_requests_new_phone(prompt):
+                    if sms_provider == "sms_record":
+                        try:
+                            job.cancel()
+                        except Exception:
+                            pass
+                        return {
+                            "status": "failed",
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "ba_token": sanitize_log_text(ba_token),
+                            "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+                            "country": country,
+                            "engine": "paypal-protocol",
+                            "engine_root": str(root),
+                            "protocol_result": sanitize_result(last_snapshot.get("result") or {}),
+                            "message": "PayPal 要求换号，但 sms_record 固定号码无法自动换号",
+                        }
+                    _abandon_otp_activation(otp_provider, activation, "paypal_requested_new_phone")
+                    activation = otp_provider.reserve_number() if otp_provider is not None and hasattr(otp_provider, "reserve_number") else None
+                    phone = str(getattr(activation, "phone_number", None) or "").strip()
+                    if not phone:
+                        try:
+                            job.cancel()
+                        except Exception:
+                            pass
+                        return {
+                            "status": "failed",
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "ba_token": sanitize_log_text(ba_token),
+                            "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+                            "country": country,
+                            "engine": "paypal-protocol",
+                            "engine_root": str(root),
+                            "protocol_result": sanitize_result(last_snapshot.get("result") or {}),
+                            "message": "PayPal 要求换号，但手机号供应商未返回新的可用号码",
+                        }
+                    job.submit_input(phone)
+                    otp_submitted = False
+                    phone_input_settle_until = time.monotonic() + max(0.0, float(PHONE_INPUT_SETTLE_SECONDS))
+                    log("PayPal 要求换号，已提交新的接码号码。")
+                    continue
+
+                if otp_submitted:
+                    time.sleep(0.5)
+                    continue
+
+                if time.monotonic() < phone_input_settle_until:
+                    time.sleep(0.2)
+                    continue
+
+                if sms_provider == "sms_record":
+                    code = _read_sms_record_code(
+                        str(cfg.sms_record_url or ""),
+                        cfg.sms_record_wait_seconds,
+                        cfg.sms_record_poll_seconds,
+                    )
+                else:
+                    if otp_provider is not None and activation is not None and hasattr(otp_provider, "mark_sms_sent"):
+                        otp_provider.mark_sms_sent(activation)
+                    code = (
+                        otp_provider.wait_for_code(activation, timeout_seconds=cfg.sms_record_wait_seconds)
+                        if otp_provider is not None and activation is not None and hasattr(otp_provider, "wait_for_code")
+                        else ""
+                    )
+                if not code:
+                    if sms_provider != "sms_record" and otp_provider is not None and activation is not None:
+                        _abandon_otp_activation(otp_provider, activation, "sms_timeout")
+                    try:
+                        job.cancel()
+                    except Exception:
+                        pass
+                    message = "手机接码平台 OTP 等待超时，本轮 PayPal 协议支付已停止，请重试换号"
+                    log(message)
+                    return {
+                        "status": "failed",
+                        "elapsed_s": round(time.monotonic() - started, 1),
+                        "ba_token": sanitize_log_text(ba_token),
+                        "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+                        "country": country,
+                        "engine": "paypal-protocol",
+                        "engine_root": str(root),
+                        "protocol_result": sanitize_result(last_snapshot.get("result") or {}),
+                        "message": message,
+                    }
+                job.submit_input(str(code))
+                otp_submitted = True
+                log("已从接码通道获取验证码并提交到 PayPal协议任务。")
+                continue
+
+            if snapshot.get("awaiting_captcha") or status == "awaiting_captcha":
+                return {
+                    "status": "failed",
+                    "elapsed_s": round(time.monotonic() - started, 1),
+                    "ba_token": sanitize_log_text(ba_token),
+                    "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+                    "country": country,
+                    "engine": "paypal-protocol",
+                    "engine_root": str(root),
+                    "protocol_result": sanitize_result(snapshot.get("result") or {}),
+                    "message": "PayPal协议需要人工 CAPTCHA/浏览器输入，AutoTeam 后台任务无法继续",
+                }
+            time.sleep(0.5)
+
+        snapshot = last_snapshot or _job_snapshot(job)
+        status = str(snapshot.get("status") or getattr(job, "status", "") or "").strip().lower()
+        parsed = sanitize_result(snapshot.get("result") or {})
+        ok = status == "completed" and (
+            not isinstance(parsed, dict)
+            or str(parsed.get("status") or "success").strip().lower() == "success"
+        )
+        confirmed = bool(ok)
+        result = {
+            "status": "success" if ok else ("cancelled" if status == "cancelled" else "failed"),
+            "returncode": 0 if ok else 1,
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "ba_token": sanitize_log_text(ba_token),
+            "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+            "country": country,
+            "engine": "paypal-protocol",
+            "engine_root": str(root),
+            "protocol_result": parsed,
+        }
+        if not ok:
+            result["message"] = (
+                snapshot.get("error")
+                or snapshot.get("stage")
+                or (parsed.get("error") if isinstance(parsed, dict) else "")
+                or "PayPal协议执行失败"
+            )
+        return result
+    finally:
+        if otp_provider is not None and activation is not None and hasattr(otp_provider, "register_confirmation_result"):
+            try:
+                otp_provider.register_confirmation_result(activation, confirmed)
+            except Exception:
+                pass
+
+
 def _output_indicates_paypal_success(output: str) -> bool:
     text = output or ""
     if "=== Flow completed successfully ===" not in text:
@@ -521,9 +974,8 @@ def run_paypal_protocol_payment(
 ) -> dict[str, Any]:
     log = log or (lambda _line: None)
     cancel_check = cancel_check or (lambda: False)
-    timeout = max(60, int(cfg.timeout_seconds or DEFAULT_TIMEOUT_SECONDS))
-    cmd, env, cwd = build_protocol_command(cfg)
     ba_token = extract_ba_token(cfg.ba_token or cfg.paypal_link)
+    engine_root = _engine_root()
     terminal_record = terminal_ba_record(ba_token)
     if terminal_record:
         message = "该 BA 已在本机进入 CreateMemberAccount 后于 member approve 阶段失败，属于不可安全重试状态；请使用 fresh BA"
@@ -539,175 +991,33 @@ def run_paypal_protocol_payment(
             "ba_token": sanitize_log_text(ba_token),
             "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
             "country": str(cfg.country or "US").strip().upper() or "US",
-            "engine": "bundled-local",
-            "engine_root": str(cwd),
+            "engine": "paypal-protocol",
+            "engine_root": str(engine_root),
             "protocol_result": {"status": "failed", "terminal_ba_record": terminal_record},
             "message": message,
         }
-    log("本地 PayPal 协议引擎启动：" + sanitize_log_text(" ".join(cmd)))
-    started = time.monotonic()
-    output_lines: list[str] = []
-    suppress_result_log = False
-    result_log_notice_sent = False
-
-    def handle_output_line(line: str) -> None:
-        nonlocal suppress_result_log, result_log_notice_sent
-        clean = sanitize_log_text(line.rstrip("\n"))
-        output_lines.append(clean)
-        stripped = clean.strip()
-        if stripped == "RESULT:":
-            suppress_result_log = True
-            if not result_log_notice_sent:
-                log("本地协议引擎已返回 RESULT JSON，详情见结果面板。")
-                result_log_notice_sent = True
-            return
-        if suppress_result_log and stripped.startswith("="):
-            suppress_result_log = False
-            return
-        if stripped and not suppress_result_log:
-            log(clean)
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    selector: selectors.BaseSelector | None = None
-    line_queue: queue.Queue[str | None] | None = None
-    reader_thread: threading.Thread | None = None
     try:
-        assert proc.stdout is not None
-        if os.name == "nt":
-            line_queue = queue.Queue()
-
-            def _reader() -> None:
-                assert proc.stdout is not None
-                try:
-                    for queued_line in proc.stdout:
-                        line_queue.put(queued_line)
-                finally:
-                    line_queue.put(None)
-
-            reader_thread = threading.Thread(target=_reader, daemon=True)
-            reader_thread.start()
-        else:
-            selector = selectors.DefaultSelector()
-            selector.register(proc.stdout, selectors.EVENT_READ)
-        while True:
-            if cancel_check():
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                return {"status": "cancelled", "message": "任务已取消", "elapsed_s": round(time.monotonic() - started, 1)}
-            if time.monotonic() - started > timeout:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                raise TimeoutError(f"PayPal 协议支付超时: {timeout}s")
-            if line_queue is not None:
-                lines: list[str | None] = []
-                try:
-                    lines.append(line_queue.get(timeout=0.2))
-                    while True:
-                        lines.append(line_queue.get_nowait())
-                except queue.Empty:
-                    pass
-                for line in lines:
-                    if line is None:
-                        continue
-                    handle_output_line(line)
-            else:
-                assert selector is not None
-                events = selector.select(timeout=0.2)
-                for key, _mask in events:
-                    line = key.fileobj.readline()
-                    if line:
-                        handle_output_line(line)
-            if proc.poll() is not None:
-                if line_queue is not None:
-                    if reader_thread is not None:
-                        reader_thread.join(timeout=1)
-                    while True:
-                        try:
-                            line = line_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                        if line is None:
-                            continue
-                        handle_output_line(line)
-                else:
-                    for line in proc.stdout.readlines():
-                        handle_output_line(line)
-                break
-        rc = proc.wait(timeout=5)
-    finally:
-        if selector is not None:
-            try:
-                selector.close()
-            except Exception:
-                pass
-        if proc.poll() is None:
-            proc.kill()
-
-    output = "\n".join(output_lines)
-    parsed = sanitize_result(_parse_result_from_output(output))
-    output_success = _output_indicates_paypal_success(output)
-    ok = rc == 0 and (str(parsed.get("status") or "").lower() == "success" or output_success)
-    if ok and not parsed:
-        parsed = {
-            "status": "success",
-            "inferred_from_log": True,
-            "evidence": "Flow completed successfully + approveMemberPayment APPROVED",
+        result = _run_paypal_protocol_web_payment(cfg, log=log, cancel_check=cancel_check)
+    except Exception as exc:
+        result = {
+            "status": "failed",
+            "returncode": None,
+            "elapsed_s": 0,
+            "ba_token": sanitize_log_text(ba_token),
+            "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+            "country": str(cfg.country or "US").strip().upper() or "US",
+            "engine": "paypal-protocol",
+            "engine_root": str(engine_root),
+            "protocol_result": {"status": "failed"},
+            "message": sanitize_log_text(str(exc)),
         }
-    failure_message = parsed.get("message") or parsed.get("error") or ""
-    if not ok:
-        if str(failure_message) == "approveMemberPayment returned empty result":
-            failure_message = "PayPal member approve 阶段失败；CreateMemberAccount 已成功，但当前 BA/EC checkout session 未能完成 approval"
-        if not failure_message:
-            if "Signup-context browser risk incomplete before CreateMemberAccount" in output:
-                failure_message = "CreateMemberAccount 前 signup-context 风控信号不完整；已阻断提交以避免 PayPal OAS_ERROR"
-            elif "mtr_sealedResult_missing" in output:
-                failure_message = "本地 MTR browser runtime 未生成 sealedResult；请使用 fresh BA 重试，或增加 MTR/headless 等待时间"
-            elif "OAS_ERROR" in output and "createMemberAccount" in output:
-                failure_message = "PayPal createMemberAccount 返回 OAS_ERROR；通常是 signup-context 风控信号不完整或 BA/代理环境风险过高"
-            elif "ApproveMemberPaymentMutation returned errors" in output or "approveMemberPayment returned empty result" in output:
-                failure_message = "PayPal member approve 阶段失败；CreateMemberAccount 已成功，但当前 BA/EC checkout session 未能完成 approval"
-            elif "PAYER_INVALID_FOR_PAYMENT" in output:
-                failure_message = "PayPal 返回 PAYER_INVALID_FOR_PAYMENT；当前 payer 与该 payment/checkout session 不匹配或 BA/EC 已不可继续"
-            elif "returned PayPal authchallenge HTML" in output:
-                failure_message = "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试"
-            elif "SMS provider OTP confirmation failed after all attempts" in output or "SMSBower OTP confirmation failed after all attempts" in output:
-                failure_message = "手机接码平台 OTP 等待超时，未收到本次请求后的新验证码"
-            elif "VALIDATION_FAILED" in output:
-                failure_message = "PayPal OTP 校验失败，可能拿到了旧码或错误验证码"
-    if not ok and _member_approve_terminal_after_create(output, parsed):
+    if result.get("status") != "success" and _member_approve_terminal_after_create("", result.get("protocol_result") if isinstance(result.get("protocol_result"), dict) else {}):
         try:
             remember_terminal_ba(
                 ba_token,
-                reason=str(failure_message or "member approve failed after CreateMemberAccount"),
+                reason=str(result.get("message") or "member approve failed after CreateMemberAccount"),
             )
             log("已记录该 BA 的本机终态：CreateMemberAccount 后 member approve 失败；后续将阻止重复重跑。")
         except Exception:
             pass
-    result = {
-        "status": "success" if ok else "failed",
-        "returncode": rc,
-        "elapsed_s": round(time.monotonic() - started, 1),
-        "ba_token": sanitize_log_text(ba_token),
-        "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
-        "country": str(cfg.country or "US").strip().upper() or "US",
-        "engine": "bundled-local",
-        "engine_root": str(cwd),
-        "protocol_result": parsed,
-    }
-    if not ok:
-        result["message"] = failure_message or f"本地协议引擎退出码 {rc}"
-    return result
+    return sanitize_result(result)
