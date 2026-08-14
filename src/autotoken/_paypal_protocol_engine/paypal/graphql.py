@@ -88,6 +88,58 @@ query CheckoutSessionDataQuery($token: String!) {
 }
 """
 
+BUYER_CONTEXT_QUERY = """
+query BuyerContextQuery($token: String!) {
+  checkoutSession(token: $token) {
+    buyer {
+      userId
+      auth {
+        accessToken
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}
+"""
+
+BUYER_FUNDING_CONTEXT_QUERY = """
+query BuyerFundingContextQuery($token: String!) {
+  checkoutSession(token: $token) {
+    buyer {
+      userId
+      auth {
+        accessToken
+        __typename
+      }
+      __typename
+    }
+    fundingOptions {
+      fundingInstrument {
+        id
+        lastDigits
+        type
+        __typename
+      }
+      allPlans {
+        fundingSources {
+          fundingInstrument {
+            id
+            type
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}
+"""
+
 # Current checkoutweb/weasley GriffinMetadataQuery.  The old root field
 # `griffin(token: ...)` was removed; locale metadata now lives under
 # Query.localeMetadata.
@@ -146,6 +198,8 @@ query GriffinMetadataQuery($countryCode: CountryCodes!, $languageCode: CheckoutC
 }
 """
 
+# Current checkoutweb no longer uses a supportedFundingSources root query in this
+# path.  Keep a harmless query shape for callers that still want a warm-up call.
 SUPPORTED_FUNDING_SOURCES_QUERY = """
 query SupportedFundingSourcesQuery($token: String!, $userCountry: CountryCodes) {
   checkoutSession(token: $token) {
@@ -484,414 +538,7 @@ fragment threeDSContingencyData on PaymentContingencies {
 }
 """
 
-
-# Current checkoutweb/weasley no-FI account creation path.  Source-map shows
-# this resolver is valid for ANONYMOUS auth state and does not accept card/bank.
-CREATE_MEMBER_ACCOUNT_MUTATION = """
-mutation CreateMemberAccountMutation($billingAddress: AddressInput, $contentIdentifier: String, $country: CountryCodes!, $crsData: CommonReportingStandardsInput, $dateOfBirth: DateOfBirth, $email: String!, $firstName: String!, $gender: Gender, $identityDocument: IdentityDocumentInput, $lastName: String!, $marketingOptOut: Boolean, $nationality: CountryCodes, $occupation: Occupation, $password: String, $phone: PhoneInput!, $placeOfBirth: CountryCodes, $secondaryIdentityDocument: IdentityDocumentInput, $shippingAddress: AddressInput, $token: String!, $residentialAddress: AddressInput, $legalAgreements: LegalAgreementsInput) {
-  onboardAccount: createMemberAccount(
-    billingAddress: $billingAddress
-    contentIdentifier: $contentIdentifier
-    country: $country
-    crsData: $crsData
-    dateOfBirth: $dateOfBirth
-    email: $email
-    firstName: $firstName
-    gender: $gender
-    identityDocument: $identityDocument
-    lastName: $lastName
-    marketingOptOut: $marketingOptOut
-    nationality: $nationality
-    occupation: $occupation
-    password: $password
-    phone: $phone
-    placeOfBirth: $placeOfBirth
-    secondaryIdentityDocument: $secondaryIdentityDocument
-    shippingAddress: $shippingAddress
-    token: $token
-    residentialAddress: $residentialAddress
-    legalAgreements: $legalAgreements
-  ) {
-    buyer {
-      auth { accessToken __typename }
-      userId
-      __typename
-    }
-    __typename
-  }
-}
-"""
-
-
-# Existing-buyer approval path. Requires PayPal auth state LOGGEDIN, REMEMBERED,
-# or IDENTIFIED and an existing funding option id selected from the buyer wallet.
-APPROVE_MEMBER_PAYMENT_MUTATION = """
-mutation ApproveMemberPaymentMutation($token: String!, $primaryFundingOptionId: String, $setStickyFiRequired: Boolean, $preAuthorizationRequired: Boolean, $supportedThreeDsExperiences: [ThreeDSPaymentExperience]) {
-  approveMemberPayment(token: $token, primaryFundingOptionId: $primaryFundingOptionId, setStickyFiRequired: $setStickyFiRequired, preAuthorizationRequired: $preAuthorizationRequired) {
-    state
-    buyer {
-      userId
-      email { stringValue __typename }
-      name { fullName __typename }
-      __typename
-    }
-    cart {
-      paymentId
-      intent
-      returnUrl { href pathname __typename }
-      cancelUrl { href pathname __typename }
-      amounts { total { currencyCode currencyValue currencyFormat currencyFormatSymbolISOCurrency __typename } __typename }
-      __typename
-    }
-    completedPaymentInfo {
-      transactionId
-      transactionState
-      receiptId
-      softDescriptor
-      postbackData
-      __typename
-    }
-    fundingOptions {
-      fundingInstrument { id lastDigits name nameDescription type __typename }
-      __typename
-    }
-    paymentContingencies {
-      ...threeDomainSecure
-      ...threeDSContingencyData
-      __typename
-    }
-    __typename
-  }
-}
-
-fragment threeDomainSecure on PaymentContingencies {
-  threeDomainSecure(experiences: $supportedThreeDsExperiences) {
-    status
-    redirectUrl { href __typename }
-    method
-    parameter
-    experience
-    requestParams { key value __typename }
-    __typename
-  }
-  __typename
-}
-
-fragment threeDSContingencyData on PaymentContingencies {
-  threeDSContingencyData {
-    name
-    causeName
-    resolution {
-      type
-      resolutionName
-      paymentCard { id type number bankIdentificationNumber __typename }
-      contingencyContext {
-        deviceDataCollectionUrl { href __typename }
-        jwtSpecification { jwtDuration jwtIssuer jwtOrgUnitId type __typename }
-        authenticationProvider
-        cardBrandProcessed
-        reason
-        referenceId
-        source
-        __typename
-      }
-      __typename
-    }
-    __typename
-  }
-  __typename
-}
-"""
-
-# Current Weasley guest onboarding mutation.  For optional/forced guest
-# checkoutweb flows the frontend calls onboardGuest first, then the same
-# ApproveOnboardPaymentMutation used by signup.
-ONBOARD_GUEST_MUTATION = """
-mutation OnboardGuestMutation($bank: BankAccountInput, $billingAddress: AddressInput, $card: CardInput, $country: CountryCodes, $currencyConversionType: CheckoutCurrencyConversionType, $dateOfBirth: DateOfBirth, $email: String, $firstName: String!, $lastName: String!, $phone: PhoneInput, $shareAddressWithDonatee: Boolean, $shippingAddress: AddressInput, $supportedThreeDsExperiences: [ThreeDSPaymentExperience], $token: String!) {
-  onboardAccount: onboardGuest(
-    bank: $bank
-    billingAddress: $billingAddress
-    card: $card
-    country: $country
-    currencyConversionType: $currencyConversionType
-    dateOfBirth: $dateOfBirth
-    email: $email
-    firstName: $firstName
-    lastName: $lastName
-    phone: $phone
-    shareAddressWithDonatee: $shareAddressWithDonatee
-    shippingAddress: $shippingAddress
-    token: $token
-  ) {
-    buyer {
-      auth { accessToken __typename }
-      userId
-      __typename
-    }
-    flags { is3DSecureRequired __typename }
-    fundingOptions {
-      fundingInstrument { id lastDigits name nameDescription type __typename }
-      allPlans {
-        fundingSources {
-          fundingInstrument { id lastDigits name nameDescription type __typename }
-          __typename
-        }
-        __typename
-      }
-      __typename
-    }
-    paymentContingencies {
-      threeDomainSecure(experiences: $supportedThreeDsExperiences) {
-        status
-        redirectUrl { href __typename }
-        method
-        parameter
-        experience
-        requestParams { key value __typename }
-        __typename
-      }
-      threeDSContingencyData {
-        name
-        causeName
-        resolution {
-          type
-          resolutionName
-          paymentCard { id encryptedNumber type number bankIdentificationNumber __typename }
-          contingencyContext {
-            deviceDataCollectionUrl { href __typename }
-            jwtSpecification { jwtDuration jwtIssuer jwtOrgUnitId type __typename }
-            authenticationProvider
-            cardBrandProcessed
-            reason
-            referenceId
-            source
-            __typename
-          }
-          __typename
-        }
-        __typename
-      }
-      __typename
-    }
-    __typename
-  }
-}
-"""
-
-# Direct anonymous guest card approval resolver.  Source-map schema exposes
-# approveGuestPaymentWithCreditCard for ANONYMOUS auth state, but current
-# Weasley BA onboarding UI does not use it as the BILLING_WITHOUT_PURCHASE
-# primary path.  Keep it as an explicit probe/harness path only.
-APPROVE_GUEST_PAYMENT_WITH_CREDIT_CARD_MUTATION = """
-mutation ApproveGuestPaymentWithCreditCardMutation($token: String!, $card: CardInput, $billingAddress: AddressInput, $phoneNumber: String, $email: String, $firstName: String, $lastName: String, $currencyConversionType: CheckoutCurrencyConversionType, $supportedThreeDsExperiences: [ThreeDSPaymentExperience]) {
-  approveGuestPaymentWithCreditCard(
-    token: $token
-    card: $card
-    billingAddress: $billingAddress
-    phoneNumber: $phoneNumber
-    email: $email
-    firstName: $firstName
-    lastName: $lastName
-    currencyConversionType: $currencyConversionType
-  ) {
-    buyer {
-      userId
-      email { stringValue __typename }
-      name { fullName __typename }
-      __typename
-    }
-    cart {
-      paymentId
-      intent
-      returnUrl { href pathname __typename }
-      cancelUrl { href pathname __typename }
-      amounts { total { currencyCode currencyValue currencyFormat currencyFormatSymbolISOCurrency __typename } __typename }
-      __typename
-    }
-    completedPaymentInfo {
-      transactionId
-      transactionState
-      receiptId
-      softDescriptor
-      postbackData
-      __typename
-    }
-    fundingOptions {
-      fundingInstrument {
-        id
-        lastDigits
-        name
-        nameDescription
-        type
-        __typename
-      }
-      allPlans {
-        fundingSources {
-          fundingInstrument { id lastDigits name nameDescription type __typename }
-          __typename
-        }
-        __typename
-      }
-      __typename
-    }
-    merchant {
-      name
-      preferences { autoReturnToMerchant enablePaymentDataTransfer returnUrl __typename }
-      __typename
-    }
-    paymentContingencies {
-      ...threeDomainSecureGuestCard
-      ...threeDSContingencyDataGuestCard
-      __typename
-    }
-    __typename
-  }
-}
-
-fragment threeDomainSecureGuestCard on PaymentContingencies {
-  threeDomainSecure(experiences: $supportedThreeDsExperiences) {
-    status
-    redirectUrl { href __typename }
-    method
-    parameter
-    experience
-    requestParams { key value __typename }
-    __typename
-  }
-  __typename
-}
-
-fragment threeDSContingencyDataGuestCard on PaymentContingencies {
-  threeDSContingencyData {
-    name
-    causeName
-    resolution {
-      type
-      resolutionName
-      paymentCard { id encryptedNumber type number bankIdentificationNumber __typename }
-      contingencyContext {
-        deviceDataCollectionUrl { href __typename }
-        jwtSpecification { jwtDuration jwtIssuer jwtOrgUnitId type __typename }
-        authenticationProvider
-        cardBrandProcessed
-        reason
-        referenceId
-        source
-        __typename
-      }
-      __typename
-    }
-    __typename
-  }
-  __typename
-}
-"""
-
-# Current checkoutweb/weasley post-onboarding approval.  Browser source-map
-# calls this after SignUpNewMember succeeds; for billing-agreement flows it first
-# pins the newly created funding instrument via attemptSetStickyFi.
-APPROVE_ONBOARD_PAYMENT_MUTATION = """
-mutation ApproveOnboardPaymentMutation($token: String!, $instrumentId: String, $isBillingAgreement: Boolean!, $supportedThreeDsExperiences: [ThreeDSPaymentExperience]) {
-  attemptSetStickyFi(token: $token, instrumentId: $instrumentId) @include(if: $isBillingAgreement) {
-    buyer {
-      userId
-      __typename
-    }
-    __typename
-  }
-  approveGuestSignUpPayment(token: $token) {
-    buyer {
-      userId
-      email { stringValue __typename }
-      name { fullName __typename }
-      __typename
-    }
-    cart {
-      paymentId
-      intent
-      returnUrl { href pathname __typename }
-      cancelUrl { href pathname __typename }
-      amounts { total { currencyCode currencyValue currencyFormat currencyFormatSymbolISOCurrency __typename } __typename }
-      __typename
-    }
-    completedPaymentInfo {
-      transactionId
-      transactionState
-      receiptId
-      softDescriptor
-      postbackData
-      __typename
-    }
-    fundingOptions {
-      fundingInstrument {
-        id
-        lastDigits
-        name
-        nameDescription
-        type
-        __typename
-      }
-      __typename
-    }
-    merchant {
-      name
-      preferences {
-        autoReturnToMerchant
-        enablePaymentDataTransfer
-        returnUrl
-        __typename
-      }
-      __typename
-    }
-    paymentContingencies {
-      ...threeDomainSecure
-      ...threeDSContingencyData
-      __typename
-    }
-    __typename
-  }
-}
-
-fragment threeDomainSecure on PaymentContingencies {
-  threeDomainSecure(experiences: $supportedThreeDsExperiences) {
-    status
-    redirectUrl { href __typename }
-    method
-    parameter
-    experience
-    requestParams { key value __typename }
-    __typename
-  }
-  __typename
-}
-
-fragment threeDSContingencyData on PaymentContingencies {
-  threeDSContingencyData {
-    name
-    causeName
-    resolution {
-      type
-      resolutionName
-      paymentCard { id encryptedNumber type number bankIdentificationNumber __typename }
-      contingencyContext {
-        deviceDataCollectionUrl { href __typename }
-        jwtSpecification { jwtDuration jwtIssuer jwtOrgUnitId type __typename }
-        authenticationProvider
-        cardBrandProcessed
-        reason
-        referenceId
-        source
-        __typename
-      }
-      __typename
-    }
-    __typename
-  }
-  __typename
-}
-"""
-
-# Step 4: Legacy Hagrid final billing agreement authorization
+# Step 4: Final billing agreement authorization
 AUTHORIZE_BILLING_MUTATION = """
 mutation authorize($billingAgreementId: String!, $addressId: String, $fundingPreference: billingFundingPreferenceInput, $legalAgreements: billingLegalAgreementsInput) {
   billing {

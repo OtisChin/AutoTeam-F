@@ -1,21 +1,15 @@
-import calendar
+from dataclasses import dataclass, field, replace
+from typing import Optional
 import hashlib
-import ipaddress
-import json
-import math
-import os
-import random
-import string
-import time
-import unicodedata
-import urllib.parse
-import urllib.request
-import uuid
-from dataclasses import dataclass, field
+import httpx
 from pathlib import Path
-from typing import TypedDict
-
-from paypal.country_profile import get_country_profile
+import random
+import re
+import unicodedata
+import string
+import threading
+import time
+import uuid
 
 
 @dataclass
@@ -29,6 +23,12 @@ class UserInfo:
     password: str
     dob: str  # DD/MM/YYYY
     cpf: str  # XXX.XXX.XXX-XX
+    identity_document_type: str = ""
+    identity_document_number: str = ""
+    nationality: str = ""
+    middle_name: str = ""
+    occupation: str = ""
+    place_of_birth: str = ""
 
 
 @dataclass
@@ -59,70 +59,21 @@ class SessionState:
     nsid: str = ""
     d_id: str = ""
     user_id: str = ""
-    instrument_id: str = ""
     datadome_cookie: str = ""
-    datadome_clientid: str = ""
     tltsid: str = ""
     tltdid: str = ""
-    tealeaf_serial_number: int = 0
-    tealeaf_page_id: str = field(default_factory=lambda: f"P.{uuid.uuid4().hex[:24].upper()}")
-    tealeaf_tab_id: str = field(default_factory=lambda: f"Y{random.randint(100, 999)}")
-    tealeaf_start_time_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     paypal_client_metadata_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     euat_token: str = ""
     return_url: str = ""
     content_hash: str = ""
     content_identifier: str = ""
-    content_manifest_url: str = ""
-    content_manifest_key: str = ""
     signup_url: str = ""
-    paypal_captcha_solved: bool = False
+    signup_context_ready: bool = False
+    onboarding_url: str = ""
     show_create_account_action_id: str = ""
     create_user_action_id: str = ""
-    submit_public_credential_action_id: str = ""
-    fetch_device_fingerprint_action_id: str = ""
-    modxo_country_action_id: str = ""
-    modxo_country_action_bound: str = ""
-    modxo_country_selected: bool = False
-    modxo_pay_page_url: str = ""
-    passkey_challenge: str = ""
-    rp_id: str = ""
-    login_phone_country_code: str = ""
-    modxo_deployment_id: str = ""
-    signup_fallback_reason: str = ""
-    mtr_channel: str = ""
-    mtr_client_metadata_id: str = ""
-    mtr_api_key: str = ""
-    mtr_is_qa: bool = False
-    mtr_dfp_script_url: str = ""
-    mtr_get_status: int = 0
-    mtr_post_status: int = 0
-    mtr_request_id: str = ""
-    mtr_sealed_result: str = ""
-    mtr_runtime_source: str = ""
-    mtr_visitor_token: str = ""
-    mtr_completed: bool = False
-    mtr_completed_cmid: str = ""
-    mtr_browser_result: dict[str, object] = field(default_factory=dict)
-    captcha_synthetic_used: bool = False
-    datadome_header_injected: bool = False
-    fingerprint_source: str = ""
-    roxy_browser: dict[str, object] = field(default_factory=dict)
-    datadome_browser_solved: bool = False
-    datadome_browser_result: dict[str, object] = field(default_factory=dict)
-    risk_signals_runtime_source: str = ""
-    risk_signals_browser_result: dict[str, object] = field(default_factory=dict)
-    browser_profile: dict[str, object] = field(default_factory=dict)
-    screen: dict[str, object] = field(default_factory=dict)
-    viewport: dict[str, object] = field(default_factory=dict)
-    device_fingerprint: dict[str, object] = field(default_factory=dict)
-    pxp_guid: str = field(default_factory=lambda: uuid.uuid4().hex)
-    page_start_time_ms: int = field(default_factory=lambda: int(time.time() * 1000))
-    fpti_calc: str = field(default_factory=lambda: uuid.uuid4().hex[:13])
-    datadog_session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    datadog_view_ids: dict[str, object] = field(default_factory=dict)
 
-    def update_from_cookies(self, cookies: dict[str, str]) -> None:
+    def update_from_cookies(self, cookies: dict):
         if "nsid" in cookies:
             self.nsid = cookies["nsid"]
         if "d_id" in cookies:
@@ -138,18 +89,13 @@ class SessionState:
             self.euat_token = cookies[euat_key]
 
 
-def generate_random_email(country: str | None = None) -> str:
-    selected_country = (country or "BR").upper()
-    if selected_country != "BR":
-        first = random.choice(_US_FIRST_NAMES).lower()
-        last = random.choice(_US_LAST_NAMES).lower()
-        return f"{first}.{last}{random.randint(10, 9999)}@{random.choice(_US_EMAIL_DOMAINS)}"
-    first = random.choice(_BR_FIRST_NAMES).lower()
-    last = random.choice(_BR_LAST_NAMES).lower()
-    return _generate_br_email(first, last)
+def generate_random_email() -> str:
+    chars = string.ascii_lowercase + string.digits
+    user = "".join(random.choice(chars) for _ in range(12))
+    return f"{user}@gmail.com"
 
 
-def generate_eteid() -> list[int | None]:
+def generate_eteid() -> list:
     return [
         random.randint(-10000000000, 20000000000),
         random.randint(-10000000000, 20000000000),
@@ -164,234 +110,56 @@ def generate_eteid() -> list[int | None]:
 
 # --- Random generators for Brazil ---
 
-
-class _BrLocation(TypedDict):
-    state: str
-    city: str
-    ceps: list[str]
-
 _BR_FIRST_NAMES = [
-    "Lucas", "Miguel", "Arthur", "Gabriel", "Pedro", "Matheus", "Rafael",
-    "Bruno", "Felipe", "Gustavo", "Diego", "Caio", "Andre", "Thiago",
-    "Leonardo", "Eduardo", "Henrique", "Vinicius", "Marcos", "Daniel",
-    "Ana", "Maria", "Julia", "Laura", "Mariana", "Beatriz", "Camila",
-    "Leticia", "Larissa", "Amanda", "Fernanda", "Carolina", "Isabela",
-    "Renata", "Aline", "Patricia", "Bianca", "Bruna", "Clara", "Luana",
-    "Sofia", "Helena", "Manuela", "Valentina", "Yasmin", "Alice", "Livia",
-    "Lorena", "Vitoria", "Nina",
+    "Lucas", "Gabriel", "Miguel", "Arthur", "Matheus", "Pedro", "Rafael",
+    "Gustavo", "Felipe", "Bernardo", "Henrique", "Daniel", "Leonardo",
+    "Ana", "Maria", "Julia", "Beatriz", "Larissa", "Fernanda", "Camila",
+    "Leticia", "Amanda", "Carolina", "Bruna", "Mariana", "Isabela",
 ]
 
 _BR_LAST_NAMES = [
     "Silva", "Santos", "Oliveira", "Souza", "Rodrigues", "Ferreira",
-    "Almeida", "Pereira", "Lima", "Gomes", "Costa", "Ribeiro", "Martins",
-    "Carvalho", "Rocha", "Barbosa", "Melo", "Cardoso", "Teixeira", "Correia",
-    "Moura", "Cunha", "Dias", "Nunes", "Moreira", "Vieira", "Monteiro",
-    "Castro", "Araujo", "Campos", "Freitas", "Pinto", "Mendes", "Cavalcanti",
-    "Nascimento", "Batista", "Andrade", "Reis", "Duarte", "Machado", "Farias",
-    "Borges", "Miranda", "Fonseca", "Ramos", "Neves", "Tavares", "Peixoto",
-    "Siqueira", "Moraes",
+    "Almeida", "Nascimento", "Lima", "Araujo", "Pereira", "Carvalho",
+    "Ribeiro", "Gomes", "Martins", "Costa", "Barbosa", "Moreira",
+    "Mendes", "Cardoso", "Teixeira", "Vieira", "Correia", "Nunes",
 ]
 
-_BR_LOCATIONS: list[_BrLocation] = [
-    {"state": "SP", "city": "Sao Paulo", "ceps": ["01001-000", "01310-100", "01415-001", "04094-050", "04543-011", "05010-000"]},
-    {"state": "RJ", "city": "Rio de Janeiro", "ceps": ["20040-020", "22010-000", "22250-040", "22410-002", "22640-102", "23050-000"]},
-    {"state": "MG", "city": "Belo Horizonte", "ceps": ["30130-010", "30140-071", "30310-009", "30421-169", "30640-070"]},
-    {"state": "BA", "city": "Salvador", "ceps": ["40020-000", "40140-110", "40210-630", "41820-020", "41940-040"]},
-    {"state": "PR", "city": "Curitiba", "ceps": ["80010-010", "80230-010", "80420-090", "80530-000", "81200-100"]},
-    {"state": "RS", "city": "Porto Alegre", "ceps": ["90010-150", "90110-001", "90430-001", "90560-002", "91340-000"]},
-    {"state": "PE", "city": "Recife", "ceps": ["50010-000", "51020-000", "52011-000", "52050-000", "51030-000"]},
-    {"state": "CE", "city": "Fortaleza", "ceps": ["60025-060", "60160-230", "60325-000", "60410-440", "60811-341"]},
-    {"state": "DF", "city": "Brasilia", "ceps": ["70040-010", "70297-400", "70390-025", "70770-522", "71919-540"]},
-    {"state": "SC", "city": "Florianopolis", "ceps": ["88010-400", "88015-201", "88020-300", "88034-000", "88062-000"]},
-    {"state": "GO", "city": "Goiania", "ceps": ["74003-010", "74110-010", "74210-010", "74605-010", "74810-100"]},
-    {"state": "PA", "city": "Belem", "ceps": ["66010-000", "66015-160", "66035-170", "66050-000", "66110-000"]},
-    {"state": "AM", "city": "Manaus", "ceps": ["69005-040", "69010-000", "69020-010", "69050-001", "69058-795"]},
-    {"state": "ES", "city": "Vitoria", "ceps": ["29010-120", "29015-120", "29050-335", "29055-450", "29060-270"]},
-    {"state": "MT", "city": "Cuiaba", "ceps": ["78005-370", "78010-000", "78020-400", "78048-000", "78060-900"]},
-    {"state": "MS", "city": "Campo Grande", "ceps": ["79002-071", "79004-000", "79010-040", "79020-210", "79040-450"]},
-    {"state": "RN", "city": "Natal", "ceps": ["59010-000", "59020-100", "59030-200", "59064-100", "59090-000"]},
-    {"state": "PB", "city": "Joao Pessoa", "ceps": ["58010-000", "58013-000", "58030-001", "58045-010", "58051-900"]},
-    {"state": "AL", "city": "Maceio", "ceps": ["57020-000", "57035-000", "57036-000", "57046-000", "57055-000"]},
-    {"state": "SE", "city": "Aracaju", "ceps": ["49010-000", "49015-000", "49020-000", "49035-000", "49050-000"]},
-    {"state": "SP", "city": "Campinas", "ceps": ["13010-001", "13015-000", "13020-060", "13024-200", "13083-970", "13100-000"]},
-    {"state": "SP", "city": "Santos", "ceps": ["11010-150", "11013-001", "11015-200", "11025-001", "11045-400", "11060-001"]},
-    {"state": "RJ", "city": "Niteroi", "ceps": ["24020-125", "24030-060", "24210-200", "24220-900", "24340-005", "24350-010"]},
-    {"state": "MG", "city": "Uberlandia", "ceps": ["38400-100", "38400-170", "38405-202", "38408-100", "38411-186", "38414-064"]},
-    {"state": "BA", "city": "Feira de Santana", "ceps": ["44001-000", "44002-000", "44020-000", "44050-000", "44075-000", "44088-000"]},
-    {"state": "PR", "city": "Londrina", "ceps": ["86010-000", "86015-000", "86020-000", "86026-010", "86039-000", "86050-000"]},
-    {"state": "RS", "city": "Caxias do Sul", "ceps": ["95010-000", "95020-000", "95032-000", "95040-000", "95052-000", "95070-560"]},
-    {"state": "PE", "city": "Olinda", "ceps": ["53010-000", "53020-000", "53120-000", "53130-000", "53240-000", "53330-000"]},
-    {"state": "CE", "city": "Juazeiro do Norte", "ceps": ["63010-000", "63020-000", "63030-000", "63040-000", "63050-000", "63060-000"]},
-    {"state": "GO", "city": "Anapolis", "ceps": ["75020-010", "75023-040", "75024-030", "75043-010", "75110-390", "75113-570"]},
-    {"state": "PA", "city": "Santarem", "ceps": ["68005-000", "68010-000", "68015-000", "68020-000", "68035-000", "68040-000"]},
-    {"state": "SC", "city": "Joinville", "ceps": ["89201-000", "89202-000", "89203-000", "89204-000", "89218-000", "89221-000"]},
+_GB_FIRST_NAMES = [
+    "Oliver", "George", "Harry", "Jack", "Noah", "Charlie", "Thomas",
+    "James", "William", "Henry", "Amelia", "Olivia", "Isla", "Emily",
+    "Sophie", "Grace", "Charlotte", "Ella", "Lucy", "Alice",
 ]
 
-_BR_CITY_COORDS: dict[str, tuple[float, float]] = {
-    "Sao Paulo": (-23.5505, -46.6333),
-    "Rio de Janeiro": (-22.9068, -43.1729),
-    "Belo Horizonte": (-19.9167, -43.9345),
-    "Salvador": (-12.9777, -38.5016),
-    "Curitiba": (-25.4284, -49.2733),
-    "Porto Alegre": (-30.0346, -51.2177),
-    "Recife": (-8.0476, -34.8770),
-    "Fortaleza": (-3.7319, -38.5267),
-    "Brasilia": (-15.7939, -47.8828),
-    "Florianopolis": (-27.5949, -48.5482),
-    "Goiania": (-16.6869, -49.2648),
-    "Belem": (-1.4558, -48.4902),
-    "Manaus": (-3.1190, -60.0217),
-    "Vitoria": (-20.3155, -40.3128),
-    "Cuiaba": (-15.6014, -56.0979),
-    "Campo Grande": (-20.4697, -54.6201),
-    "Natal": (-5.7793, -35.2009),
-    "Joao Pessoa": (-7.1195, -34.8450),
-    "Maceio": (-9.6498, -35.7089),
-    "Aracaju": (-10.9472, -37.0731),
-    "Campinas": (-22.9056, -47.0608),
-    "Santos": (-23.9608, -46.3336),
-    "Niteroi": (-22.8832, -43.1034),
-    "Uberlandia": (-18.9146, -48.2754),
-    "Feira de Santana": (-12.2664, -38.9663),
-    "Londrina": (-23.3045, -51.1696),
-    "Caxias do Sul": (-29.1678, -51.1794),
-    "Olinda": (-8.0089, -34.8553),
-    "Juazeiro do Norte": (-7.2291, -39.3126),
-    "Anapolis": (-16.3281, -48.9530),
-    "Santarem": (-2.4431, -54.7083),
-    "Joinville": (-26.3044, -48.8487),
-}
-
-_BR_STATE_NAMES = {
-    "SP": "São Paulo", "RJ": "Rio de Janeiro", "MG": "Minas Gerais",
-    "BA": "Bahia", "PR": "Paraná", "RS": "Rio Grande do Sul",
-    "PE": "Pernambuco", "CE": "Ceará", "DF": "Distrito Federal",
-    "SC": "Santa Catarina", "GO": "Goiás", "PA": "Pará", "AM": "Amazonas",
-    "ES": "Espírito Santo", "MT": "Mato Grosso", "MS": "Mato Grosso do Sul",
-    "RN": "Rio Grande do Norte", "PB": "Paraíba", "AL": "Alagoas",
-    "SE": "Sergipe",
-}
-
-_BR_STREET_NAMES = [
-    "Avenida Paulista", "Rua Augusta", "Rua Oscar Freire", "Rua Vergueiro",
-    "Rua Haddock Lobo", "Avenida Atlantica", "Rua Voluntarios da Patria",
-    "Rua Visconde de Piraja", "Rua das Laranjeiras", "Avenida Afonso Pena",
-    "Rua da Bahia", "Rua Paraiba", "Avenida do Contorno", "Rua Curitiba",
-    "Avenida Sete de Setembro", "Rua Chile", "Rua das Hortensias",
-    "Avenida Tancredo Neves", "Rua XV de Novembro", "Avenida Batel",
-    "Rua Marechal Deodoro", "Rua Comendador Araujo", "Avenida Ipiranga",
-    "Rua dos Andradas", "Rua Padre Chagas", "Avenida Borges de Medeiros",
-    "Rua da Aurora", "Avenida Boa Viagem", "Rua do Hospicio", "Rua Benfica",
-    "Avenida Beira Mar", "Rua Barão de Aracati", "Rua Costa Barros",
-    "Avenida Dom Luis", "SQS 308 Bloco A", "CLN 102 Bloco B",
-    "SHIS QI 05 Conjunto 02", "Avenida das Nacoes", "Rua Bocaiuva",
-    "Rua Felipe Schmidt", "Avenida Mauro Ramos", "Rua Esteves Junior",
-    "Avenida Goias", "Rua 10", "Avenida T-63", "Rua 9", "Avenida Nazare",
-    "Travessa Padre Eutiquio", "Rua dos Mundurucus", "Avenida Almirante Barroso",
+_GB_LAST_NAMES = [
+    "Smith", "Jones", "Taylor", "Brown", "Williams", "Wilson", "Johnson",
+    "Davies", "Patel", "Robinson", "Wright", "Thompson", "Evans",
+    "Walker", "White", "Edwards", "Green", "Hall", "Thomas", "Clarke",
 ]
 
-_BR_DISTRICTS_BY_CITY: dict[str, list[str]] = {
-    "Sao Paulo": ["Bela Vista", "Jardim Paulista", "Vila Mariana", "Pinheiros", "Consolacao", "Liberdade", "Moema", "Itaim Bibi", "Perdizes"],
-    "Rio de Janeiro": ["Copacabana", "Botafogo", "Ipanema", "Laranjeiras", "Flamengo", "Tijuca", "Centro"],
-    "Belo Horizonte": ["Centro", "Savassi", "Funcionarios", "Lourdes", "Santo Agostinho", "Sion"],
-    "Salvador": ["Centro", "Barra", "Rio Vermelho", "Pituba", "Caminho das Arvores", "Itaigara"],
-    "Curitiba": ["Centro", "Batel", "Agua Verde", "Bigorrilho", "Merces", "Cabral"],
-    "Porto Alegre": ["Centro Historico", "Moinhos de Vento", "Cidade Baixa", "Menino Deus", "Bom Fim"],
-    "Recife": ["Boa Viagem", "Santo Amaro", "Ilha do Leite", "Derby", "Casa Forte", "Madalena"],
-    "Fortaleza": ["Meireles", "Aldeota", "Centro", "Varjota", "Cocó", "Praia de Iracema"],
-    "Brasilia": ["Asa Sul", "Asa Norte", "Lago Sul", "Sudoeste", "Noroeste", "Guara"],
-    "Florianopolis": ["Centro", "Agronomica", "Trindade", "Itacorubi", "Coqueiros", "Lagoa da Conceicao"],
-    "Goiania": ["Setor Central", "Setor Bueno", "Setor Oeste", "Marista", "Jardim Goias"],
-    "Belem": ["Campina", "Nazare", "Batista Campos", "Umarizal", "Marco", "Pedreira"],
-    "Manaus": ["Centro", "Adrianopolis", "Vieiralves", "Ponta Negra", "Chapada", "Flores"],
-    "Vitoria": ["Centro", "Praia do Canto", "Enseada do Sua", "Jardim da Penha", "Santa Lucia"],
-    "Cuiaba": ["Centro Norte", "Goiabeiras", "Duque de Caxias", "Popular", "Bosque da Saude"],
-    "Campo Grande": ["Centro", "Jardim dos Estados", "Vila Planalto", "Itanhanga Park", "Sao Bento"],
-    "Natal": ["Tirol", "Petropolis", "Lagoa Nova", "Ponta Negra", "Cidade Alta", "Alecrim"],
-    "Joao Pessoa": ["Centro", "Tambau", "Cabo Branco", "Manaira", "Bessa", "Expedicionarios"],
-    "Maceio": ["Centro", "Pajucara", "Ponta Verde", "Jatiuca", "Farol", "Poco"],
-    "Aracaju": ["Centro", "Sao Jose", "Jardins", "Atalaia", "13 de Julho", "Grageru"],
-    "Campinas": ["Centro", "Cambui", "Taquaral", "Guanabara", "Bosque", "Nova Campinas"],
-    "Santos": ["Centro", "Gonzaga", "Boqueirao", "Embare", "Ponta da Praia", "Aparecida"],
-    "Niteroi": ["Centro", "Icarai", "Santa Rosa", "Sao Francisco", "Inga", "Charitas"],
-    "Uberlandia": ["Centro", "Fundinho", "Santa Monica", "Tibery", "Brasil", "Saraiva"],
-    "Feira de Santana": ["Centro", "Kalilandia", "Santa Monica", "Ponto Central", "Serraria Brasil"],
-    "Londrina": ["Centro", "Gleba Palhano", "Higienopolis", "Jardim Quebec", "Vila Ipiranga"],
-    "Caxias do Sul": ["Centro", "Sao Pelegrino", "Exposicao", "Panazzolo", "Madureira"],
-    "Olinda": ["Carmo", "Bairro Novo", "Casa Caiada", "Varadouro", "Rio Doce"],
-    "Juazeiro do Norte": ["Centro", "Lagoa Seca", "Triangulo", "Sao Miguel", "Piraja"],
-    "Anapolis": ["Centro", "Jundiai", "Maracana", "Cidade Jardim", "Vila Goias"],
-    "Santarem": ["Centro", "Aldeia", "Prainha", "Santa Clara", "Aparecida"],
-    "Joinville": ["Centro", "America", "Anita Garibaldi", "Atiradores", "Saguacu", "Costa e Silva"],
-}
-
-_BR_STREETS_BY_CITY = {
-    "Sao Paulo": ["Avenida Paulista", "Rua Augusta", "Rua Oscar Freire", "Rua Vergueiro", "Rua Haddock Lobo"],
-    "Rio de Janeiro": ["Avenida Atlantica", "Rua Voluntarios da Patria", "Rua Visconde de Piraja", "Rua das Laranjeiras"],
-    "Belo Horizonte": ["Avenida Afonso Pena", "Rua da Bahia", "Rua Paraiba", "Avenida do Contorno", "Rua Curitiba"],
-    "Salvador": ["Avenida Sete de Setembro", "Rua Chile", "Rua das Hortensias", "Avenida Tancredo Neves"],
-    "Curitiba": ["Rua XV de Novembro", "Avenida Batel", "Rua Marechal Deodoro", "Rua Comendador Araujo"],
-    "Porto Alegre": ["Avenida Ipiranga", "Rua dos Andradas", "Rua Padre Chagas", "Avenida Borges de Medeiros"],
-    "Recife": ["Rua da Aurora", "Avenida Boa Viagem", "Rua do Hospicio", "Rua Benfica"],
-    "Fortaleza": ["Avenida Beira Mar", "Rua Barão de Aracati", "Rua Costa Barros", "Avenida Dom Luis"],
-    "Brasilia": ["SQS 308 Bloco A", "CLN 102 Bloco B", "SHIS QI 05 Conjunto 02", "Avenida das Nacoes"],
-    "Florianopolis": ["Rua Bocaiuva", "Rua Felipe Schmidt", "Avenida Mauro Ramos", "Rua Esteves Junior"],
-    "Goiania": ["Avenida Goias", "Rua 10", "Avenida T-63", "Rua 9"],
-    "Belem": ["Avenida Nazare", "Travessa Padre Eutiquio", "Rua dos Mundurucus", "Avenida Almirante Barroso"],
-    "Manaus": ["Avenida Eduardo Ribeiro", "Rua Miranda Leao", "Avenida Djalma Batista", "Rua Ramos Ferreira"],
-    "Vitoria": ["Avenida Jeronimo Monteiro", "Rua Sete de Setembro", "Avenida Nossa Senhora da Penha", "Rua Aleixo Netto"],
-    "Cuiaba": ["Avenida Getulio Vargas", "Rua Barão de Melgaço", "Avenida Historiador Rubens de Mendonça", "Rua 24 de Outubro"],
-    "Campo Grande": ["Avenida Afonso Pena", "Rua 14 de Julho", "Rua Dom Aquino", "Avenida Mato Grosso"],
-    "Natal": ["Avenida Prudente de Morais", "Rua Mossoro", "Avenida Hermes da Fonseca", "Rua Potengi"],
-    "Joao Pessoa": ["Avenida Epitacio Pessoa", "Rua Duque de Caxias", "Avenida Almirante Tamandare", "Rua das Trincheiras"],
-    "Maceio": ["Avenida Fernandes Lima", "Rua do Comercio", "Avenida Doutor Antonio Gouveia", "Rua Barao de Maceio"],
-    "Aracaju": ["Avenida Beira Mar", "Rua Itabaiana", "Avenida Ivo do Prado", "Rua Laranjeiras"],
-    "Campinas": ["Avenida Francisco Glicerio", "Rua Conceicao", "Avenida Orosimbo Maia", "Rua Barreto Leme", "Avenida Jose de Souza Campos"],
-    "Santos": ["Avenida Conselheiro Nebias", "Avenida Ana Costa", "Rua XV de Novembro", "Avenida Washington Luis", "Rua Tolentino Filgueiras"],
-    "Niteroi": ["Rua da Conceicao", "Avenida Amaral Peixoto", "Rua Gavio Peixoto", "Avenida Roberto Silveira", "Rua Miguel de Frias"],
-    "Uberlandia": ["Avenida Afonso Pena", "Rua Olegario Maciel", "Avenida Joao Naves de Avila", "Rua Duque de Caxias", "Avenida Rondon Pacheco"],
-    "Feira de Santana": ["Avenida Getulio Vargas", "Rua Conselheiro Franco", "Avenida Senhor dos Passos", "Rua Marechal Deodoro", "Avenida Maria Quiteria"],
-    "Londrina": ["Avenida Higienopolis", "Rua Sergipe", "Avenida Juscelino Kubitschek", "Rua Pio XII", "Avenida Madre Leonia Milito"],
-    "Caxias do Sul": ["Avenida Julio de Castilhos", "Rua Sinimbu", "Rua Feijo Junior", "Avenida Rio Branco", "Rua Os Dezoito do Forte"],
-    "Olinda": ["Avenida Presidente Kennedy", "Rua do Sol", "Avenida Getulio Vargas", "Rua Prudente de Morais", "Avenida Carlos de Lima Cavalcanti"],
-    "Juazeiro do Norte": ["Rua Sao Pedro", "Avenida Padre Cicero", "Rua Santa Luzia", "Avenida Castelo Branco", "Rua Sao Francisco"],
-    "Anapolis": ["Avenida Brasil", "Rua Engenheiro Portela", "Avenida Goias", "Rua Manoel DAbadia", "Avenida Universitaria"],
-    "Santarem": ["Avenida Rui Barbosa", "Travessa dos Martires", "Avenida Mendonca Furtado", "Rua Galdino Veloso", "Avenida Borges Leal"],
-    "Joinville": ["Rua XV de Novembro", "Rua Blumenau", "Avenida Getulio Vargas", "Rua do Principe", "Rua Otto Boehm"],
-}
-
-_BR_CARD_PROFILES = [
-    {
-        "issuer": "VISA",
-        "length": 16,
-        "cvv_length": 3,
-        "weight": 58,
-        "prefixes": [
-            "400176", "406655", "407302", "414709", "415274", "422715",
-            "451416", "455183", "498408",
-        ],
-    },
-    {
-        "issuer": "MASTER_CARD",
-        "length": 16,
-        "cvv_length": 3,
-        "weight": 42,
-        "prefixes": [
-            "516292", "522840", "528048", "530780", "540469", "544731",
-            "550209", "552693",
-        ],
-    },
+_BA_FIRST_NAMES = [
+    "Amar", "Adnan", "Emir", "Haris", "Tarik", "Kenan", "Mirza", "Nermin",
+    "Amina", "Lejla", "Selma", "Emina", "Amra", "Nadja", "Maja", "Sara",
 ]
 
-_BR_EMAIL_DOMAINS = [
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com.br",
-    "icloud.com", "uol.com.br", "bol.com.br",
+_BA_LAST_NAMES = [
+    "Hodzic", "Kovacevic", "Dedic", "Basic", "Halilovic", "Music", "Begic", "Delic",
+    "Markovic", "Petrovic", "Jovanovic", "Nikolic", "Maric", "Babic", "Ilic", "Popovic",
+]
+
+_BH_FIRST_NAMES = [
+    "Ahmed", "Mohammed", "Ali", "Hassan", "Yusuf", "Omar", "Khalid", "Salman",
+    "Fatima", "Maryam", "Noor", "Aisha", "Sara", "Huda", "Layla", "Amal",
+]
+
+_BH_LAST_NAMES = [
+    "Al Khalifa", "Al Doseri", "Al Zayani", "Al Arrayed", "Al Jalahma", "Al Mannai",
+    "Al Kooheji", "Al Moayyed", "Al Sayed", "Al Ansari", "Al Mahmood", "Al Fardan",
 ]
 
 _US_FIRST_NAMES = [
-    "John", "Michael", "David", "James", "Robert", "William", "Daniel",
-    "Matthew", "Joseph", "Andrew", "Mary", "Jennifer", "Jessica", "Ashley",
-    "Amanda", "Sarah", "Emily", "Elizabeth", "Lauren", "Megan",
+    "James", "Michael", "Robert", "John", "David", "William", "Daniel",
+    "Matthew", "Joseph", "Christopher", "Emma", "Olivia", "Sophia",
+    "Mia", "Amelia", "Harper", "Evelyn", "Abigail", "Emily", "Ella",
 ]
 
 _US_LAST_NAMES = [
@@ -400,541 +168,914 @@ _US_LAST_NAMES = [
     "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin",
 ]
 
-_US_EMAIL_DOMAINS = ["gmail.com", "outlook.com", "hotmail.com", "icloud.com", "yahoo.com"]
-
-_US_ADDRESSES = [
-    # Concentrated in the original proven US states instead of spreading across remote/low-signal states.
-    ('4171 Piedmont Avenue', '', 'Oakland', 'CA', '94611'),
-    ('1724 Bancroft Way', '', 'Berkeley', 'CA', '94703'),
-    ('2534 28th Avenue', '', 'San Francisco', 'CA', '94116'),
-    ('1432 Walnut Street', '', 'San Carlos', 'CA', '94070'),
-    ('812 California Street', '', 'Santa Cruz', 'CA', '95060'),
-    ('526 Oak Street', '', 'San Mateo', 'CA', '94402'),
-    ('1918 Pine Street', '', 'Santa Monica', 'CA', '90405'),
-    ('734 Orange Grove Avenue', '', 'Glendale', 'CA', '91205'),
-    ('2841 Granada Avenue', '', 'San Diego', 'CA', '92104'),
-    ('1196 Lincoln Avenue', '', 'Pasadena', 'CA', '91103'),
-    ('4519 Edgeware Road', '', 'San Diego', 'CA', '92116'),
-    ('2267 Cedar Street', '', 'Berkeley', 'CA', '94709'),
-    ('3852 J Street', '', 'Sacramento', 'CA', '95816'),
-    ('2714 6th Avenue', '', 'Los Angeles', 'CA', '90018'),
-    ('1548 Bryant Street', '', 'Palo Alto', 'CA', '94301'),
-    ('927 Palm Avenue', '', 'San Jose', 'CA', '95110'),
-    ('2436 Curtis Street', '', 'Berkeley', 'CA', '94702'),
-    ('620 W 11th Street', '', 'Claremont', 'CA', '91711'),
-    ('1814 Garden Street', '', 'Santa Barbara', 'CA', '93101'),
-    ('369 19th Avenue', '', 'San Francisco', 'CA', '94121'),
-    ('1412 S Orange Drive', '', 'Los Angeles', 'CA', '90019'),
-    ('508 S Sierra Bonita Avenue', '', 'Pasadena', 'CA', '91106'),
-    ('2842 Granada Avenue', '', 'San Diego', 'CA', '92104'),
-    ('732 Everett Avenue', '', 'Palo Alto', 'CA', '94301'),
-    ('1611 W 10th Street', '', 'Austin', 'TX', '78703'),
-    ('514 W Magnolia Avenue', '', 'San Antonio', 'TX', '78212'),
-    ('2218 Kipling Street', '', 'Houston', 'TX', '77098'),
-    ('4327 Junius Street', '', 'Dallas', 'TX', '75246'),
-    ('1912 Alston Avenue', '', 'Fort Worth', 'TX', '76110'),
-    ('1407 Marshall Lane', '', 'Austin', 'TX', '78703'),
-    ('718 W Mistletoe Avenue', '', 'San Antonio', 'TX', '78212'),
-    ('2515 Arlington Street', '', 'Houston', 'TX', '77008'),
-    ('610 N Windomere Avenue', '', 'Dallas', 'TX', '75208'),
-    ('3821 Mattison Avenue', '', 'Fort Worth', 'TX', '76107'),
-    ('1209 Alta Vista Avenue', '', 'Austin', 'TX', '78704'),
-    ('735 W Summit Avenue', '', 'San Antonio', 'TX', '78212'),
-    ('1818 Woodhead Street', '', 'Houston', 'TX', '77019'),
-    ('5438 Vickery Boulevard', '', 'Dallas', 'TX', '75206'),
-    ('2309 Harrison Avenue', '', 'Fort Worth', 'TX', '76110'),
-    ('906 W Annie Street', '', 'Austin', 'TX', '78704'),
-    ('321 E Craig Place', '', 'San Antonio', 'TX', '78212'),
-    ('1342 Tulane Street', '', 'Houston', 'TX', '77008'),
-    ('5826 Mercedes Avenue', '', 'Dallas', 'TX', '75206'),
-    ('1621 Hurley Avenue', '', 'Fort Worth', 'TX', '76104'),
-    ('728 NE 72nd Street', '', 'Miami', 'FL', '33138'),
-    ('418 W Park Avenue', '', 'Tallahassee', 'FL', '32301'),
-    ('1427 Palmer Avenue', '', 'Winter Park', 'FL', '32789'),
-    ('316 8th Avenue N', '', 'Saint Petersburg', 'FL', '33701'),
-    ('2235 Herschel Street', '', 'Jacksonville', 'FL', '32204'),
-    ('809 E Amelia Street', '', 'Orlando', 'FL', '32803'),
-    ('1541 Sevilla Avenue', '', 'Coral Gables', 'FL', '33134'),
-    ('2830 W Morrison Avenue', '', 'Tampa', 'FL', '33629'),
-    ('512 NE 17th Way', '', 'Fort Lauderdale', 'FL', '33301'),
-    ('728 E Cervantes Street', '', 'Pensacola', 'FL', '32501'),
-    ('1240 Osceola Avenue', '', 'Jacksonville', 'FL', '32205'),
-    ('1919 Hillcrest Street', '', 'Orlando', 'FL', '32803'),
-    ('1209 Granada Boulevard', '', 'Coral Gables', 'FL', '33134'),
-    ('410 14th Avenue NE', '', 'Saint Petersburg', 'FL', '33701'),
-    ('815 N Gadsden Street', '', 'Tallahassee', 'FL', '32303'),
-    ('1320 NE 71st Street', '', 'Miami', 'FL', '33138'),
-    ('227 W 16th Street', '', 'New York', 'NY', '10011'),
-    ('78 Lancaster Avenue', '', 'Buffalo', 'NY', '14222'),
-    ('412 Rugby Road', '', 'Brooklyn', 'NY', '11226'),
-    ('635 Park Avenue', '', 'Rochester', 'NY', '14607'),
-    ('208 S Albany Street', '', 'Ithaca', 'NY', '14850'),
-    ('124 Buckingham Road', '', 'Syracuse', 'NY', '13210'),
-    ('39 Clinton Avenue', '', 'Dobbs Ferry', 'NY', '10522'),
-    ('1427 Union Street', '', 'Schenectady', 'NY', '12308'),
-    ('88 Pineapple Street', '', 'Brooklyn', 'NY', '11201'),
-    ('318 W 22nd Street', '', 'New York', 'NY', '10011'),
-    ('519 Linwood Avenue', '', 'Buffalo', 'NY', '14209'),
-    ('76 Oxford Street', '', 'Rochester', 'NY', '14607'),
-    ('214 Bryant Avenue', '', 'Ithaca', 'NY', '14850'),
-    ('112 Berkeley Drive', '', 'Syracuse', 'NY', '13210'),
-    ('1450 W Winona Street', '', 'Chicago', 'IL', '60640'),
-    ('704 W Green Street', '', 'Urbana', 'IL', '61801'),
-    ('1824 N Mohawk Street', '', 'Chicago', 'IL', '60614'),
-    ('516 W Nevada Street', '', 'Urbana', 'IL', '61801'),
-    ('927 Hinman Avenue', '', 'Evanston', 'IL', '60202'),
-    ('223 S Elmwood Avenue', '', 'Oak Park', 'IL', '60302'),
-    ('1316 W Olive Avenue', '', 'Chicago', 'IL', '60660'),
-    ('411 W High Street', '', 'Urbana', 'IL', '61801'),
-    ('815 Forest Avenue', '', 'Evanston', 'IL', '60202'),
-    ('318 N Kenilworth Avenue', '', 'Oak Park', 'IL', '60302'),
-    ('1307 Shallcross Avenue', '', 'Wilmington', 'DE', '19806'),
-    ('214 S Bradford Street', '', 'Dover', 'DE', '19904'),
-    ('705 N Harrison Street', '', 'Wilmington', 'DE', '19805'),
-    ('38 W Park Place', '', 'Newark', 'DE', '19711'),
-    ('127 Delaware Avenue', '', 'Lewes', 'DE', '19958'),
-    ('24 Lake Avenue', '', 'Rehoboth Beach', 'DE', '19971'),
-    ('317 N Walnut Street', '', 'Milford', 'DE', '19963'),
-    ('19 Columbia Avenue', '', 'New Castle', 'DE', '19720'),
-    ('1427 Cherokee Road', '', 'Louisville', 'KY', '40204'),
-    ('215 Old Vine Street', '', 'Lexington', 'KY', '40507'),
-    ('526 W Maxwell Street', '', 'Lexington', 'KY', '40508'),
-    ('907 Baxter Avenue', '', 'Louisville', 'KY', '40204'),
-    ('1812 State Street', '', 'Bowling Green', 'KY', '42101'),
-    ('416 E 10th Street', '', 'Newport', 'KY', '41071'),
-    ('737 Euclid Avenue', '', 'Lexington', 'KY', '40502'),
-    ('2424 Glenmary Avenue', '', 'Louisville', 'KY', '40204'),
+_JP_FIRST_NAMES = [
+    "Haruto", "Ren", "Yuto", "Sota", "Yuki", "Kaito", "Daiki", "Takumi",
+    "Yui", "Aoi", "Hina", "Sakura", "Mei", "Rin", "Akari", "Mio",
 ]
 
-_GB_ADDRESSES = [
-    # Keep these away from landmarks, government buildings, offices, PO boxes,
-    # and obvious commercial addresses. PayPal GB onboarding may accept the
-    # phone OTP and then reject signup with RESIDENTIAL_ADDRESS_NOT_FOUND when
-    # the billing address normalizes to a non-residential/landmark location
-    # (for example 10 Downing Street / SW1A 2AA).
-    ("27 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
-    ("39 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
-    ("Flat 1, 63 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
-    ("Flat 2, 63 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
-    ("Flat 3, 42c Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
-    ("Flat 1, Higgs Yard 42c Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
-    ("Flat 2, Higgs Yard 42c Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
-    ("Flat 4, Stirling House 44 Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
+_JP_LAST_NAMES = [
+    "Sato", "Suzuki", "Takahashi", "Tanaka", "Watanabe", "Ito", "Yamamoto",
+    "Nakamura", "Kobayashi", "Kato", "Yoshida", "Yamada", "Sasaki",
+    "Yamaguchi", "Matsumoto", "Inoue",
 ]
 
-_AU_ADDRESSES = [
-    ("42 Victoria Street", "", "", "Paddington", "NSW", "2021"),
-    ("18 Church Street", "", "", "Richmond", "VIC", "3121"),
-    ("73 Macquarie Street", "", "", "Teneriffe", "QLD", "4005"),
-    ("21 Halifax Street", "", "", "Adelaide", "SA", "5000"),
-    ("56 Beaufort Street", "", "", "Mount Lawley", "WA", "6050"),
-    ("9 Arthur Street", "", "", "North Hobart", "TAS", "7000"),
-    ("14 Torrens Street", "", "", "Braddon", "ACT", "2612"),
-    ("31 Cavenagh Street", "", "", "Darwin City", "NT", "0800"),
+_TH_FIRST_NAMES = [
+    "Niran", "Somchai", "Anan", "Kittisak", "Thanawat", "Preecha",
+    "Arthit", "Chaiwat", "Suda", "Siriporn", "Kanya", "Naree",
+    "Pimchanok", "Ratchanee", "Sasithorn", "Waranya",
 ]
 
-_CA_ADDRESSES = [
-    ("Maitland Street", "25", "", "Toronto", "ON", "M4Y 2W1"),
-    ("Brunswick Avenue", "88", "", "Toronto", "ON", "M5S 2L7"),
-    ("West 7th Avenue", "1438", "", "Vancouver", "BC", "V6H 1C1"),
-    ("Rue Saint-Urbain", "5325", "", "Montreal", "QC", "H2T 2W8"),
-    ("19 Avenue SW", "1507", "", "Calgary", "AB", "T2T 0H8"),
+_TH_LAST_NAMES = [
+    "Srisuk", "Saelim", "Thongchai", "Wongsa", "Chantarangsu",
+    "Boonmee", "Kittipong", "Sukprasert", "Rattanakul", "Phromma",
+    "Kaewta", "Chaiyaporn", "Suwan", "Inthara", "Wattanakul",
 ]
 
-_ID_ADDRESSES = [
-    ("Jalan Kemang Raya", "12", "Bangka", "Jakarta Selatan", "DKI Jakarta", "12730"),
-    ("Jalan Diponegoro", "45", "Lebak Gede", "Bandung", "Jawa Barat", "40132"),
-    ("Jalan Gubeng Kertajaya", "28", "Gubeng", "Surabaya", "Jawa Timur", "60282"),
-    ("Jalan Cik Di Tiro", "17", "Terban", "Yogyakarta", "DI Yogyakarta", "55223"),
+_ID_FIRST_NAMES = [
+    "Adi", "Agus", "Budi", "Dimas", "Fajar", "Rizky", "Andi", "Bayu",
+    "Siti", "Ayu", "Dewi", "Putri", "Rina", "Nadia", "Intan", "Maya",
 ]
 
-_JP_ADDRESSES = [
-    ("Jingumae", "3-12-7", "", "Shibuya-ku", "Tokyo", "150-0001"),
-    ("Kichijoji Honcho", "2-18-4", "", "Musashino-shi", "Tokyo", "180-0004"),
-    ("Tenjin", "3-8-15", "", "Fukuoka-shi Chuo-ku", "Fukuoka", "810-0001"),
-    ("Nishiki", "2-7-21", "", "Nagoya-shi Naka-ku", "Aichi", "460-0003"),
+_ID_LAST_NAMES = [
+    "Santoso", "Wijaya", "Pratama", "Saputra", "Hidayat", "Setiawan",
+    "Kurniawan", "Nugroho", "Permana", "Ramadhan", "Lestari", "Maharani",
+    "Anggraini", "Puspita", "Wulandari", "Sari",
 ]
 
-_MX_ADDRESSES = [
-    ("Calle Durango", "123", "Roma Norte", "Ciudad de Mexico", "CDMX", "06700"),
-    ("Calle Marsella", "52", "Juarez", "Ciudad de Mexico", "CDMX", "06600"),
-    ("Avenida Chapultepec", "210", "Americana", "Guadalajara", "JAL", "44160"),
-    ("Calle Rio Orinoco", "305", "Del Valle", "Monterrey", "NL", "66220"),
+_PH_FIRST_NAMES = [
+    "Juan", "Jose", "Miguel", "Paolo", "Gabriel", "Carlo", "Marco", "Rafael",
+    "Maria", "Angela", "Sofia", "Isabella", "Camille", "Patricia", "Bianca", "Andrea",
 ]
 
-_PH_ADDRESSES = [
-    ("Makati Avenue", "120", "Poblacion", "Makati", "Metro Manila", "1210"),
-    ("Scout Tobias Street", "42", "Laging Handa", "Quezon City", "Metro Manila", "1103"),
-    ("Gorordo Avenue", "78", "Lahug", "Cebu City", "Cebu", "6000"),
-    ("J.P. Laurel Avenue", "155", "Bajada", "Davao City", "Davao del Sur", "8000"),
+_PH_LAST_NAMES = [
+    "Santos", "Reyes", "Cruz", "Garcia", "Mendoza", "Torres", "Flores", "Ramos",
+    "Aquino", "Castillo", "Navarro", "Villanueva", "Fernandez", "Gonzales", "Bautista", "Diaz",
 ]
 
-_TH_ADDRESSES = [
-    ("Sukhumvit Road", "99", "Khlong Toei", "Bangkok", "Bangkok", "10110"),
-    ("Soi Ari Samphan", "41", "Phaya Thai", "Bangkok", "Bangkok", "10400"),
-    ("Nimmanhaemin Road", "24", "Suthep", "Chiang Mai", "Chiang Mai", "50200"),
-    ("Thep Krasattri Road", "67", "Talat Yai", "Phuket", "Phuket", "83000"),
+_TW_FIRST_NAMES = [
+    "Wei", "Ming", "Jun", "Hao", "Yu", "Cheng", "Jia", "Kai",
+    "Mei", "Ling", "Yun", "Ting", "Hsin", "Chia", "Pei", "An",
 ]
 
-_NL_ADDRESSES = [
-    ("Eerste Jan Steenstraat", "84", "", "Amsterdam", "Noord-Holland", "1072 NP"),
-    ("Van Speijkstraat", "118", "", "Den Haag", "Zuid-Holland", "2518 GE"),
-    ("Nieuwe Binnenweg", "206", "", "Rotterdam", "Zuid-Holland", "3021 GN"),
-    ("Biltstraat", "56", "", "Utrecht", "Utrecht", "3572 BD"),
-    ("Ginnekenweg", "94", "", "Breda", "Noord-Brabant", "4818 JH"),
-    ("Oosterhamrikkade", "31", "", "Groningen", "Groningen", "9714 BB"),
+_TW_LAST_NAMES = [
+    "Chen", "Lin", "Huang", "Chang", "Lee", "Wang", "Wu", "Liu",
+    "Tsai", "Yang", "Hsu", "Cheng", "Kuo", "Chou", "Yeh", "Su",
 ]
 
-_US_CARD_PROFILES = [
-    {"issuer": "VISA", "length": 16, "cvv_length": 3, "weight": 50, "prefixes": ["411111", "424242", "401288"]},
-    {"issuer": "MASTER_CARD", "length": 16, "cvv_length": 3, "weight": 30, "prefixes": ["555555", "510510", "520082"]},
-    {"issuer": "AMEX", "length": 15, "cvv_length": 4, "weight": 10, "prefixes": ["378282", "371449"]},
-    {"issuer": "DISCOVER", "length": 16, "cvv_length": 3, "weight": 10, "prefixes": ["601111", "601100"]},
+_MX_FIRST_NAMES = [
+    "Santiago", "Mateo", "Sebastian", "Leonardo", "Emiliano", "Diego",
+    "Daniel", "Alejandro", "Regina", "Valentina", "Camila", "Sofia",
+    "Mariana", "Fernanda", "Daniela", "Ximena",
 ]
 
-_EU_CARD_PROFILES = [
-    {"issuer": "VISA", "length": 16, "cvv_length": 3, "weight": 65, "prefixes": ["411111", "424242", "401288"]},
-    {"issuer": "MASTER_CARD", "length": 16, "cvv_length": 3, "weight": 35, "prefixes": ["555555", "510510", "520082"]},
+_MX_LAST_NAMES = [
+    "Hernandez", "Garcia", "Martinez", "Lopez", "Gonzalez", "Perez",
+    "Rodriguez", "Sanchez", "Ramirez", "Cruz", "Flores", "Gomez",
+    "Morales", "Vazquez", "Reyes", "Torres",
 ]
 
-_ADDRESS_BOOK = {
-    "US": _US_ADDRESSES,
-    "AU": _AU_ADDRESSES,
-    "CA": _CA_ADDRESSES,
-    "GB": _GB_ADDRESSES,
-    "ID": _ID_ADDRESSES,
-    "JP": _JP_ADDRESSES,
-    "MX": _MX_ADDRESSES,
-    "PH": _PH_ADDRESSES,
-    "TH": _TH_ADDRESSES,
-    "NL": _NL_ADDRESSES,
+_AE_FIRST_NAMES = [
+    "Omar", "Ahmed", "Khalid", "Saeed", "Hamdan", "Rashid", "Yousef", "Majid",
+    "Mariam", "Fatima", "Aisha", "Noora", "Hessa", "Latifa", "Amal", "Sara",
+]
+
+_AE_LAST_NAMES = [
+    "Al Mansoori", "Al Mazrouei", "Al Nuaimi", "Al Ketbi", "Al Suwaidi", "Al Falasi",
+    "Al Marri", "Al Shamsi", "Al Hammadi", "Al Dhaheri", "Al Kaabi", "Al Muhairi",
+]
+
+_AU_FIRST_NAMES = [
+    "Oliver", "Noah", "Jack", "William", "Henry", "Thomas", "James", "Lucas",
+    "Charlotte", "Amelia", "Olivia", "Mia", "Isla", "Grace", "Sophie", "Chloe",
+]
+
+_AU_LAST_NAMES = [
+    "Smith", "Jones", "Williams", "Brown", "Wilson", "Taylor", "Johnson", "White",
+    "Martin", "Anderson", "Thompson", "Nguyen", "Walker", "Harris", "Clark", "Lewis",
+]
+
+_CA_FIRST_NAMES = [
+    "Liam", "Noah", "Oliver", "William", "James", "Lucas", "Benjamin", "Ethan",
+    "Olivia", "Emma", "Charlotte", "Amelia", "Sophia", "Ava", "Mia", "Chloe",
+]
+
+_CA_LAST_NAMES = [
+    "Smith", "Brown", "Tremblay", "Martin", "Roy", "Wilson", "MacDonald", "Gagnon",
+    "Johnson", "Taylor", "Cote", "Campbell", "Anderson", "Leblanc", "Lee", "Thompson",
+]
+
+_BR_STREETS = [
+    "Rua das Flores", "Rua da Paz", "Rua São Paulo", "Rua dos Andradas",
+    "Rua Voluntários da Pátria", "Rua General Osório", "Rua Sete de Setembro",
+    "Rua Marechal Deodoro", "Rua Quinze de Novembro", "Rua Dom Pedro II",
+    "Avenida Brasil", "Avenida Independência", "Avenida Getúlio Vargas",
+    "Rua Tiradentes", "Rua Santos Dumont", "Rua Bento Gonçalves",
+]
+
+_BR_DISTRICTS = [
+    "Centro", "Centro Histórico", "Bela Vista", "Jardim América",
+    "Vila Mariana", "Pinheiros", "Consolação", "Liberdade",
+    "Santa Cecília", "Moema", "Itaim Bibi", "Perdizes",
+]
+
+_KNOWN_BR_ADDRESSES = [
+    ("Avenida Cristóvão Colombo", "287", "Savassi", "Belo Horizonte", "MG", "30140-140"),
+    ("Rua Siqueira Campos", "946", "Centro Histórico", "Porto Alegre", "RS", "90010-001"),
+    ("Avenida Paulista", "1000", "Bela Vista", "São Paulo", "SP", "01310-100"),
+    ("Rua da Assembleia", "10", "Centro", "Rio de Janeiro", "RJ", "20011-901"),
+    ("Rua XV de Novembro", "100", "Centro", "Curitiba", "PR", "80020-310"),
+    ("Avenida Sete de Setembro", "1200", "Centro", "Salvador", "BA", "40060-001"),
+]
+
+_KNOWN_DE_ADDRESSES = [
+    ("Unter den Linden", "77", "Mitte", "Berlin", "Berlin", "10117"),
+    ("Marienplatz", "8", "Altstadt-Lehel", "M\u00fcnchen", "Bayern", "80331"),
+    ("M\u00f6nckebergstra\u00dfe", "7", "Hamburg-Altstadt", "Hamburg", "Hamburg", "20095"),
+    ("K\u00f6nigsallee", "2", "Stadtmitte", "D\u00fcsseldorf", "Nordrhein-Westfalen", "40212"),
+    ("Zeil", "106", "Innenstadt", "Frankfurt am Main", "Hessen", "60313"),
+]
+
+_KNOWN_GB_ADDRESSES = [
+    # Exact house/street/postcode pairs verified against UK postcode and map data.
+    ("Arundel Gardens", "12", "Notting Hill", "London", "Greater London", "W11 2LW"),
+    ("Noel Road", "25", "Islington", "London", "Greater London", "N1 8HQ"),
+    ("Derngate", "78", "Semilong", "Northampton", "Northamptonshire", "NN1 1UH"),
+    ("Forthlin Road", "20", "Allerton", "Liverpool", "Merseyside", "L18 9TL"),
+    ("Menlove Avenue", "251", "Woolton", "Liverpool", "Merseyside", "L25 7SA"),
+    ("Plymouth Grove", "84", "Chorlton-on-Medlock", "Manchester", "Greater Manchester", "M13 9LW"),
+]
+
+_KNOWN_BA_ADDRESSES = [
+    ("Zmaja od Bosne", "4", "Marijin Dvor", "Sarajevo", "Federation of Bosnia and Herzegovina", "71000"),
+    ("Vladislava Skarica", "8", "Bascarsija", "Sarajevo", "Federation of Bosnia and Herzegovina", "71144"),
+    ("Krajina Square", "2", "Centar", "Banja Luka", "Republika Srpska", "78000"),
+]
+
+_KNOWN_BH_ADDRESSES = [
+    ("Avenue 40", "64", "Al Seef", "Manama", "Capital Governorate", ""),
+    ("Road 1705", "144", "Diplomatic Area", "Manama", "Capital Governorate", ""),
+    ("Road 2827", "2431", "Seef District", "Manama", "Capital Governorate", ""),
+    ("Road 1010", "429", "Sanabis", "Manama", "Capital Governorate", ""),
+]
+
+_KNOWN_US_ADDRESSES = [
+    ("Pennsylvania Avenue NW", "1600", "Northwest Washington", "Washington", "DC", "20500"),
+    ("Fifth Avenue", "350", "Manhattan", "New York", "NY", "10118"),
+    ("South Figueroa Street", "900", "Downtown", "Los Angeles", "CA", "90015"),
+    ("North Michigan Avenue", "875", "Streeterville", "Chicago", "IL", "60611"),
+    ("Congress Avenue", "1100", "Downtown", "Austin", "TX", "78701"),
+]
+
+_KNOWN_JP_ADDRESSES = [
+    ("Marunouchi", "1-1-1", "Chiyoda-ku", "Chiyoda", "Tokyo", "100-0005"),
+    ("Nishishinjuku", "2-8-1", "Shinjuku-ku", "Shinjuku", "Tokyo", "163-8001"),
+    ("Umeda", "3-1-1", "Kita-ku", "Osaka", "Osaka", "530-0001"),
+    ("Sakae", "3-5-1", "Naka-ku", "Nagoya", "Aichi", "460-0008"),
+    ("Minatomirai", "2-2-1", "Nishi-ku", "Yokohama", "Kanagawa", "220-0012"),
+]
+
+_KNOWN_TH_ADDRESSES = [
+    ("Rama I Road", "991", "Pathum Wan", "Bangkok", "Bangkok", "10330"),
+    ("Rama I Road", "999/9", "Pathum Wan", "Bangkok", "Bangkok", "10330"),
+    ("Sukhumvit Road", "88", "Khlong Toei", "Bangkok", "Bangkok", "10110"),
+    ("Vibhavadi Rangsit Road", "252/1", "Din Daeng", "Bangkok", "Bangkok", "10400"),
+    ("Nimmanahaeminda Road", "1", "Suthep", "Mueang Chiang Mai", "Chiang Mai", "50200"),
+]
+
+_KNOWN_ID_ADDRESSES = [
+    ("Jalan M.H. Thamrin", "1", "Menteng", "Jakarta Pusat", "DKI Jakarta", "10310"),
+    ("Jalan Jenderal Sudirman", "52-53", "Senayan", "Jakarta Selatan", "DKI Jakarta", "12190"),
+    ("Jalan Asia Afrika", "8", "Gelora", "Jakarta Pusat", "DKI Jakarta", "10270"),
+    ("Jalan Malioboro", "52-58", "Suryatmajan", "Yogyakarta", "DI Yogyakarta", "55213"),
+    ("Jalan Raya Kuta", "1", "Kuta", "Badung", "Bali", "80361"),
+]
+
+_KNOWN_PH_ADDRESSES = [
+    ("Ayala Avenue", "6750", "San Lorenzo", "Makati", "Metro Manila", "1226"),
+    ("Bonifacio Drive", "1", "Port Area", "Manila", "Metro Manila", "1018"),
+    ("Cardinal Rosales Avenue", "1", "Cebu Business Park", "Cebu City", "Cebu", "6000"),
+    ("J.P. Laurel Avenue", "123", "Bajada", "Davao City", "Davao del Sur", "8000"),
+    ("Lacson Street", "12", "Barangay 5", "Bacolod", "Negros Occidental", "6100"),
+]
+
+_KNOWN_TW_ADDRESSES = [
+    ("Section 4, Zhongxiao East Road", "45", "Da'an District", "Taipei City", "Taipei City", "106"),
+    ("Section 5, Xinyi Road", "7", "Xinyi District", "Taipei City", "Taipei City", "110"),
+    ("Section 3, Taiwan Boulevard", "99", "Xitun District", "Taichung City", "Taichung City", "407"),
+    ("Zhongshan 1st Road", "1", "Xinxing District", "Kaohsiung City", "Kaohsiung City", "800"),
+    ("Zhongzheng Road", "120", "East District", "Tainan City", "Tainan City", "701"),
+]
+
+_KNOWN_MX_ADDRESSES = [
+    ("Avenida Paseo de la Reforma", "222", "Juarez", "Cuauhtemoc", "Ciudad de Mexico", "06600"),
+    ("Avenida Presidente Masaryk", "111", "Polanco", "Miguel Hidalgo", "Ciudad de Mexico", "11560"),
+    ("Avenida Vallarta", "6503", "Ciudad Granja", "Zapopan", "Jalisco", "45010"),
+    ("Avenida Constituyentes", "1000", "Lomas Altas", "Monterrey", "Nuevo Leon", "64650"),
+    ("Boulevard Kukulcan", "12", "Zona Hotelera", "Cancun", "Quintana Roo", "77500"),
+]
+
+_KNOWN_AE_ADDRESSES = [
+    ("PO Box", "12345", "Downtown Dubai", "Dubai", "Dubai", ""),
+    ("PO Box", "2828", "Business Bay", "Dubai", "Dubai", ""),
+    ("PO Box", "12900", "Al Danah", "Abu Dhabi", "Abu Dhabi", ""),
+    ("PO Box", "5555", "Al Majaz", "Sharjah", "Sharjah", ""),
+    ("PO Box", "16000", "Al Nakheel", "Ras Al Khaimah", "Ras Al Khaimah", ""),
+    ("PO Box", "777", "Al Nuaimiya", "Ajman", "Ajman", ""),
+    ("PO Box", "300", "Al Ras", "Umm Al Quwain", "Umm Al Quwain", ""),
+    ("PO Box", "880", "Al Faseel", "Fujairah", "Fujairah", ""),
+]
+
+_KNOWN_AU_ADDRESSES = [
+    ("Martin Place", "1", "", "Sydney", "NSW", "2000"),
+    ("George Street", "200", "", "Sydney", "NSW", "2000"),
+    ("Exhibition Street", "8", "", "Melbourne", "VIC", "3000"),
+    ("Queen Street", "123", "", "Brisbane", "QLD", "4000"),
+    ("St Georges Terrace", "140", "", "Perth", "WA", "6000"),
+    ("King William Street", "100", "", "Adelaide", "SA", "5000"),
+    ("Franklin Wharf", "1", "", "Hobart", "TAS", "7000"),
+    ("London Circuit", "1", "", "Canberra", "ACT", "2601"),
+    ("Smith Street", "19", "", "Darwin", "NT", "0800"),
+]
+
+_KNOWN_CA_ADDRESSES = [
+    ("Queen Street West", "100", "", "Toronto", "ON", "M5H 2N2"),
+    ("Bloor Street West", "60", "", "Toronto", "ON", "M4W 3B8"),
+    ("Rue Sainte-Catherine Ouest", "1255", "", "Montreal", "QC", "H3G 1P7"),
+    ("West Georgia Street", "701", "", "Vancouver", "BC", "V7Y 1G5"),
+    ("Stephen Avenue SW", "225", "", "Calgary", "AB", "T2P 2W3"),
+    ("Portage Avenue", "360", "", "Winnipeg", "MB", "R3C 0G8"),
+    ("Barrington Street", "1800", "", "Halifax", "NS", "B3J 3K8"),
+    ("Elgin Street", "90", "", "Ottawa", "ON", "K1P 5E9"),
+]
+
+_KNOWN_RO_ADDRESSES = [
+    ("Calea Victoriei", "100", "Sector 1", "Bucuresti", "Bucuresti", "010099"),
+    ("Strada Memorandumului", "21", "Centru", "Cluj-Napoca", "Cluj", "400114"),
+    ("Strada Republicii", "35", "Centrul Vechi", "Brasov", "Brasov", "500030"),
+    ("Bulevardul Revolutiei", "78", "Centru", "Arad", "Arad", "310025"),
+    ("Strada Stefan cel Mare", "69", "Tasnad", "Tasnad", "Satu Mare", "445300"),
+]
+
+_KNOWN_NL_ADDRESSES = [
+    ("Dam", "1", "", "Amsterdam", "Noord-Holland", "1012 JS"),
+    ("Museumplein", "6", "", "Amsterdam", "Noord-Holland", "1071 DJ"),
+    ("Coolsingel", "40", "", "Rotterdam", "Zuid-Holland", "3011 AD"),
+    ("Stadhuisbrug", "1", "", "Utrecht", "Utrecht", "3511 KP"),
+    ("Grote Markt", "1", "", "Groningen", "Groningen", "9712 HN"),
+    ("Markt", "1", "", "Maastricht", "Limburg", "6211 CH"),
+]
+
+_MAP_ADDRESS_POOLS = {
+    "BR": _KNOWN_BR_ADDRESSES,
+    "DE": _KNOWN_DE_ADDRESSES,
+    "GB": _KNOWN_GB_ADDRESSES,
+    "BA": _KNOWN_BA_ADDRESSES,
+    "BH": _KNOWN_BH_ADDRESSES,
+    "US": _KNOWN_US_ADDRESSES,
+    "JP": _KNOWN_JP_ADDRESSES,
+    "TH": _KNOWN_TH_ADDRESSES,
+    "ID": _KNOWN_ID_ADDRESSES,
+    "PH": _KNOWN_PH_ADDRESSES,
+    "TW": _KNOWN_TW_ADDRESSES,
+    "MX": _KNOWN_MX_ADDRESSES,
+    "AE": _KNOWN_AE_ADDRESSES,
+    "AU": _KNOWN_AU_ADDRESSES,
+    "CA": _KNOWN_CA_ADDRESSES,
+    "NL": _KNOWN_NL_ADDRESSES,
+    "RO": _KNOWN_RO_ADDRESSES,
 }
 
+_MAP_COUNTRY_NAMES = {
+    "BR": "Brazil",
+    "DE": "Germany",
+    "GB": "United Kingdom",
+    "BA": "Bosnia and Herzegovina",
+    "BH": "Bahrain",
+    "US": "United States",
+    "JP": "Japan",
+    "TH": "Thailand",
+    "ID": "Indonesia",
+    "PH": "Philippines",
+    "TW": "Taiwan",
+    "MX": "Mexico",
+    "AE": "United Arab Emirates",
+    "RO": "Romania",
+    "AU": "Australia",
+    "CA": "Canada",
+    "NL": "Netherlands",
+}
+
+_MAP_ADDRESS_CACHE: dict[tuple[str, tuple[str, ...]], BillingAddress] = {}
+_MAP_RESOLVE_LOCK = threading.Lock()
+_MAP_LAST_REQUEST_AT = 0.0
+
+
+def _map_query(country: str, seed: tuple[str, str, str, str, str, str]) -> str:
+    street, house_number, district, city, state, postal_code = seed
+    parts = [
+        f"{house_number} {street}", district, city, state, postal_code,
+        _MAP_COUNTRY_NAMES.get(country, country),
+    ]
+    return ", ".join(part for part in parts if str(part or "").strip())
+
+
+def _generate_address_from_online_map(country: str) -> Optional[BillingAddress]:
+    """Resolve one country-specific seed through OpenStreetMap/Nominatim.
+
+    The request is non-blocking under concurrency: one worker performs the
+    external lookup while other workers immediately use the local fallback.
+    Successful results are cached and copied before use so later normalization
+    cannot mutate the shared cache entry.
+    """
+    global _MAP_LAST_REQUEST_AT
+    country = str(country or "").upper()
+    pool = _MAP_ADDRESS_POOLS.get(country) or []
+    if not pool:
+        return None
+    seed = tuple(random.choice(pool))
+    cache_key = (country, seed)
+    cached = _MAP_ADDRESS_CACHE.get(cache_key)
+    if cached is not None:
+        return replace(cached)
+    if not _MAP_RESOLVE_LOCK.acquire(blocking=False):
+        return None
+    try:
+        cached = _MAP_ADDRESS_CACHE.get(cache_key)
+        if cached is not None:
+            return replace(cached)
+        seed_street, seed_number, seed_district, seed_city, seed_state, seed_postal = seed
+        queries = [
+            _map_query(country, seed),
+            ", ".join(
+                part for part in (
+                    seed_street, seed_city, seed_state, seed_postal,
+                    _MAP_COUNTRY_NAMES.get(country, country),
+                ) if str(part or "").strip()
+            ),
+        ]
+        rows = []
+        with httpx.Client(
+            timeout=httpx.Timeout(6.0),
+            trust_env=False,
+            headers={"User-Agent": "pay153-address-resolver/2.0"},
+        ) as client:
+            for query in dict.fromkeys(queries):
+                wait_seconds = 1.05 - (time.monotonic() - _MAP_LAST_REQUEST_AT)
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                response = client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={
+                        "q": query,
+                        "format": "jsonv2",
+                        "addressdetails": 1,
+                        "limit": 1,
+                        "countrycodes": country.lower(),
+                        "accept-language": "en",
+                    },
+                )
+                _MAP_LAST_REQUEST_AT = time.monotonic()
+                response.raise_for_status()
+                rows = response.json()
+                if rows:
+                    break
+        if not rows:
+            return None
+        address = rows[0].get("address") or {}
+        house_number = str(address.get("house_number") or seed_number).strip()
+        street = str(
+            address.get("road")
+            or address.get("pedestrian")
+            or address.get("residential")
+            or address.get("footway")
+            or address.get("path")
+            or seed_street
+        ).strip()
+        district = str(
+            address.get("suburb")
+            or address.get("quarter")
+            or address.get("neighbourhood")
+            or address.get("borough")
+            or address.get("city_district")
+            or seed_district
+        ).strip()
+        city = str(
+            address.get("city")
+            or address.get("town")
+            or address.get("municipality")
+            or address.get("village")
+            or address.get("county")
+            or seed_city
+        ).strip()
+        state = str(
+            address.get("state")
+            or address.get("region")
+            or address.get("province")
+            or address.get("state_district")
+            or seed_state
+        ).strip()
+        postal_code = str(address.get("postcode") or seed_postal).strip().upper()
+        if country == "JP":
+            digits = re.sub(r"[^0-9]", "", unicodedata.normalize("NFKC", postal_code))
+            postal_code = f"{digits[:3]}-{digits[3:]}" if len(digits) == 7 else seed_postal
+        if country == "AE":
+            state_key = state.lower().replace("-", " ").replace("emirate", "").strip()
+            emirates = {
+                "abu dhabi": "Abu Dhabi",
+                "dubai": "Dubai",
+                "sharjah": "Sharjah",
+                "ajman": "Ajman",
+                "ras al khaimah": "Ras Al Khaimah",
+                "ras al khaymah": "Ras Al Khaimah",
+                "umm al quwain": "Umm Al Quwain",
+                "umm al qaywayn": "Umm Al Quwain",
+                "fujairah": "Fujairah",
+                "al fujairah": "Fujairah",
+            }
+            state = emirates.get(state_key, seed_state)
+            city = city or seed_city
+            postal_code = ""
+        if country == "AU":
+            state_key = state.lower().strip()
+            australian_states = {
+                "new south wales": "NSW", "nsw": "NSW",
+                "victoria": "VIC", "vic": "VIC",
+                "queensland": "QLD", "qld": "QLD",
+                "western australia": "WA", "wa": "WA",
+                "south australia": "SA", "sa": "SA",
+                "tasmania": "TAS", "tas": "TAS",
+                "australian capital territory": "ACT", "act": "ACT",
+                "northern territory": "NT", "nt": "NT",
+            }
+            state = australian_states.get(state_key, seed_state)
+            city = seed_city
+            district = ""
+        if country == "CA":
+            state_key = state.lower().strip()
+            canadian_provinces = {
+                "alberta": "AB", "ab": "AB",
+                "british columbia": "BC", "bc": "BC",
+                "manitoba": "MB", "mb": "MB",
+                "new brunswick": "NB", "nb": "NB",
+                "newfoundland and labrador": "NL", "nl": "NL",
+                "nova scotia": "NS", "ns": "NS",
+                "ontario": "ON", "on": "ON",
+                "prince edward island": "PE", "pe": "PE",
+                "quebec": "QC", "qu?bec": "QC", "qc": "QC",
+                "saskatchewan": "SK", "sk": "SK",
+                "northwest territories": "NT", "nt": "NT",
+                "nunavut": "NU", "nu": "NU",
+                "yukon": "YT", "yt": "YT",
+            }
+            state = canadian_provinces.get(state_key, seed_state)
+            city = seed_city
+            district = ""
+        if not house_number or not street or not city:
+            return None
+        result = BillingAddress(
+            street=street,
+            house_number=house_number,
+            district=district,
+            city=city,
+            state=state,
+            postal_code=postal_code,
+            country=country,
+        )
+        _MAP_ADDRESS_CACHE[cache_key] = result
+        return replace(result)
+    except Exception:
+        return None
+    finally:
+        _MAP_RESOLVE_LOCK.release()
 
 def _luhn_checksum(partial: str) -> int:
     """Calculate the Luhn check digit for a partial card number (without the check digit)."""
-    total = 0
-    alternate = True
-    for ch in reversed(partial):
-        digit = int(ch)
-        if alternate:
-            digit *= 2
-            if digit > 9:
-                digit -= 9
-        total += digit
-        alternate = not alternate
-    return 0 if total % 10 == 0 else 10 - (total % 10)
+    digits = [int(d) for d in partial]
+    # Process from right to left: double every other digit starting from the rightmost
+    for i in range(len(digits) - 1, -1, -2):
+        digits[i] *= 2
+        if digits[i] > 9:
+            digits[i] -= 9
+    total = sum(digits)
+    return (10 - (total % 10)) % 10
 
 
-def _normalise_place(value: str) -> str:
-    text = unicodedata.normalize("NFKD", value or "")
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return " ".join(text.lower().replace("-", " ").split())
+SUIJIDAQUAN_CARD_API = "https://api2.suijidaquan.com/api/v2/random-credit-card"
+SUIJIDAQUAN_CARD_REFERER = "https://www.suijidaquan.com/credit-card-generator"
 
 
-def _truthy_env(name: str, default: bool = True) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+def _normalize_suijidaquan_card_type(value: str) -> str:
+    normalized = (value or "").strip().lower().replace(" ", "")
+    if normalized == "visa":
+        return "VISA"
+    if normalized in {"mastercard", "master"}:
+        return "MASTER_CARD"
+    return ""
 
 
-def _proxy_hostname(proxy_url: str | None) -> str:
-    raw = (proxy_url or "").strip()
-    if not raw:
-        return ""
-    if "://" in raw:
-        parsed = urllib.parse.urlsplit(raw)
-        return parsed.hostname or ""
-    # host:port:user:pass format.
-    return raw.split(":", 1)[0].strip()
+def _fetch_suijidaquan_card(count: int = 20, proxy_url: str | None = None) -> Optional[CardInfo]:
+    """Fetch one Visa/MasterCard entry from suijidaquan's public generator API."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+        ),
+        "Origin": "https://www.suijidaquan.com",
+        "Referer": SUIJIDAQUAN_CARD_REFERER,
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+    }
+    payload = {"count": count, "method": "random_credit_card"}
+
+    client_kwargs = {
+        "timeout": httpx.Timeout(15.0),
+        "headers": headers,
+        "trust_env": False,
+    }
+    if proxy_url:
+        client_kwargs["proxy"] = proxy_url
+
+    with httpx.Client(**client_kwargs) as client:
+        resp = client.post(SUIJIDAQUAN_CARD_API, json=payload)
+        resp.raise_for_status()
+        result = resp.json()
+
+    if result.get("status") != "ok" or not isinstance(result.get("data"), list):
+        raise RuntimeError(f"Unexpected suijidaquan response: {result!r}")
+
+    candidates: list[CardInfo] = []
+    for item in result["data"]:
+        if not isinstance(item, dict):
+            continue
+        issuer = _normalize_suijidaquan_card_type(item.get("Credit_Card_Type", ""))
+        if issuer not in {"VISA", "MASTER_CARD"}:
+            continue
+        number = "".join(ch for ch in str(item.get("Credit_Card_Number", "")) if ch.isdigit())
+        expiry = str(item.get("Expires", "")).strip()
+        cvv = "".join(ch for ch in str(item.get("CVV2", "")) if ch.isdigit())
+        if len(number) < 13 or "/" not in expiry or len(cvv) < 3:
+            continue
+        candidates.append(CardInfo(number=number, expiry=expiry, cvv=cvv[:4], card_type="CREDIT"))
+
+    if not candidates:
+        raise RuntimeError("suijidaquan returned no Visa/MasterCard candidates")
+    return random.choice(candidates)
 
 
-def _looks_private_host(host: str) -> bool:
-    lowered = (host or "").strip().lower()
-    if not lowered or lowered in {"localhost", "127.0.0.1", "::1"}:
-        return True
+# Local generation is the primary card source. The remote generator is retained
+# only as a fallback in case the local generator cannot produce a fresh entry.
+_FALLBACK_CARD_PREFIXES = [
+    ("4", "VISA"),
+    ("51", "MASTER_CARD"),
+    ("52", "MASTER_CARD"),
+    ("53", "MASTER_CARD"),
+    ("54", "MASTER_CARD"),
+    ("55", "MASTER_CARD"),
+]
+
+
+_LOCAL_CARD_LOCK = threading.Lock()
+_LOCAL_CARD_HASH_FILE = (
+    Path(__file__).resolve().parents[1] / "data" / "used_local_card_hashes.txt"
+)
+_LOCAL_CARD_HASHES: set[str] | None = None
+
+
+def _load_local_card_hashes() -> set[str]:
+    global _LOCAL_CARD_HASHES
+    if _LOCAL_CARD_HASHES is not None:
+        return _LOCAL_CARD_HASHES
     try:
-        ip = ipaddress.ip_address(lowered)
-    except ValueError:
-        return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        values = {
+            line.strip()
+            for line in _LOCAL_CARD_HASH_FILE.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    except FileNotFoundError:
+        values = set()
+    _LOCAL_CARD_HASHES = values
+    return values
 
 
-def _proxy_geo_cache_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "cache" / "proxy_geo_cache.json"
+def _generate_local_unique_card() -> CardInfo:
+    """Generate a Luhn-valid card locally and never reuse it on this server."""
+    with _LOCAL_CARD_LOCK:
+        used = _load_local_card_hashes()
+        for _ in range(1000):
+            prefix, _issuer = random.choice(_FALLBACK_CARD_PREFIXES)
+            remaining = 16 - len(prefix) - 1
+            body = prefix + "".join(str(random.randint(0, 9)) for _ in range(remaining))
+            number = body + str(_luhn_checksum(body))
+            fingerprint = hashlib.sha256(number.encode("ascii")).hexdigest()
+            if fingerprint in used:
+                continue
+
+            month = random.randint(1, 12)
+            year = random.randint(2027, 2031)
+            expiry = f"{month:02d}/{year}"
+            cvv = f"{random.randint(0, 999):03d}"
+
+            _LOCAL_CARD_HASH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with _LOCAL_CARD_HASH_FILE.open("a", encoding="utf-8") as handle:
+                handle.write(fingerprint + "\n")
+            used.add(fingerprint)
+            return CardInfo(
+                number=number,
+                expiry=expiry,
+                cvv=cvv,
+                card_type="CREDIT",
+            )
+    raise RuntimeError("local unique card generation exhausted")
 
 
-def _load_proxy_geo_cache() -> dict[str, dict[str, object]]:
-    path = _proxy_geo_cache_path()
-    if not path.is_file():
-        return {}
+def generate_card(
+    proxy_url: str | None = None,
+    *,
+    prefer_local: bool = False,
+    prefer_remote: bool = False,
+) -> CardInfo:
+    if prefer_remote:
+        for _ in range(4):
+            try:
+                card = _fetch_suijidaquan_card(proxy_url=proxy_url)
+                if card:
+                    return card
+            except Exception:
+                pass
+        return _generate_local_unique_card()
+
+    # Always try the local channel first. ``prefer_local`` is kept for backwards
+    # compatibility and means the caller does not want a remote fallback.
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        return _generate_local_unique_card()
     except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+        if prefer_local:
+            raise
 
-
-def _save_proxy_geo_cache(cache: dict[str, dict[str, object]]) -> None:
-    try:
-        path = _proxy_geo_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        return
-
-
-def _proxy_geo_lookup(proxy_url: str | None) -> dict[str, object] | None:
-    """Best-effort proxy geolocation for choosing a nearby BR address.
-
-    Prefer the actual outbound proxy exit IP; fall back to the proxy host if the
-    proxy cannot be queried. Cache keys are hashes, so credentials are not saved.
-    Set PAYPAL_PROXY_GEO_LOOKUP=0 to force purely random Brazil addresses.
-    """
-    if not _truthy_env("PAYPAL_PROXY_GEO_LOOKUP", True):
-        return None
-    raw_proxy_url = (proxy_url or "").strip()
-    host = _proxy_hostname(proxy_url)
-    if _looks_private_host(host):
-        return None
-
-    fields = "status,countryCode,region,regionName,city,lat,lon,query"
-    cache = _load_proxy_geo_cache()
-
-    if raw_proxy_url:
-        exit_key = "exit:" + hashlib.sha256(raw_proxy_url.encode("utf-8")).hexdigest()
-        cached = cache.get(exit_key)
-        if isinstance(cached, dict) and time.time() - float(cached.get("_cached_at", 0) or 0) < 3600:
-            return cached
+    for _ in range(3):
         try:
-            import httpx
-
-            with httpx.Client(proxy=raw_proxy_url, timeout=3.0, follow_redirects=True) as client:
-                response = client.get(f"http://ip-api.com/json/?fields={fields}")
-                response.raise_for_status()
-                payload = response.json()
-            if isinstance(payload, dict) and payload.get("status") == "success":
-                payload["_cached_at"] = time.time()
-                cache[exit_key] = payload
-                _save_proxy_geo_cache(cache)
-                return payload
+            card = _fetch_suijidaquan_card(proxy_url=proxy_url)
+            if card:
+                return card
         except Exception:
             pass
 
-    host_key = "host:" + hashlib.sha256(host.encode("utf-8")).hexdigest()
-    cached = cache.get(host_key)
-    if isinstance(cached, dict) and time.time() - float(cached.get("_cached_at", 0) or 0) < 7 * 86400:
-        return cached
-
-    url = f"http://ip-api.com/json/{urllib.parse.quote(host)}?fields={fields}"
-    try:
-        with urllib.request.urlopen(url, timeout=1.8) as response:
-            payload = json.loads(response.read().decode("utf-8", errors="replace"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict) or payload.get("status") != "success":
-        return None
-    payload["_cached_at"] = time.time()
-    cache[host_key] = payload
-    _save_proxy_geo_cache(cache)
-    return payload
-
-
-def _distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
-    lat1, lon1 = math.radians(a[0]), math.radians(a[1])
-    lat2, lon2 = math.radians(b[0]), math.radians(b[1])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 6371.0 * 2 * math.asin(math.sqrt(h))
-
-
-def _weighted_card_profile() -> dict[str, object]:
-    total = sum(int(profile["weight"]) for profile in _BR_CARD_PROFILES)
-    pick = random.randint(1, total)
-    running = 0
-    for profile in _BR_CARD_PROFILES:
-        running += int(profile["weight"])
-        if pick <= running:
-            return profile
-    return _BR_CARD_PROFILES[0]
-
-
-def _weighted_profile(profiles: list[dict[str, object]]) -> dict[str, object]:
-    total = sum(int(profile["weight"]) for profile in profiles)
-    pick = random.randint(1, total)
-    running = 0
-    selected = profiles[0]
-    for candidate in profiles:
-        running += int(candidate["weight"])
-        if pick <= running:
-            selected = candidate
-            break
-    return selected
-
-
-def _location_for_proxy(proxy_url: str | None = None) -> _BrLocation:
-    geo = _proxy_geo_lookup(proxy_url)
-    if not geo or str(geo.get("countryCode") or "").upper() != "BR":
-        return random.choice(_BR_LOCATIONS)
-
-    geo_city = _normalise_place(str(geo.get("city") or ""))
-    geo_state = str(geo.get("region") or "").upper()
-
-    city_matches = [
-        loc for loc in _BR_LOCATIONS
-        if loc["state"] == geo_state and _normalise_place(loc["city"]) == geo_city
-    ]
-    if city_matches:
-        return random.choice(city_matches)
-
-    state_matches = [loc for loc in _BR_LOCATIONS if loc["state"] == geo_state]
-    candidates = state_matches or _BR_LOCATIONS
-
-    try:
-        point = (float(geo["lat"]), float(geo["lon"]))
-    except Exception:
-        return random.choice(candidates)
-
-    return min(
-        candidates,
-        key=lambda loc: _distance_km(point, _BR_CITY_COORDS.get(loc["city"], point)),
-    )
-
-
-def _generate_br_email(first_name: str, last_name: str) -> str:
-    return (
-        f"{first_name.lower()}.{last_name.lower()}"
-        f"{random.randint(10, 9999)}@{random.choice(_BR_EMAIL_DOMAINS)}"
-    )
-
-
-def generate_card(proxy_url: str | None = None, country: str | None = None) -> CardInfo:
-    # proxy_url is accepted for API compatibility; country selects a local
-    # profile for UI/schema consistency. These generated numbers are still only
-    # synthetic Luhn-valid candidates and are not a live success condition.
-    del proxy_url
-    selected_country = (country or "BR").upper()
-    if selected_country in {"US", "CA"}:
-        profile = _weighted_profile(_US_CARD_PROFILES)
-    elif selected_country in {"GB", "NL", "AU"}:
-        profile = _weighted_profile(_EU_CARD_PROFILES)
-    else:
-        profile = _weighted_card_profile()
-    prefixes = profile["prefixes"]
-    bin_prefix = random.choice(prefixes)  # type: ignore[arg-type]
-    length = int(profile["length"])
-    cvv_length = int(profile["cvv_length"])
-    middle_len = length - len(bin_prefix) - 1
-    partial = bin_prefix + "".join(str(random.randint(0, 9)) for _ in range(middle_len))
-    number = partial + str(_luhn_checksum(partial))
-
-    month = random.randint(1, 12)
-    year = time.localtime().tm_year + random.randint(2, 6)
-    expiry = f"{month:02d}/{year}"
-    lower = 10 ** (cvv_length - 1)
-    upper = (10 ** cvv_length) - 1
-    cvv = f"{random.randint(lower, upper)}"
-
-    return CardInfo(number=number, expiry=expiry, cvv=cvv, card_type="CREDIT")
+    # Surface a clear failure if both channels are exhausted.
+    raise RuntimeError("local and remote card generation both failed")
 
 
 def generate_cpf() -> str:
-    while True:
-        digits = [random.randint(0, 9) for _ in range(9)]
-        if not all(digit == digits[0] for digit in digits):
-            break
+    digits = [random.randint(0, 9) for _ in range(9)]
 
-    first_sum = sum(digit * (10 - idx) for idx, digit in enumerate(digits))
-    first = 0 if first_sum % 11 < 2 else 11 - (first_sum % 11)
-    second_base = [*digits, first]
-    second_sum = sum(digit * (11 - idx) for idx, digit in enumerate(second_base))
-    second = 0 if second_sum % 11 < 2 else 11 - (second_sum % 11)
-    cpf = "".join(str(digit) for digit in [*digits, first, second])
-    return f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
+    # first check digit
+    s = sum(d * w for d, w in zip(digits, range(10, 1, -1)))
+    r = s % 11
+    d1 = 0 if r < 2 else 11 - r
+    digits.append(d1)
+
+    # second check digit
+    s = sum(d * w for d, w in zip(digits, range(11, 1, -1)))
+    r = s % 11
+    d2 = 0 if r < 2 else 11 - r
+    digits.append(d2)
+
+    d = digits
+    return f"{d[0]}{d[1]}{d[2]}.{d[3]}{d[4]}{d[5]}.{d[6]}{d[7]}{d[8]}-{d[9]}{d[10]}"
+
+
+def generate_indonesia_nik(dob: str, female: bool = False) -> str:
+    """Generate a structurally valid 16-digit Indonesian NIK."""
+    parts = str(dob or "").split("/")
+    day = int(parts[0]) if len(parts) == 3 and parts[0].isdigit() else random.randint(1, 28)
+    month = int(parts[1]) if len(parts) == 3 and parts[1].isdigit() else random.randint(1, 12)
+    year = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else random.randint(1980, 2000)
+    encoded_day = day + 40 if female else day
+    # Jakarta/Bali/Yogyakarta regency prefixes followed by DDMMYY + serial.
+    district_code = random.choice(("317301", "317302", "317305", "347101", "517101"))
+    return f"{district_code}{encoded_day:02d}{month:02d}{year % 100:02d}{random.randint(1, 9999):04d}"
+
+
+def generate_taiwan_national_id() -> str:
+    """Generate a checksum-valid Taiwan national identification number."""
+    letter_codes = {
+        "A": 10, "B": 11, "C": 12, "D": 13, "E": 14, "F": 15, "G": 16,
+        "H": 17, "I": 34, "J": 18, "K": 19, "L": 20, "M": 21, "N": 22,
+        "O": 35, "P": 23, "Q": 24, "R": 25, "S": 26, "T": 27, "U": 28,
+        "V": 29, "W": 32, "X": 30, "Y": 31, "Z": 33,
+    }
+    letter = random.choice(tuple(letter_codes))
+    body = [random.choice((1, 2))] + [random.randint(0, 9) for _ in range(7)]
+    code = letter_codes[letter]
+    total = code // 10 + (code % 10) * 9
+    total += sum(value * weight for value, weight in zip(body, range(8, 0, -1)))
+    check = (-total) % 10
+    return letter + "".join(str(value) for value in body) + str(check)
+
+
+def generate_philippines_national_id() -> str:
+    """Generate a 16-digit PhilSys-style card number for the National ID field."""
+    return "".join(str(random.randint(0, 9)) for _ in range(16))
+
+
+def generate_thai_national_id() -> str:
+    """Generate a checksum-valid 13-digit Thai national ID number."""
+    digits = [random.randint(1, 8)] + [random.randint(0, 9) for _ in range(11)]
+    weighted_sum = sum(value * weight for value, weight in zip(digits, range(13, 1, -1)))
+    check_digit = (11 - (weighted_sum % 11)) % 10
+    return "".join(str(value) for value in digits) + str(check_digit)
+
+
+def generate_uae_emirates_id(dob: str) -> str:
+    """Generate a structurally consistent 15-digit Emirates ID-style number."""
+    parts = str(dob or "").split("/")
+    year = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else random.randint(1980, 2000)
+    base = "784" + f"{year:04d}" + f"{random.randint(0, 9_999_999):07d}"
+    total = 0
+    for index, char in enumerate(reversed(base)):
+        value = int(char)
+        if index % 2 == 0:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return base + str((-total) % 10)
 
 
 def generate_dob() -> str:
-    year = random.randint(1970, 2000)
+    day = random.randint(1, 28)
     month = random.randint(1, 12)
-    days_in_month = calendar.monthrange(year, month)[1]
-    day = random.randint(1, days_in_month)
+    year = random.randint(1980, 2000)
     return f"{day:02d}/{month:02d}/{year}"
 
 
 def generate_password() -> str:
     lower = string.ascii_lowercase
     upper = string.ascii_uppercase
-    required = "0123456789!@#$%&*"
-    chars = lower + upper + required
-    length = random.randint(8, 20)
-    pwd = [random.choice(required)]
-    while len(pwd) < length:
-        pwd.append(random.choice(chars))
+    digits_chars = string.digits
+    symbols = "!@#$%^"
+    pwd = [
+        random.choice(lower) for _ in range(6)
+    ] + [
+        random.choice(upper) for _ in range(3)
+    ] + [
+        random.choice(digits_chars) for _ in range(3)
+    ] + [
+        random.choice(symbols) for _ in range(2)
+    ]
     random.shuffle(pwd)
     return "".join(pwd)
 
 
-def generate_user(phone: str, country: str | None = None) -> UserInfo:
-    selected_country = (country or ("US" if phone.strip().lstrip("+").startswith("1") else "BR")).upper()
-    profile = get_country_profile(selected_country)
-    if selected_country != "BR":
-        first = random.choice(_US_FIRST_NAMES)
-        last = random.choice(_US_LAST_NAMES)
-        phone_country_code = f"+{profile.phone_country_code}"
-        phone_local = "".join(ch for ch in phone if ch.isdigit())
-        if phone_local.startswith(profile.phone_country_code) and len(phone_local) > 8:
-            phone_local = phone_local[len(profile.phone_country_code):]
-        email = f"{first.lower()}.{last.lower()}{random.randint(10, 9999)}@{random.choice(_US_EMAIL_DOMAINS)}"
+_SUPPORTED_COUNTRY_CATALOG = Path(__file__).resolve().parents[1] / "data" / "paypal_supported_countries.json"
+_SUPPORTED_CALLING_CODES: dict[str, str] | None = None
+
+
+def _supported_calling_codes() -> dict[str, str]:
+    global _SUPPORTED_CALLING_CODES
+    if _SUPPORTED_CALLING_CODES is not None:
+        return _SUPPORTED_CALLING_CODES
+    try:
+        import json
+        payload = json.loads(_SUPPORTED_COUNTRY_CATALOG.read_text(encoding="utf-8"))
+        rows = payload.get("countries") or []
+        _SUPPORTED_CALLING_CODES = {
+            str(item.get("code") or "").upper(): str(item.get("calling_code") or "")
+            for item in rows if isinstance(item, dict) and item.get("code")
+        }
+    except Exception:
+        _SUPPORTED_CALLING_CODES = {}
+    return _SUPPORTED_CALLING_CODES
+
+
+def generate_user(phone: str, country: str = "BR") -> UserInfo:
+    country = str(country or "BR").strip().upper()
+    profiles = {
+        "BR": (_BR_FIRST_NAMES, _BR_LAST_NAMES, "+55"),
+        "GB": (_GB_FIRST_NAMES, _GB_LAST_NAMES, "+44"),
+        "BA": (_BA_FIRST_NAMES, _BA_LAST_NAMES, "+387"),
+        "BH": (_BH_FIRST_NAMES, _BH_LAST_NAMES, "+973"),
+        "US": (_US_FIRST_NAMES, _US_LAST_NAMES, "+1"),
+        "JP": (_JP_FIRST_NAMES, _JP_LAST_NAMES, "+81"),
+        "TH": (_TH_FIRST_NAMES, _TH_LAST_NAMES, "+66"),
+        "ID": (_ID_FIRST_NAMES, _ID_LAST_NAMES, "+62"),
+        "PH": (_PH_FIRST_NAMES, _PH_LAST_NAMES, "+63"),
+        "TW": (_TW_FIRST_NAMES, _TW_LAST_NAMES, "+886"),
+        "MX": (_MX_FIRST_NAMES, _MX_LAST_NAMES, "+52"),
+        "AE": (_AE_FIRST_NAMES, _AE_LAST_NAMES, "+971"),
+        "AU": (_AU_FIRST_NAMES, _AU_LAST_NAMES, "+61"),
+        "CA": (_CA_FIRST_NAMES, _CA_LAST_NAMES, "+1"),
+    }
+    if country in profiles:
+        first_names, last_names, phone_country_code = profiles[country]
     else:
-        first = random.choice(_BR_FIRST_NAMES)
-        last = random.choice(_BR_LAST_NAMES)
-        phone_local = phone.lstrip("+")
-        phone_country_code = "+55"
-        if phone_local.startswith("55"):
-            phone_local = phone_local[2:]
-        email = _generate_br_email(first, last)
+        # Generic profile data is only a bootstrap for loading the selected
+        # country's signup app. Runtime metadata/KYC resolution runs before
+        # mutation submission and supplies the actual country requirements.
+        first_names, last_names = _US_FIRST_NAMES, _US_LAST_NAMES
+        phone_country_code = _supported_calling_codes().get(country) or "+"
+    first = random.choice(first_names)
+    last = random.choice(last_names)
+    dob = generate_dob()
+    identity_document = generate_cpf() if country == "BR" else ""
+    identity_document_type = ""
+    identity_document_number = ""
+    nationality = ""
+    if country == "ID":
+        female = first in {"Siti", "Ayu", "Dewi", "Putri", "Rina", "Nadia", "Intan", "Maya"}
+        identity_document_type = "NATIONAL_ID"
+        identity_document_number = generate_indonesia_nik(dob, female=female)
+        nationality = "ID"
+    elif country == "TH":
+        identity_document_type = "NATIONAL_ID"
+        identity_document_number = generate_thai_national_id()
+        nationality = "TH"
+    elif country == "PH":
+        identity_document_type = "NATIONAL_ID"
+        identity_document_number = generate_philippines_national_id()
+        nationality = "PH"
+    elif country == "TW":
+        identity_document_type = "NATIONAL_ID"
+        identity_document_number = generate_taiwan_national_id()
+        nationality = "TW"
+    elif country == "AE":
+        identity_document_type = "NATIONAL_ID"
+        identity_document_number = generate_uae_emirates_id(dob)
+        nationality = "AE"
+
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    calling_code = phone_country_code.lstrip("+")
+    # Some number providers return 00<country><number> or duplicate the
+    # country code (for example 387387...). Normalize that before runtime
+    # country-pattern validation and before sending the GraphQL phone object.
+    while digits.startswith("00"):
+        digits = digits[2:]
+    phone_local = digits[len(calling_code):] if calling_code and digits.startswith(calling_code) else digits
+    while calling_code and phone_local.startswith(calling_code) and len(phone_local) > len(calling_code) + 5:
+        phone_local = phone_local[len(calling_code):]
+    if phone_local.startswith("0") and phone_country_code not in {"", "+"}:
+        phone_local = phone_local[1:]
+    full_phone = f"{phone_country_code}{phone_local}"
 
     return UserInfo(
         first_name=first,
         last_name=last,
-        email=email,
-        phone=phone if phone.startswith("+") else f"{phone_country_code}{phone_local}",
+        email=generate_random_email(),
+        phone=full_phone,
         phone_local=phone_local,
         phone_country_code=phone_country_code,
         password=generate_password(),
-        dob=generate_dob(),
-        cpf=generate_cpf(),
+        dob=dob,
+        cpf=identity_document,
+        identity_document_type=identity_document_type,
+        identity_document_number=identity_document_number,
+        nationality=nationality,
     )
 
 
-def generate_address(proxy_url: str | None = None, country: str | None = None) -> BillingAddress:
-    selected_country = (country or "BR").upper()
-    if selected_country in _ADDRESS_BOOK:
-        entry = random.choice(_ADDRESS_BOOK[selected_country])
-        if len(entry) == 6:
-            street, house_number, line2, city, state, postal_code = entry
-        else:
-            street, line2, city, state, postal_code = entry
-            house_number = ""
-        return BillingAddress(
-            street=street,
-            house_number=house_number,
-            district=line2,
-            city=city,
-            state=state,
-            postal_code=postal_code,
-            country=selected_country,
-        )
-
-    location = _location_for_proxy(proxy_url)
-    state = location["state"]
-    city = location["city"]
-    postal_code = random.choice(location["ceps"])
-    street = random.choice(_BR_STREETS_BY_CITY.get(city, _BR_STREET_NAMES))
-    house_number = str(random.randint(12, 4899))
-    district = random.choice(_BR_DISTRICTS_BY_CITY.get(city, ["Centro"]))
+def generate_address(country: str = "BR") -> BillingAddress:
+    country = str(country or "BR").strip().upper()
+    # Known countries already have verified local pools. Avoid blocking every
+    # task on a public map service; runtime online resolution remains available
+    # for dynamic countries or when PayPal rejects a cached/local address.
+    if country == "BR":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_BR_ADDRESSES)
+    elif country == "DE":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_DE_ADDRESSES)
+    elif country == "GB":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_GB_ADDRESSES)
+    elif country == "BA":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_BA_ADDRESSES)
+    elif country == "BH":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_BH_ADDRESSES)
+    elif country == "US":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_US_ADDRESSES)
+    elif country == "JP":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_JP_ADDRESSES)
+    elif country == "TH":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_TH_ADDRESSES)
+    elif country == "ID":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_ID_ADDRESSES)
+    elif country == "PH":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_PH_ADDRESSES)
+    elif country == "TW":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_TW_ADDRESSES)
+    elif country == "MX":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_MX_ADDRESSES)
+    elif country == "AE":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_AE_ADDRESSES)
+    elif country == "AU":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_AU_ADDRESSES)
+    elif country == "CA":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_CA_ADDRESSES)
+    elif country == "NL":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_NL_ADDRESSES)
+    elif country == "RO":
+        street, house_number, district, city, state, postal_code = random.choice(_KNOWN_RO_ADDRESSES)
+    else:
+        # The runtime address resolver fills this after PayPal returns the
+        # selected country's live address schema. Keeping the requested country
+        # here is essential because Phase 2 uses it to open the correct form.
+        street = house_number = district = city = state = postal_code = ""
 
     return BillingAddress(
         street=street,
@@ -943,5 +1084,5 @@ def generate_address(proxy_url: str | None = None, country: str | None = None) -
         city=city,
         state=state,
         postal_code=postal_code,
-        country="BR",
+        country=country,
     )

@@ -1,50 +1,21 @@
 """Proxy helpers for outbound HTTP requests.
 
-Supports custom environment proxy lines in the form:
+Supports 1024proxy lines in the form:
     host:port:username:password
-and direct proxy URLs in the form:
-    http://username:password@host:port
-
-Both formats are converted to httpx-compatible proxy URLs.
+and converts them to httpx-compatible proxy URLs.
 """
 from __future__ import annotations
 
 import os
 import random
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote
 
+from config import PROXY_POOL, PROXY_ENABLED
+
 _TRUE_VALUES = {"1", "true", "yes", "on", "enable", "enabled", "y"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disable", "disabled", "n", ""}
-
-
-def _load_dotenv_value(name: str) -> str:
-    """Read a single value from local .env without an extra dependency."""
-    if os.getenv(name):
-        return os.getenv(name, "").strip()
-    roots = [Path.cwd(), Path(__file__).resolve().parents[1]]
-    seen: set[Path] = set()
-    for root in roots:
-        env_path = root / ".env"
-        if env_path in seen or not env_path.is_file():
-            continue
-        seen.add(env_path)
-        try:
-            for raw in env_path.read_text(encoding="utf-8").splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                if key.strip() != name:
-                    continue
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(name, value)
-                return value
-        except Exception:
-            continue
-    return ""
 
 
 @dataclass(frozen=True)
@@ -53,7 +24,7 @@ class ProxyEntry:
     port: int
     username: str
     password: str
-    scheme: str = "http"
+    scheme: str = "socks5h"
 
     @classmethod
     def parse(cls, raw: str) -> "ProxyEntry":
@@ -147,15 +118,16 @@ def _split_pool(raw: str) -> list[str]:
 
 
 def load_proxy_pool() -> list[str]:
-    env_url = _load_dotenv_value("PAYPAL_PROXY_URL")
+    """Load proxy lines from env first, then config.PROXY_POOL."""
+    env_url = os.getenv("PAYPAL_PROXY_URL", "").strip()
     if env_url:
         return [env_url]
 
-    env_pool = _split_pool(_load_dotenv_value("PAYPAL_PROXY_POOL"))
+    env_pool = _split_pool(os.getenv("PAYPAL_PROXY_POOL", ""))
     if env_pool:
         return env_pool
 
-    return []
+    return [line.strip() for line in PROXY_POOL if str(line).strip()]
 
 
 def choose_proxy_entry(pool: Iterable[str] | None = None, index: int | None = None) -> ProxyEntry:
@@ -171,26 +143,17 @@ def choose_proxy_entry(pool: Iterable[str] | None = None, index: int | None = No
     return ProxyEntry.parse(raw)
 
 
-def build_proxy_config(
-    enabled: bool | None = None,
-    index: int | None = None,
-    proxy_url: str | None = None,
-) -> ProxyConfig:
+def build_proxy_config(enabled: bool | None = None, index: int | None = None) -> ProxyConfig:
     """Return a selected proxy config.
 
     enabled=None means use config/env default.  If disabled, no proxy is selected.
-    proxy_url is a per-run custom/chained proxy URL or host:port:user:pass line.
-    When enabled is None, providing proxy_url implicitly enables the proxy.
     """
-    custom_proxy = (proxy_url or "").strip()
     if enabled is None:
         # Env can override the default at process startup without code changes.
-        should_enable = bool(custom_proxy) or parse_bool(_load_dotenv_value("PAYPAL_PROXY_ENABLED"), False)
+        should_enable = parse_bool(os.getenv("PAYPAL_PROXY_ENABLED"), PROXY_ENABLED)
     else:
         # Explicit CLI/API choices must win so the proxy can be toggled dynamically.
         should_enable = bool(enabled)
     if not should_enable:
         return ProxyConfig(enabled=False)
-    if custom_proxy:
-        return ProxyConfig(enabled=True, entry=ProxyEntry.parse(custom_proxy))
     return ProxyConfig(enabled=True, entry=choose_proxy_entry(index=index))

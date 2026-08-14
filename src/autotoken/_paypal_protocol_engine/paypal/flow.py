@@ -2,156 +2,121 @@
 
 Implements the complete protocol:
   Phase 0: DataDome verification + initial page load
+  Phase 1: Device fingerprint + Tealeaf + hCaptcha
   Phase 2: Create account (email submission → signup page)
   Phase 3: Fill signup form + submit (triggers 2FA SMS)
   Phase 4: OTP verification + final authorize mutation
 """
-import html as html_lib
-import json
-import os
-import random
 import re
-import string
-import subprocess
-import sys
-import tempfile
 import time
+import json
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Protocol, cast
-from uuid import uuid4
-
-from config import (
-    DATADOME_MODE,
-    DATADOME_ROXY_WAIT_SECONDS,
-    FINGERPRINT_SOURCE,
-    MTR_RUNTIME_MODE,
-    RISK_ROXY_WAIT_SECONDS,
-    RISK_SIGNALS_MODE,
-    USER_AGENT,
-)
 from loguru import logger
 
-from paypal.analytics import (
-    _DD_AUTHCHALLENGE_CONFIG,
-    _DD_HAGRID_CONFIG,
-    _DD_WEASLEY_CONFIG,
-    send_analytics_ts,
-    send_datadog_rum_action,
-    send_datadog_rum_view,
-    send_observability_emit,
-    send_weasley_log,
-)
-from paypal.country_profile import get_country_profile
-from paypal.fingerprint import (
-    build_fn_sync_data,
-    build_signup_fn_sync_data,
-    ensure_runtime_profile,
-    send_da_bootstrap,
-    send_device_fingerprint,
-    send_fraudnet_rdt,
-    send_identity_di_log,
-    send_signup_field_events,
-)
-from paypal.graphql import (
-    ADDRESS_AUTOCOMPLETE_FROM_POSTAL_CODE_QUERY,
-    APPROVE_GUEST_PAYMENT_WITH_CREDIT_CARD_MUTATION,
-    APPROVE_MEMBER_PAYMENT_MUTATION,
-    APPROVE_ONBOARD_PAYMENT_MUTATION,
-    AUTHORIZE_BILLING_MUTATION,
-    CHECKOUT_SESSION_DATA_QUERY,
-    CONFIRM_2FA_PHONE_MUTATION,
-    CREATE_MEMBER_ACCOUNT_MUTATION,
-    DEFERRED_FEATURE_QUERY,
-    GRIFFIN_METADATA_QUERY,
-    INITIATE_2FA_PHONE_MUTATION,
-    INSTALLMENT_OPTIONS_QUERY,
-    ONBOARD_GUEST_MUTATION,
-    SIGNUP_NEW_MEMBER_MUTATION,
-    SUPPORTED_FUNDING_SOURCES_QUERY,
-)
 from paypal.models import (
-    BillingAddress,
-    CardInfo,
     SessionState,
     UserInfo,
-    generate_address,
+    CardInfo,
+    BillingAddress,
     generate_card,
     generate_random_email,
     generate_user,
+    generate_address,
 )
-from paypal.mtr import (
-    MTR_RUNTIME_PYTHON_GENERATED,
-    ensure_mtr_config,
-    extract_dfp_script_url,
-    extract_mtr_config,
+from paypal.session import PayPalSession, sanitize_for_log
+from paypal.proxy import build_proxy_config, ProxyConfig
+from paypal.fingerprint import (
+    build_fn_sync_data,
+    build_signup_fn_sync_data,
+    send_device_fingerprint,
+    send_signup_field_events,
 )
-from paypal.proxy import ProxyConfig, build_proxy_config
-from paypal.proxy import _load_dotenv_value as _load_proxy_dotenv_value
-from paypal.session import (
-    CAPTCHA_FRONTEND_DISABLE_MODE,
-    CAPTCHA_MANUAL_REQUIRED_MODE,
-    CAPTCHA_SOLVED_CFCI,
-    PayPalAuthChallenge,
-    PayPalSession,
-    build_common_headers,
-    captcha_frontend_disable_enabled,
-    looks_like_paypal_authchallenge,
-    paypal_captcha_bypass_mode,
-    sanitize_for_log,
-    strict_browser_risk_enabled,
+from paypal.tealeaf import send_tealeaf_data
+from paypal.analytics import (
+    send_xo_logger,
+    send_analytics_ts,
+    send_observability_emit,
+    send_weasley_log,
 )
-from paypal.tealeaf import TealeafSession, send_tealeaf_data
-
-_PHASE1_BROWSER_REQUIRED_SIGNALS = (
-    "fraudnet_p1",
-    "fraudnet_p2",
-    "fraudnet_w",
-    "identity_di_log",
-    "datadog_rum",
-)
-
-_SIGNUP_CONTEXT_CREATE_MEMBER_REQUIRED_SIGNALS = (
-    "fraudnet_p1",
-    "fraudnet_p2",
-    "fraudnet_w",
-    "identity_di_log",
-    "datadog_rum",
-    "tealeaf",
+from paypal.runtime_country_resolver import augment_dynamic_kyc_from_errors
+from paypal.graphql import (
+    CHECKOUT_SESSION_DATA_QUERY,
+    BUYER_CONTEXT_QUERY,
+    GRIFFIN_METADATA_QUERY,
+    SUPPORTED_FUNDING_SOURCES_QUERY,
+    DEFERRED_FEATURE_QUERY,
+    INSTALLMENT_OPTIONS_QUERY,
+    ADDRESS_AUTOCOMPLETE_FROM_POSTAL_CODE_QUERY,
+    INITIATE_2FA_PHONE_MUTATION,
+    CONFIRM_2FA_PHONE_MUTATION,
+    SIGNUP_NEW_MEMBER_MUTATION,
+    AUTHORIZE_BILLING_MUTATION,
 )
 
-_MODXO_STATIC_ACTION_IDS = {
-    "fetch_device_fingerprint_action_id": "40119ea45de7135869f32892c6e0436cc9722b7775",
-    "show_create_account_action_id": "408cdbfcfb063642520b8dde73b124955e07000967",
-    "submit_public_credential_action_id": "403375d290e5845b191b7f22e6b940617e87334e8b",
-    "create_user_action_id": "60187d0e8cbc4131987e2c84c8e430dce698c2ace3",
+
+COUNTRY_PROFILES = {
+    "BR": {
+        "locale": "pt_BR", "lang": "pt", "phone_code": "+55",
+        "accept_language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    },
+    "GB": {
+        "locale": "en_GB", "lang": "en", "phone_code": "+44",
+        "accept_language": "en-GB,en;q=0.9,en-US;q=0.8",
+    },
+    "BA": {
+        "locale": "en_BA", "lang": "en", "phone_code": "+387",
+        "accept_language": "bs-BA,bs;q=0.9,hr;q=0.8,sr;q=0.7,en;q=0.6",
+    },
+    "BH": {
+        "locale": "en_US", "lang": "en", "phone_code": "+973",
+        "accept_language": "en-BH,en;q=0.9,ar-BH;q=0.8,ar;q=0.7",
+    },
+    "US": {
+        "locale": "en_US", "lang": "en", "phone_code": "+1",
+        "accept_language": "en-US,en;q=0.9",
+    },
+    "JP": {
+        "locale": "ja_JP", "lang": "ja", "phone_code": "+81",
+        "accept_language": "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
+    "TH": {
+        "locale": "th_TH", "lang": "th", "phone_code": "+66",
+        "accept_language": "th-TH,th;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
+    "ID": {
+        "locale": "id_ID", "lang": "id", "phone_code": "+62",
+        "accept_language": "id-ID,id;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
+    "PH": {
+        "locale": "en_PH", "lang": "en", "phone_code": "+63",
+        "accept_language": "en-PH,en;q=0.9,en-US;q=0.8",
+    },
+    "TW": {
+        "locale": "zh_TW", "lang": "zh", "phone_code": "+886",
+        "accept_language": "zh-TW,zh;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
+    "MX": {
+        "locale": "es_MX", "lang": "es", "phone_code": "+52",
+        "accept_language": "es-MX,es;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
+    "AE": {
+        "locale": "en_AE", "lang": "en", "phone_code": "+971",
+        "accept_language": "en-AE,en;q=0.9,en-US;q=0.8",
+    },
+    "AU": {
+        "locale": "en_AU", "lang": "en", "phone_code": "+61",
+        "accept_language": "en-AU,en;q=0.9,en-US;q=0.8",
+    },
+    "CA": {
+        "locale": "en_CA", "lang": "en", "phone_code": "+1",
+        "accept_language": "en-CA,en;q=0.9,fr-CA;q=0.8",
+    },
+    "NL": {
+        "locale": "nl_NL", "lang": "nl", "phone_code": "+31",
+        "accept_language": "nl-NL,nl;q=0.9,en-US;q=0.7,en;q=0.5",
+    },
 }
-
-
-class SmsActivationProtocol(Protocol):
-    activation_id: str
-    phone_number: str
-    provider_id: str
-    price: float
-    expires_at: float
-    reused: bool
-
-
-class SmsOtpProviderProtocol(Protocol):
-    max_attempts: int
-    wait_seconds: float
-
-    def reserve_number(self) -> SmsActivationProtocol: ...
-
-    def mark_sms_sent(self, activation: SmsActivationProtocol) -> None: ...
-
-    def wait_for_code(self, activation: SmsActivationProtocol, timeout_seconds: float | None = None) -> str | None: ...
-
-    def abandon(self, activation: SmsActivationProtocol, reason: str) -> None: ...
-
-    def register_confirmation_result(self, activation: SmsActivationProtocol, confirmed: bool) -> None: ...
 
 
 class PayPalFlow:
@@ -162,18 +127,9 @@ class PayPalFlow:
         card: CardInfo,
         address: BillingAddress,
         max_card_attempts: int = 5,
-        max_flow_attempts: int = 1,
-        max_authorize_attempts: int = 3,
-        card_retry_delay_seconds: float = 6.0,
-        card_retry_jitter_seconds: float = 2.0,
         proxy_enabled: bool | None = None,
         proxy_index: int | None = None,
         proxy_config: ProxyConfig | None = None,
-        fingerprint_source: str | None = None,
-        datadome_mode: str | None = None,
-        mtr_runtime: str | None = None,
-        risk_signals_mode: str | None = None,
-        sms_provider: SmsOtpProviderProtocol | None = None,
     ):
         self.ba_token = ba_token
         self.user = user
@@ -181,2408 +137,125 @@ class PayPalFlow:
             self.user.email = generate_random_email()
         self.card = card
         self.address = address
+        self.country = str(address.country or "BR").upper()
+        self.profile = COUNTRY_PROFILES.get(self.country)
+        if self.profile is None:
+            # Dynamic countries share the same protocol phases, while the
+            # selected country controls the runtime form/address/KYC schema.
+            # Use an English presentation locale and the catalog calling code;
+            # never inherit BR metadata for an unrelated country.
+            calling_code = "+"
+            try:
+                catalog_path = Path(__file__).resolve().parents[1] / "data" / "paypal_supported_countries.json"
+                catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+                row = next(
+                    (
+                        item for item in (catalog.get("countries") or [])
+                        if isinstance(item, dict)
+                        and str(item.get("code") or "").upper() == self.country
+                    ),
+                    {},
+                )
+                calling_code = str(row.get("calling_code") or "+")
+            except Exception as exc:
+                logger.warning("Dynamic country calling-code lookup failed for {}: {}", self.country, exc)
+            self.profile = {
+                "locale": "en_US",
+                "lang": "en",
+                "phone_code": calling_code,
+                "accept_language": "en-US,en;q=0.9",
+            }
+        self.locale = self.profile["locale"]
+        self.lang = self.profile["lang"]
+        self.phone_code = self.profile["phone_code"]
+        self.accept_language = self.profile["accept_language"]
         self.max_card_attempts = max(1, max_card_attempts)
-        self.max_flow_attempts = max(1, max_flow_attempts)
-        self.max_authorize_attempts = max(1, max_authorize_attempts)
-        self.card_retry_delay_seconds = max(0.0, float(card_retry_delay_seconds))
-        self.card_retry_jitter_seconds = max(0.0, float(card_retry_jitter_seconds))
         self.proxy_config: ProxyConfig = proxy_config or build_proxy_config(
             enabled=proxy_enabled,
             index=proxy_index,
         )
-        self.fingerprint_source = fingerprint_source
-        self.datadome_mode = datadome_mode
-        self.mtr_runtime = mtr_runtime
-        self.risk_signals_mode = risk_signals_mode
-        self.sms_provider = sms_provider
-        self._requested_risk_signals_mode = self._risk_signals_mode_raw()
-        self._roxy_runtime_disabled_reason = ""
-        keep_roxy_browser = self._roxy_runtime_requested()
         self.state = SessionState(ba_token=ba_token)
-        ensure_runtime_profile(
-            self.state,
-            source=self.fingerprint_source,
-            roxy_proxy_url=self.proxy_config.url or "",
-            keep_roxy_browser=keep_roxy_browser,
-        )
-        self._apply_country_profile_to_runtime_profile()
+        # Tracks whether the current address was selected through PayPal's own
+        # postcode resolver.  The signup payload must not claim an address is
+        # both autocomplete-selected and manually edited at the same time.
+        self._address_normalized_by_paypal = False
         self.session = PayPalSession(
             self.state,
             proxy_url=self.proxy_config.url,
             proxy_label=self.proxy_config.label,
-        )
-        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
-        self._used_partial_signup_token = False
-        self._billing_address_autocomplete_succeeded = False
-        self._roxy_skipped_telemetry_families: set[str] = set()
-        self._signup_billing_address_prepared = False
-        self._headless_session: Any | None = None
-        self._headless_optimized_session: Any | None = None
-        self._datadome_browser_document: dict[str, Any] = {}
-
-        if keep_roxy_browser and self._fingerprint_runtime_requested_roxy():
-            profile_source = str(
-                (self.state.browser_profile or {}).get("fingerprint_source")
-                or getattr(self.state, "fingerprint_source", "")
-                or ""
-            ).lower()
-            roxy_browser = getattr(self.state, "roxy_browser", None) or {}
-            if profile_source != "roxy" and not roxy_browser.get("cdp_info"):
-                self._disable_roxy_runtime(
-                    "Roxy fingerprint fell back to program random; Roxy Local API/runtime is unavailable."
-                )
-
-    @staticmethod
-    def _raw_mode_value(explicit: str | None, env_names: tuple[str, ...], default: object) -> str:
-        for value in (explicit, *(_load_proxy_dotenv_value(name) for name in env_names), str(default or "")):
-            text = str(value or "").strip()
-            if text:
-                return text
-        return ""
-
-    @staticmethod
-    def _mode_requests_roxy(raw: str) -> bool:
-        return (raw or "").strip().lower().replace("-", "_") in {
-            "roxy",
-            "browser",
-            "real_browser",
-            "chrome",
-            "chromium",
-            "auto",
-            "prefer_roxy",
-            "roxy_auto",
-        }
-
-    @staticmethod
-    def _roxy_runtime_fallback_enabled() -> bool:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_ROXY_RUNTIME_FALLBACK")
-            or _load_proxy_dotenv_value("PAYPAL_ROXY_FALLBACK")
-            or "1"
-        ).strip().lower()
-        return raw not in {"0", "false", "no", "off", "strict", "disabled", "disable"}
-
-    @staticmethod
-    def _safe_error_text(error: object) -> str:
-        return str(sanitize_for_log({"error": str(error or "")})["error"])
-
-    def _fingerprint_runtime_requested_roxy(self) -> bool:
-        raw = self._raw_mode_value(
-            self.fingerprint_source,
-            ("PAYPAL_FINGERPRINT_SOURCE", "FINGERPRINT_SOURCE"),
-            "",
-        )
-        return self._mode_requests_roxy(raw)
-
-    def _disable_roxy_runtime(self, reason: object) -> None:
-        """Stop retrying Roxy during this flow and fall back to protocol paths."""
-        if not self._roxy_runtime_fallback_enabled():
-            return
-        reason_text = self._safe_error_text(reason or "Roxy runtime unavailable")
-        if not self._roxy_runtime_disabled_reason:
-            logger.warning(
-                "Roxy runtime unavailable; falling back to protocol/python runtime for this job: {}",
-                reason_text,
-            )
-        else:
-            logger.debug("Roxy runtime remains disabled for this job: {}", reason_text)
-        self._roxy_runtime_disabled_reason = reason_text
-        try:
-            self.state.roxy_runtime_disabled_reason = reason_text
-        except Exception:
-            pass
-        if self._datadome_mode_raw() == "roxy":
-            self.datadome_mode = "protocol"
-        if self._risk_signals_mode_raw() == "roxy":
-            self.risk_signals_mode = "protocol"
-        if self._mtr_runtime_raw() == "roxy":
-            self.mtr_runtime = "python_generated"
-
-    def _roxy_runtime_requested(self) -> bool:
-        fingerprint_source = self._raw_mode_value(
-            self.fingerprint_source,
-            ("PAYPAL_FINGERPRINT_SOURCE", "FINGERPRINT_SOURCE"),
-            FINGERPRINT_SOURCE,
-        )
-        datadome_mode = self._raw_mode_value(
-            self.datadome_mode,
-            ("PAYPAL_DATADOME_MODE", "DATADOME_MODE"),
-            DATADOME_MODE,
-        )
-        mtr_runtime = self._raw_mode_value(
-            self.mtr_runtime,
-            ("PAYPAL_MTR_RUNTIME", "MTR_RUNTIME"),
-            MTR_RUNTIME_MODE,
-        )
-        risk_mode = self._raw_mode_value(
-            self.risk_signals_mode,
-            ("PAYPAL_RISK_SIGNALS_MODE", "RISK_SIGNALS_MODE"),
-            RISK_SIGNALS_MODE,
-        )
-        return any(
-            self._mode_requests_roxy(value)
-            for value in (fingerprint_source, datadome_mode, mtr_runtime, risk_mode)
+            country=self.country,
+            locale=self.locale,
         )
 
     def close(self):
-        self._cleanup_headless_session()
-        self._cleanup_roxy_browser()
         self.session.close()
 
-    def _browser_headers(self, *, accept: str = "*/*", content_type: str | None = None) -> dict[str, str]:
-        headers = build_common_headers(self.state)
-        headers["Accept"] = accept
-        if content_type:
-            headers["Content-Type"] = content_type
-        return headers
-
-    def _profile_user_agent(self) -> str:
-        return str((self.state.browser_profile or {}).get("user_agent") or USER_AGENT)
-
-    def _apply_country_profile_to_runtime_profile(self) -> None:
-        """Keep browser/runtime profile aligned with the selected checkout country."""
-        country_profile = get_country_profile(self.address.country)
-        browser_profile = dict(self.state.browser_profile or {})
-        browser_profile["country"] = country_profile.country
-        browser_profile["locale"] = country_profile.locale
-        browser_profile["language"] = country_profile.language
-        browser_profile["timezone"] = country_profile.timezone
-        browser_profile["timezone_offset_minutes"] = country_profile.timezone_offset_minutes
-        self.state.browser_profile = browser_profile
-
-    def _profile_country(self) -> str:
-        return get_country_profile(self.address.country).country
-
-    def _profile_locale(self) -> str:
-        profile = get_country_profile(self.address.country)
-        browser_profile = self.state.browser_profile or {}
-        if str(browser_profile.get("country") or "").upper() == profile.country:
-            return str(browser_profile.get("locale") or profile.locale)
-        return profile.locale
-
-    def _profile_lang(self) -> str:
-        profile = get_country_profile(self.address.country)
-        browser_profile = self.state.browser_profile or {}
-        locale = self._profile_locale()
-        if str(browser_profile.get("country") or "").upper() == profile.country:
-            return str(browser_profile.get("language") or locale.replace("_", "-") or profile.language)
-        return profile.language
-
-    def _content_country(self) -> str:
-        # SignUpNewMember sends `country` from the billing/account country.
-        # The compliance identifier in the browser capture follows that same
-        # country (for BR it sends BR:pt:<manifest hash>:compliance.signupTerms),
-        # even when geolocation/proxy fields in __INITIAL_DATA__ differ.
-        return str(self.address.country or self._profile_country() or "BR").upper()
-
-    def _content_lang(self) -> str:
-        locale = self._profile_locale()
-        country = self._content_country()
-        for sep in ("_", "-"):
-            if sep in locale:
-                language, locale_country = locale.split(sep, 1)
-                if locale_country.upper() == country:
-                    return (language or "pt").lower()
-                break
-        if country == "BR":
-            return "pt"
-        if "_" in locale:
-            return locale.split("_", 1)[0].lower()
-        if "-" in locale:
-            return locale.split("-", 1)[0].lower()
-        return (locale or "pt").lower()
-
-    def _short_content_identifier(self) -> str:
-        return f"{self._content_country()}:{self._content_lang()}:compliance.signupTerms"
-
-    @staticmethod
-    def _is_short_content_identifier_value(value: str) -> bool:
-        """True when contentIdentifier has no deployment content hash."""
-        return bool(
-            re.fullmatch(
-                r"[A-Z]{2}:[a-z]{2}:compliance\.signupTerms",
-                (value or "").strip(),
-                re.I,
-            )
-        )
-
-    @staticmethod
-    def _content_identifier_hash(value: str) -> str:
-        """Return the hash embedded in a full signupTerms contentIdentifier."""
-        match = re.fullmatch(
-            r"[A-Z]{2}:[a-z]{2}:([A-Za-z0-9_-]{8,128}):compliance\.signupTerms",
-            (value or "").strip(),
-            re.I,
-        )
-        return match.group(1) if match else ""
-
-    def _content_identifier_from_hash(self, content_hash: str | None = None) -> str:
-        content_hash = (content_hash or self.state.content_hash or "").strip()
-        if content_hash:
-            return (
-                f"{self._content_country()}:{self._content_lang()}:"
-                f"{content_hash}:compliance.signupTerms"
-            )
-        return self._short_content_identifier()
-
-    def _resolved_content_identifier(self) -> str:
-        """Prefer a full contentIdentifier and synthesize one from contentHash."""
-        current = (self.state.content_identifier or "").strip()
-        if current and not self._is_short_content_identifier_value(current):
-            embedded_hash = self._content_identifier_hash(current)
-            if embedded_hash and not self.state.content_hash:
-                self.state.content_hash = embedded_hash
-            return current
-        if self.state.content_hash:
-            resolved = self._content_identifier_from_hash()
-            self.state.content_identifier = resolved
-            return resolved
-        return current or self._short_content_identifier()
-
-    def _log_profile_consistency(self) -> None:
-        profile = self.state.browser_profile or {}
-        screen = self.state.screen or {}
-        viewport = self.state.viewport or {}
-        logger.info(
-            "Browser profile: source={} country={} locale={} language={} timezone={} offset={} ua={} screen={}x{} viewport={}x{} cmid={}",
-            profile.get("fingerprint_source") or getattr(self.state, "fingerprint_source", "") or "random",
-            profile.get("country"),
-            profile.get("locale"),
-            profile.get("language"),
-            profile.get("timezone"),
-            profile.get("timezone_offset_minutes"),
-            str(profile.get("user_agent") or USER_AGENT)[:80],
-            screen.get("width"),
-            screen.get("height"),
-            viewport.get("width"),
-            viewport.get("height"),
-            sanitize_for_log({"token": self.state.paypal_client_metadata_id})["token"],
-        )
-
-    @staticmethod
-    def _extract_datadome_clientid(html: str) -> str:
-        if "datadome" not in (html or "").lower():
-            return ""
-        # PayPal's DataDome bootstrap stores the initial client id in a local
-        # `c` variable, then replaces it from the challenge iframe on
-        # eventType=passed.  Capture that value so PayPalSession can mirror the
-        # browser's x-datadome-clientid request hook until the cookie exists.
-        for pattern in (
-            r"\bvar\s+c\s*=\s*['\"]([^'\"]{40,})['\"]",
-            r"\bc\s*=\s*['\"]([^'\"]{40,})['\"][^<]{0,400}datadome",
-        ):
-            m = re.search(pattern, html or "", re.I | re.S)
-            if m:
-                return html_lib.unescape(m.group(1))
-        return ""
-
-    def _capture_datadome_clientid(self, html: str) -> None:
-        if self._datadome_mode() == "off":
-            return
-        client_id = self._extract_datadome_clientid(html)
-        if client_id and client_id != getattr(self.state, "datadome_clientid", ""):
-            self.state.datadome_clientid = client_id
-            logger.info("DataDome client id captured for request header replay len={}", len(client_id))
-
-    def _datadome_mode_raw(self) -> str:
-        raw = (
-            self.datadome_mode
-            or _load_proxy_dotenv_value("PAYPAL_DATADOME_MODE")
-            or _load_proxy_dotenv_value("DATADOME_MODE")
-            or str(DATADOME_MODE or "")
-        ).strip().lower().replace("-", "_")
-        aliases = {
-            "": "protocol",
-            "protocol": "protocol",
-            "edge": "protocol",
-            "header": "protocol",
-            "headers": "protocol",
-            "clientid": "protocol",
-            "roxy": "roxy",
-            "browser": "roxy",
-            "real_browser": "roxy",
-            "headless": "headless",
-            "headless_optimized": "headless",
-            "optimized_headless": "headless",
-            "local_headless": "headless",
-            "playwright": "headless",
-            "local_playwright": "headless",
-            "prefer_headless": "headless",
-            "auto": "auto",
-            "off": "off",
-            "none": "off",
-            "disabled": "off",
-            "disable": "off",
-            "0": "off",
-        }
-        return aliases.get(raw, "protocol")
-
-    def _datadome_mode(self) -> str:
-        mode = self._datadome_mode_raw()
-        if mode in {"roxy", "auto"} and self._roxy_runtime_disabled_reason:
-            return "protocol"
-        return mode
-
-    @staticmethod
-    def _headless_runtime_fallback_enabled() -> bool:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_HEADLESS_RUNTIME_FALLBACK")
-            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_FALLBACK")
-            or "1"
-        ).strip().lower()
-        return raw not in {"0", "false", "no", "off", "strict", "disabled", "disable"}
-
-    @staticmethod
-    def _datadome_phase0_preflight_enabled() -> bool:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_DATADOME_PHASE0_PREFLIGHT")
-            or _load_proxy_dotenv_value("PAYPAL_DATADOME_PREFLIGHT")
-            or _load_proxy_dotenv_value("PAYPAL_HEADLESS_DATADOME_PREFLIGHT")
-            or ""
-        ).strip().lower()
-        return raw in {"1", "true", "yes", "on", "enable", "enabled"}
-
-    @staticmethod
-    def _headless_datadome_roxy_fallback_enabled() -> bool:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_HEADLESS_DATADOME_ROXY_FALLBACK")
-            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_DATADOME_ROXY_FALLBACK")
-            or "0"
-        ).strip().lower()
-        if raw in {"0", "false", "no", "off", "strict", "disabled", "disable"}:
-            return False
-        try:
-            from paypal.roxy_fingerprint import configured_roxy_api_key
-
-            return bool(configured_roxy_api_key())
-        except Exception:
-            return False
-
-    @staticmethod
-    def _headless_signup_context_roxy_fallback_enabled() -> bool:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_HEADLESS_SIGNUP_CONTEXT_ROXY_FALLBACK")
-            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_SIGNUP_CONTEXT_ROXY_FALLBACK")
-            or _load_proxy_dotenv_value("PAYPAL_HEADLESS_DATADOME_ROXY_FALLBACK")
-            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_DATADOME_ROXY_FALLBACK")
-            or "auto"
-        ).strip().lower()
-        if raw in {"0", "false", "no", "off", "strict", "disabled", "disable"}:
-            return False
-        try:
-            from paypal.roxy_fingerprint import configured_roxy_api_key
-
-            return bool(configured_roxy_api_key())
-        except Exception:
-            return False
-
-    @staticmethod
-    def _datadome_roxy_wait_seconds() -> float:
-        raw = _load_proxy_dotenv_value("PAYPAL_DATADOME_ROXY_WAIT_SECONDS")
-        if raw:
-            try:
-                return max(2.0, min(float(raw), 60.0))
-            except ValueError:
-                pass
-        return max(2.0, min(float(DATADOME_ROXY_WAIT_SECONDS), 60.0))
-
-    @staticmethod
-    def _datadome_headless_wait_seconds() -> float:
-        raw = _load_proxy_dotenv_value("PAYPAL_DATADOME_HEADLESS_WAIT_SECONDS")
-        if raw:
-            try:
-                return max(2.0, min(float(raw), 60.0))
-            except ValueError:
-                pass
-        return PayPalFlow._datadome_roxy_wait_seconds()
-
-    def _ensure_roxy_browser_for_datadome(self) -> dict[str, object]:
-        roxy_browser = getattr(self.state, "roxy_browser", None) or {}
-        from paypal.roxy_fingerprint import (
-            capture_roxy_runtime_profile,
-            close_roxy_browser,
-            roxy_browser_matches_proxy,
-        )
-
-        if roxy_browser.get("cdp_info") and roxy_browser_matches_proxy(roxy_browser, self.proxy_config.url):
-            return roxy_browser
-        if roxy_browser.get("cdp_info"):
-            logger.info("Existing Roxy browser proxy does not match current flow proxy; reopening with current proxy.")
-            try:
-                close_roxy_browser(roxy_browser, delete=True)
-            except Exception as exc:
-                logger.debug("Roxy mismatched-proxy browser cleanup failed: {}", exc)
-            self.state.roxy_browser = {}
-
-        logger.info("Opening Roxy browser for DataDome runtime with proxy: {}", self.proxy_config.label)
-        runtime = capture_roxy_runtime_profile(
-            keep_browser=True,
-            proxy_url=self.proxy_config.url or "",
-        )
-        if not self.state.browser_profile:
-            self.state.browser_profile = runtime.get("browser_profile", {})
-            self.state.screen = runtime.get("screen", {})
-            self.state.viewport = runtime.get("viewport", {})
-            self.state.device_fingerprint = runtime.get("device_fingerprint", {})
-        self.state.roxy_browser = runtime.get("roxy_browser", {})
-        return self.state.roxy_browser
-
-    @staticmethod
-    def _browser_document_from_datadome_result(result: dict[str, Any]) -> dict[str, Any]:
-        if not result.get("ok"):
-            return {}
-        html = str(result.get("html") or "")
-        if not html:
-            return {}
-        try:
-            status = int(result.get("status") or 0)
-        except Exception:
-            status = 0
-        if status >= 400:
-            return {}
-        if looks_like_paypal_authchallenge(html):
-            return {}
-        return {
-            "status_code": status or 200,
-            "url": str(result.get("url") or ""),
-            "text": html,
-        }
-
-    @staticmethod
-    def _response_from_browser_document(document: dict[str, Any]) -> Any | None:
-        html = str(document.get("text") or "")
-        if not html:
-            return None
-        return SimpleNamespace(
-            status_code=int(document.get("status_code") or 200),
-            text=html,
-            url=str(document.get("url") or ""),
-            headers={},
-            content=html.encode("utf-8", "ignore"),
-        )
-
-    @staticmethod
-    def _signup_context_seed_html_looks_usable(html: str) -> bool:
-        lower = (html or "").lower()
-        if not lower.lstrip().startswith("<"):
-            return False
-        if not any(marker in lower for marker in ("checkoutweb/signup", "weasley", "signupnewmember", "compliance.signupterms")):
-            return False
-        active_datadome_block_markers = (
-            "device_check_redirect_to_slider",
-            "block_page_loaded",
-            "datadome captcha",
-            "ddc-captcha",
-            "edge_bot_protection",
-        )
-        return not any(marker in lower for marker in active_datadome_block_markers)
-
-    def _apply_datadome_browser_result(self, result: dict[str, Any], *, reason: str, runtime: str) -> bool:
-        solved = bool(result.get("ok"))
-        document = self._browser_document_from_datadome_result(result)
-        if document:
-            self._datadome_browser_document = document
-        self.state.datadome_browser_result = {
-            "ok": solved,
-            "runtime": runtime,
-            "status": result.get("status"),
-            "url": result.get("url"),
-            "reason": reason,
-            "cookie_count": len(result.get("cookies") or []),
-            "datadome_present": bool(result.get("datadome")),
-            "clientid_present": bool(result.get("clientid")),
-            "blocked_by_datadome": bool(result.get("blocked_by_datadome")),
-            "intercept": result.get("intercept") or {},
-            "debug_log_path": result.get("debug_log_path") or "",
-        }
-        if result.get("clientid"):
-            self.state.datadome_clientid = str(result["clientid"])
-        if solved and result.get("cookies"):
-            self.session.import_browser_cookies(result["cookies"])
-        if solved and result.get("datadome"):
-            self.state.datadome_cookie = str(result["datadome"])
-            self.state.datadome_browser_solved = True
-            logger.info(
-                "DataDome solved through {} browser reason={} cookies={} datadome_len={}",
-                runtime,
-                reason,
-                len(result.get("cookies") or []),
-                len(str(result.get("datadome") or "")),
-            )
-            return True
-        logger.warning(
-            "{} DataDome run did not clear challenge reason={} status={} url={} datadome_present={} blocked_by_datadome={}",
-            runtime,
-            reason,
-            result.get("status"),
-            result.get("url"),
-            bool(result.get("datadome")),
-            bool(result.get("blocked_by_datadome")),
-        )
-        return False
-
-    def _solve_datadome_with_roxy_browser(self, url: str, *, reason: str) -> bool:
-        mode = self._datadome_mode()
-        if mode in {"protocol", "off"}:
-            return False
-        try:
-            if mode == "headless":
-                if not self._headless_runtime_enabled():
-                    logger.warning("Local headless runtime is disabled; falling back to protocol mode for this job.")
-                    self.datadome_mode = "protocol"
-                    return False
-                headless_session = self._get_headless_session()
-                result = headless_session.solve_datadome(
-                    url,
-                    wait_seconds=self._datadome_headless_wait_seconds(),
-                )
-                solved = self._apply_datadome_browser_result(result, reason=reason, runtime="headless")
-                if not solved and self._headless_datadome_roxy_fallback_enabled():
-                    logger.warning(
-                        "Local headless DataDome remained challenged; retrying the same check through Roxy browser runtime."
-                    )
-                    try:
-                        from paypal.roxy_fingerprint import solve_datadome_with_roxy
-
-                        roxy_browser = self._ensure_roxy_browser_for_datadome()
-                        roxy_result = solve_datadome_with_roxy(
-                            roxy_browser,
-                            url,
-                            cookies=self.session.export_cookies_for_browser(),
-                            wait_seconds=self._datadome_roxy_wait_seconds(),
-                        )
-                        roxy_solved = self._apply_datadome_browser_result(
-                            roxy_result,
-                            reason=f"{reason}_roxy_fallback",
-                            runtime="roxy",
-                        )
-                        if roxy_solved:
-                            return True
-                    except Exception as roxy_exc:
-                        logger.warning(
-                            "Roxy fallback after local headless DataDome challenge failed: {}",
-                            self._safe_error_text(roxy_exc),
-                        )
-                if not solved and self._headless_runtime_fallback_enabled():
-                    self.datadome_mode = "protocol"
-                    self._cleanup_headless_session()
-                    logger.warning(
-                        "Local headless DataDome did not clear challenge; falling back to protocol mode for this job."
-                    )
-                return solved
-            from paypal.roxy_fingerprint import solve_datadome_with_roxy
-
-            roxy_browser = self._ensure_roxy_browser_for_datadome()
-            result = solve_datadome_with_roxy(
-                roxy_browser,
-                url,
-                cookies=self.session.export_cookies_for_browser(),
-                wait_seconds=self._datadome_roxy_wait_seconds(),
-            )
-            return self._apply_datadome_browser_result(result, reason=reason, runtime="roxy")
-        except Exception as exc:
-            self.state.datadome_browser_result = {
-                "ok": False,
-                "runtime": mode,
-                "reason": reason,
-                "error": str(exc),
-            }
-            if mode == "headless":
-                if not self._headless_runtime_fallback_enabled():
-                    raise
-                self.datadome_mode = "protocol"
-                self._cleanup_headless_session()
-                logger.warning("Local headless DataDome failed; falling back to protocol method: {}", exc)
-                return False
-            if mode == "roxy" and not self._roxy_runtime_fallback_enabled():
-                raise
-            self._disable_roxy_runtime(exc)
-            logger.warning("Roxy DataDome failed; falling back to protocol method: {}", exc)
-            return False
-
-    def _mtr_runtime_raw(self) -> str:
-        raw = (
-            self.mtr_runtime
-            or _load_proxy_dotenv_value("PAYPAL_MTR_RUNTIME")
-            or _load_proxy_dotenv_value("MTR_RUNTIME")
-            or str(MTR_RUNTIME_MODE or "")
-        ).strip().lower().replace("-", "_")
-        aliases = {
-            "": "python_generated",
-            "protocol": "python_generated",
-            "python": "python_generated",
-            "python_generated": "python_generated",
-            "synthetic": "python_generated",
-            "template": "python_generated",
-            "templates": "python_generated",
-            "roxy": "roxy",
-            "browser": "roxy",
-            "real_browser": "roxy",
-            "chrome": "roxy",
-            "chromium": "roxy",
-            "headless": "headless",
-            "headless_optimized": "headless",
-            "optimized_headless": "headless",
-            "local_headless": "headless",
-            "playwright": "headless",
-            "local_playwright": "headless",
-            "prefer_headless": "headless",
-            "auto": "auto",
-            "prefer_roxy": "auto",
-            "off": "off",
-            "none": "off",
-            "disabled": "off",
-            "disable": "off",
-            "0": "off",
-        }
-        return aliases.get(raw, "python_generated")
-
-    def _mtr_runtime_mode(self) -> str:
-        mode = self._mtr_runtime_raw()
-        if mode in {"roxy", "auto"} and self._roxy_runtime_disabled_reason:
-            return "python_generated"
-        return mode
-
-    def _risk_signals_mode_raw(self) -> str:
-        raw = (
-            self.risk_signals_mode
-            or _load_proxy_dotenv_value("PAYPAL_RISK_SIGNALS_MODE")
-            or _load_proxy_dotenv_value("RISK_SIGNALS_MODE")
-            or str(RISK_SIGNALS_MODE or "")
-        ).strip().lower().replace("-", "_")
-        return self._normalize_risk_signals_mode(raw)
-
-    @staticmethod
-    def _normalize_risk_signals_mode(raw: str) -> str:
-        raw = (raw or "").strip().lower().replace("-", "_")
-        aliases = {
-            "": "protocol",
-            "protocol": "protocol",
-            "python": "protocol",
-            "synthetic": "protocol",
-            "template": "protocol",
-            "templates": "protocol",
-            "roxy": "roxy",
-            "browser": "roxy",
-            "real_browser": "roxy",
-            "chrome": "roxy",
-            "chromium": "roxy",
-            "headless": "headless",
-            "headless_optimized": "headless",
-            "optimized_headless": "headless",
-            "local_headless": "headless",
-            "playwright": "headless",
-            "local_playwright": "headless",
-            "prefer_headless": "headless",
-            "auto": "auto",
-            "prefer_roxy": "auto",
-            "off": "off",
-            "none": "off",
-            "disabled": "off",
-            "disable": "off",
-            "0": "off",
-        }
-        return aliases.get(raw, "protocol")
-
-    def _risk_signals_mode(self) -> str:
-        mode = self._risk_signals_mode_raw()
-        if mode in {"roxy", "auto"} and self._roxy_runtime_disabled_reason:
-            return "protocol"
-        return mode
-
-    def _signup_context_risk_mode(self) -> str:
-        current_mode = self._risk_signals_mode()
-        requested_mode = str(getattr(self, "_requested_risk_signals_mode", "") or "")
-        runtime_source = str(getattr(self.state, "risk_signals_runtime_source", "") or "")
-        if (
-            current_mode in {"roxy", "auto"}
-            or requested_mode in {"roxy", "auto"}
-            or runtime_source == "roxy"
-        ) and not self._roxy_runtime_disabled_reason:
-            return "roxy"
-        return "headless"
-
-    @staticmethod
-    def _risk_roxy_wait_seconds() -> float:
-        raw = _load_proxy_dotenv_value("PAYPAL_RISK_ROXY_WAIT_SECONDS")
-        if raw:
-            try:
-                return max(3.0, min(float(raw), 90.0))
-            except ValueError:
-                pass
-        return max(3.0, min(float(RISK_ROXY_WAIT_SECONDS), 90.0))
-
-    @staticmethod
-    def _risk_headless_wait_seconds() -> float:
-        raw = _load_proxy_dotenv_value("PAYPAL_RISK_HEADLESS_WAIT_SECONDS")
-        if raw:
-            try:
-                return max(3.0, min(float(raw), 90.0))
-            except ValueError:
-                pass
-        return PayPalFlow._risk_roxy_wait_seconds()
-
-    @staticmethod
-    def _roxy_datadog_runtime_ready_from_result(result: dict[str, Any]) -> bool:
-        runtime = result.get("datadog_runtime") if isinstance(result.get("datadog_runtime"), dict) else {}
-        if not isinstance(runtime, dict) or runtime.get("error"):
-            return False
-        if not (runtime.get("present") or runtime.get("hasDDRumGlobal")):
-            return False
-        keys = {str(item) for item in (runtime.get("keys") or [])}
-        has_operational_api = bool(
-            runtime.get("has_add_action")
-            or "addAction" in keys
-            or "startAction" in keys
-            or "startResource" in keys
-        )
-        has_context_api = bool(
-            "getInitConfiguration" in keys
-            or "getInternalContext" in keys
-            or runtime.get("hasInternalContext")
-            or runtime.get("initConfiguration")
-        )
-        return bool(has_operational_api and has_context_api)
-
-    @staticmethod
-    def _phase1_browser_required_missing_from_result(result: dict[str, Any]) -> list[str]:
-        raw_counts = result.get("counts")
-        counts = cast(dict[str, object], raw_counts) if isinstance(raw_counts, dict) else {}
-        raw_observed = result.get("observed")
-        observed_items = cast(list[object], raw_observed) if isinstance(raw_observed, list) else []
-        observed = {str(item) for item in observed_items if str(item)}
-        missing: list[str] = []
-        for family in _PHASE1_BROWSER_REQUIRED_SIGNALS:
-            raw_count = counts.get(family)
-            try:
-                count = int(raw_count) if isinstance(raw_count, (str, int, float)) else 0
-            except Exception:
-                count = 0
-            if count <= 0 and family not in observed:
-                missing.append(family)
-        return missing
-
-    @staticmethod
-    def _mark_phase1_browser_required_result(result: dict[str, Any]) -> list[str]:
-        missing = PayPalFlow._phase1_browser_required_missing_from_result(result)
-        result["required_signals"] = list(_PHASE1_BROWSER_REQUIRED_SIGNALS)
-        if missing:
-            raw_missing = result.get("missing")
-            missing_items = cast(list[object], raw_missing) if isinstance(raw_missing, list) else []
-            existing_missing = [str(item) for item in missing_items if str(item)]
-            merged_missing = list(dict.fromkeys([*existing_missing, *missing]))
-            result["missing"] = merged_missing
-            result["required_missing"] = list(missing)
-            result["ok"] = False
-        else:
-            raw_missing = result.get("missing")
-            missing_items = cast(list[object], raw_missing) if isinstance(raw_missing, list) else []
-            result["missing"] = [
-                str(item)
-                for item in missing_items
-                if str(item) and str(item) not in _PHASE1_BROWSER_REQUIRED_SIGNALS
-            ]
-            result["required_missing"] = []
-        return missing
-
-    def _signup_context_browser_result(self) -> dict[str, Any]:
-        report = getattr(self.state, "risk_signals_browser_result", {}) or {}
-        if not isinstance(report, dict):
-            return {}
-        signup_context = report.get("signup_context")
-        return cast(dict[str, Any], signup_context) if isinstance(signup_context, dict) else {}
-
-    @staticmethod
-    def _signal_count_present(value: object) -> bool:
-        try:
-            return int(value) > 0 if isinstance(value, (str, int, float)) else False
-        except Exception:
-            return False
-
-    def _signup_context_create_member_missing(self) -> list[str]:
-        """Return browser-risk families that must be present before CreateMemberAccount.
-
-        The no-backup-FI path is sensitive to an incomplete signup-context browser
-        runtime.  If we submit while FraudNet/Tealeaf/DI/RUM has not actually run,
-        PayPal commonly returns a generic OAS_ERROR at createMemberAccount.  This
-        check converts that opaque backend error into an actionable local
-        preflight failure and gives the runtime one chance to recover first.
-        """
-        signup_context = self._signup_context_browser_result()
-        if not signup_context:
-            return list(_SIGNUP_CONTEXT_CREATE_MEMBER_REQUIRED_SIGNALS)
-        raw_counts = signup_context.get("counts")
-        counts = cast(dict[str, object], raw_counts) if isinstance(raw_counts, dict) else {}
-        raw_observed = signup_context.get("observed")
-        observed_items = cast(list[object], raw_observed) if isinstance(raw_observed, list) else []
-        observed = {str(item) for item in observed_items if str(item)}
-        present = {
-            family
-            for family, count in counts.items()
-            if str(family) and self._signal_count_present(count)
-        }
-        present.update(observed)
-        return [
-            family
-            for family in _SIGNUP_CONTEXT_CREATE_MEMBER_REQUIRED_SIGNALS
-            if family not in present
-        ]
-
-    def _signup_context_missing_diagnostic_path(self) -> str:
-        signup_context = self._signup_context_browser_result()
-        return str(signup_context.get("missing_diagnostic_path") or "") if signup_context else ""
-
-    def _send_signup_context_risk_signals(self, signup_url: str, token: str) -> bool:
-        risk_mode = self._signup_context_risk_mode()
-        if risk_mode == "headless":
-            return self._send_signup_context_risk_signals_with_headless(signup_url, token)
-        if risk_mode in {"roxy", "auto"} or self._roxy_risk_runtime_active():
-            sent_signup_context_risk = self._send_signup_context_risk_signals_with_roxy(signup_url, token)
-            if sent_signup_context_risk:
-                return True
-            if self._signup_context_risk_mode() == "headless":
-                return self._send_signup_context_risk_signals_with_headless(signup_url, token)
-        return False
-
-    def _ensure_signup_context_ready_for_create_member(self, signup_url: str, token: str) -> None:
-        self._send_signup_context_risk_signals(signup_url, token)
-        missing = self._signup_context_create_member_missing()
-        if missing and self._signup_context_risk_mode() == "headless":
-            logger.warning(
-                "Signup-context browser risk incomplete before CreateMemberAccount; retrying local headless once missing={}",
-                ",".join(missing),
-            )
-            self._cleanup_headless_session()
-            self._send_signup_context_risk_signals_with_headless(signup_url, token)
-            missing = self._signup_context_create_member_missing()
-        if missing:
-            diagnostic_path = self._signup_context_missing_diagnostic_path()
-            message = (
-                "Signup-context browser risk incomplete before CreateMemberAccount; "
-                "blocked to avoid PayPal OAS_ERROR: missing=" + ",".join(missing)
-            )
-            if diagnostic_path:
-                message += f" diagnostic={diagnostic_path}"
-            raise RuntimeError(message)
-
-    def _normalize_phase1_roxy_datadog_runtime_result(self, result: dict[str, Any]) -> bool:
-        """Accept loaded DD_RUM runtime when the intake network batch is delayed.
-
-        Some Roxy/Chromium runs load PayPal's full Datadog SDK but do not flush
-        ``/api/v2/rum`` before the browser-risk wait times out.  The browser-side runtime is
-        still present and operational, so don't fail strict browser-risk checks on that
-        transport timing race.
-        """
-        if bool(result.get("ok")):
-            return not self._mark_phase1_browser_required_result(result)
-        browser_required_missing = self._phase1_browser_required_missing_from_result(result)
-        datadog_is_only_required_gap = browser_required_missing == ["datadog_rum"]
-        if not datadog_is_only_required_gap:
-            self._mark_phase1_browser_required_result(result)
-            return False
-        if not self._roxy_datadog_runtime_ready_from_result(result):
-            self._mark_phase1_browser_required_result(result)
-            return False
-
-        raw_counts = result.get("counts")
-        counts = dict(cast(dict[str, object], raw_counts)) if isinstance(raw_counts, dict) else {}
-        raw_datadog_count = counts.get("datadog_rum")
-        datadog_count = int(raw_datadog_count) if isinstance(raw_datadog_count, (str, int, float)) else 0
-        counts["datadog_rum"] = max(1, datadog_count)
-        result["counts"] = counts
-
-        raw_observed = result.get("observed")
-        observed_items = cast(list[object], raw_observed) if isinstance(raw_observed, list) else []
-        observed = [str(item) for item in observed_items if str(item)]
-        if "datadog_rum" not in observed:
-            observed.append("datadog_rum")
-        result["observed"] = observed
-        raw_missing = result.get("missing")
-        missing_items = cast(list[object], raw_missing) if isinstance(raw_missing, list) else []
-        existing_missing = [str(item) for item in missing_items if str(item)]
-        result["missing"] = [item for item in existing_missing if item != "datadog_rum"]
-        result["required_missing"] = []
-        result["datadog_runtime_fulfilled"] = True
-        result["datadog_runtime_fulfilled_reason"] = (
-            result.get("datadog_runtime_fulfilled_reason")
-            or "flow_layer_sdk_loaded_without_intake_capture"
-        )
-        raw_runtime_signals = result.get("runtime_signals")
-        runtime_signals = list(cast(list[object], raw_runtime_signals)) if isinstance(raw_runtime_signals, list) else []
-        runtime_signals.append(
-            {
-                "family": "datadog_rum",
-                "source": "DD_RUM_runtime",
-                "reason": result["datadog_runtime_fulfilled_reason"],
-            }
-        )
-        result["runtime_signals"] = runtime_signals
-        required_missing = self._mark_phase1_browser_required_result(result)
-        result["ok"] = not required_missing
-        logger.info(
-            "Roxy browser-risk Datadog intake request was not captured, but DD_RUM runtime is loaded; accepting datadog_rum runtime signal."
-        )
-        return not required_missing
-
-    def _headless_mtr_config_for_page(self, page_url: str) -> dict[str, object]:
-        ensure_mtr_config(self.state, page_url=page_url)
-        if not self.state.mtr_dfp_script_url:
-            self.state.mtr_dfp_script_url = "https://www.paypalobjects.com/v15170r-1d3n71ph1c4710n/dfp.js"
-        return {
-            "channel": self.state.mtr_channel,
-            "dfpChannel": self.state.mtr_channel,
-            "clientMetadataId": self.state.mtr_client_metadata_id,
-            "clientMetaDataId": self.state.mtr_client_metadata_id,
-            "apiKey": self.state.mtr_api_key,
-            "fppAPIKey": self.state.mtr_api_key,
-            "isQa": bool(self.state.mtr_is_qa),
-            "isQA": bool(self.state.mtr_is_qa),
-        }
-
-    def _apply_headless_mtr_result(self, result: dict[str, Any]) -> None:
-        self.state.mtr_runtime_source = "headless"
-        self.state.mtr_get_status = int(result.get("x0_status") or 0)
-        self.state.mtr_post_status = int(result.get("post_status") or 0)
-        self.state.mtr_request_id = str(result.get("requestId") or "")
-        self.state.mtr_sealed_result = str(result.get("sealedResult") or "")
-        self.state.mtr_visitor_token = str(result.get("visitorToken") or "")
-        self.state.mtr_completed = bool(self.state.mtr_request_id and self.state.mtr_sealed_result)
-        self.state.mtr_browser_result = {
-            "ok": self.state.mtr_completed,
-            "runtime": "headless",
-            "status": result.get("status"),
-            "url": result.get("url"),
-            "request_id_present": bool(self.state.mtr_request_id),
-            "sealed_result_present": bool(self.state.mtr_sealed_result),
-            "visitor_token_present": bool(self.state.mtr_visitor_token),
-            "debug_log_path": result.get("debug_log_path") or "",
-            "intercept": result.get("intercept") or {},
-        }
-
-    def _apply_headless_optimized_mtr_result(self, result: dict[str, Any]) -> None:
-        self._apply_headless_mtr_result(result)
-
-    def _store_headless_browser_result(self, result: dict[str, Any], *, browser_ok: bool, runtime: str) -> None:
-        raw_cookies = result.get("cookies")
-        result_cookies = cast(list[dict[str, Any]], raw_cookies) if isinstance(raw_cookies, list) else []
-        if result_cookies:
-            self.session.import_browser_cookies(result_cookies)
-        counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
-        observed = list(cast(list[object], result.get("observed"))) if isinstance(result.get("observed"), list) else []
-        missing = list(cast(list[object], result.get("missing"))) if isinstance(result.get("missing"), list) else []
-        self.state.risk_signals_runtime_source = runtime
-        self.state.risk_signals_browser_result = {
-            "ok": browser_ok,
-            "runtime": runtime,
-            "status": result.get("status"),
-            "url": result.get("url"),
-            "reason": result.get("reason") or "",
-            "observed": observed,
-            "observed_order": result.get("observed_order") or [],
-            "missing": missing,
-            "counts": counts,
-            "response_counts": result.get("response_counts") or {},
-            "cookie_count": len(result_cookies),
-            "requests": result.get("requests") or [],
-            "responses": result.get("responses") or [],
-            "request_failures": result.get("request_failures") or [],
-            "failed_requests": result.get("failed_requests") or result.get("request_failures") or [],
-            "injected_scripts": result.get("injected_scripts") or [],
-            "inject_errors": result.get("inject_errors") or [],
-            "datadog_runtime": result.get("datadog_runtime") or {},
-            "datadog_runtime_fulfilled": bool(result.get("datadog_runtime_fulfilled")),
-            "datadog_runtime_fulfilled_reason": result.get("datadog_runtime_fulfilled_reason") or "",
-            "datadog_probes": result.get("datadog_probes") or [],
-            "datadog_flushes": result.get("datadog_flushes") or [],
-            "runtime_signals": result.get("runtime_signals") or [],
-            "interaction_profile": result.get("interaction_profile") or "",
-            "interaction_summary": result.get("interaction_summary") or {},
-            "idle_interaction_summary": result.get("idle_interaction_summary") or {},
-            "interaction_error": result.get("interaction_error") or "",
-            "idle_interaction_error": result.get("idle_interaction_error") or "",
-            "required_signals": result.get("required_signals") or [],
-            "required_missing": result.get("required_missing") or [],
-            "reloads": result.get("reloads") or [],
-            "max_reloads": result.get("max_reloads"),
-            "blocked_requests": result.get("blocked_requests") or [],
-            "allowed_requests": result.get("allowed_requests") or [],
-            "learned_rules": result.get("learned_rules") or [],
-            "intercept": result.get("intercept") or {},
-            "debug_log_path": result.get("debug_log_path") or "",
-        }
-
-    @staticmethod
-    def _signup_context_headless_result_is_datadome_challenge(result: dict[str, Any]) -> bool:
-        reason = str(result.get("reason") or "")
-        if reason in {
-            "signup_context_datadome_challenge",
-            "challenge_required",
-            "datadome_missing",
-        }:
-            return True
-        try:
-            status = int(result.get("status") or 0)
-        except Exception:
-            status = 0
-        if status in {403, 429}:
-            return True
-        if bool(result.get("blocked_by_datadome")):
-            return True
-        url = str(result.get("url") or "").lower()
-        if any(marker in url for marker in ("geo.ddc.paypal.com", "/captcha/", "/interstitial/", "authchallenge")):
-            return True
-        for key in ("signup_context_page_after_runtime", "signup_context_page"):
-            raw_page = result.get(key)
-            if not isinstance(raw_page, dict):
-                continue
-            page = cast(dict[str, object], raw_page)
-            page_reason = str(page.get("reason") or "")
-            if page_reason == "signup_context_datadome_challenge" or bool(page.get("blocked_by_datadome")):
-                return True
-        return False
-
-    @staticmethod
-    def _roxy_signup_context_subprocess_mode() -> str:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_ROXY_SIGNUP_CONTEXT_SUBPROCESS")
-            or _load_proxy_dotenv_value("PAYPAL_ROXY_RISK_SUBPROCESS")
-            or "auto"
-        ).strip().lower()
-        if raw in {"1", "true", "yes", "on", "force", "forced", "always"}:
-            return "force"
-        if raw in {"0", "false", "no", "off", "disabled", "disable", "never"}:
-            return "off"
-        return "auto"
-
-    @staticmethod
-    def _roxy_subprocess_should_retry_error(error: Exception) -> bool:
-        text = str(error or "").lower()
-        return (
-            "playwright sync api inside the asyncio loop" in text
-            or "using playwright sync api inside the asyncio loop" in text
-            or "asyncio loop" in text
-        )
-
-    def _run_signup_context_risk_with_roxy_subprocess(
-        self,
-        signup_url: str,
-        token: str,
-        *,
-        seeded_signup_html: str = "",
-        seeded_signup_status: int = 200,
-    ) -> dict[str, Any]:
-        worker = Path(__file__).with_name("roxy_worker.py")
-        if not worker.exists():
-            raise RuntimeError(f"Roxy subprocess worker missing: {worker}")
-        payload = {
-            "project_root": str(Path(__file__).resolve().parents[1]),
-            "page_url": signup_url,
-            "cookies": self.session.export_cookies_for_browser(),
-            "wait_seconds": self._risk_roxy_wait_seconds(),
-            "app_id": "CHECKOUTUINODEWEB_ONBOARDING_LITE",
-            "correlation_id": token,
-            "document_html": seeded_signup_html,
-            "document_status": seeded_signup_status,
-            "proxy_url": self.proxy_config.url or "",
-            "roxy_browser": getattr(self.state, "roxy_browser", None) or {},
-        }
-        timeout = max(20.0, min(180.0, self._risk_roxy_wait_seconds() + 60.0))
-        with tempfile.TemporaryDirectory(prefix="paypal-roxy-risk-") as tmpdir:
-            in_path = Path(tmpdir) / "input.json"
-            out_path = Path(tmpdir) / "output.json"
-            in_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            proc = subprocess.run(
-                [sys.executable, str(worker), "--input", str(in_path), "--output", str(out_path)],
-                cwd=str(Path(__file__).resolve().parents[1]),
-                text=True,
-                capture_output=True,
-                timeout=timeout,
-            )
-            if not out_path.exists():
-                stderr = (proc.stderr or "")[-1000:]
-                raise RuntimeError(f"Roxy subprocess produced no output rc={proc.returncode} stderr={stderr}")
-            wrapper = json.loads(out_path.read_text(encoding="utf-8"))
-        if not isinstance(wrapper, dict):
-            raise RuntimeError("Roxy subprocess returned non-object output")
-        if not wrapper.get("ok"):
-            raise RuntimeError(str(wrapper.get("error") or "Roxy subprocess failed"))
-        runtime = wrapper.get("runtime") if isinstance(wrapper.get("runtime"), dict) else {}
-        if runtime:
-            self.state.browser_profile = runtime.get("browser_profile") or self.state.browser_profile
-            self.state.screen = runtime.get("screen") or self.state.screen
-            self.state.viewport = runtime.get("viewport") or self.state.viewport
-            self.state.device_fingerprint = runtime.get("device_fingerprint") or self.state.device_fingerprint
-        roxy_browser = wrapper.get("roxy_browser") if isinstance(wrapper.get("roxy_browser"), dict) else {}
-        if roxy_browser:
-            self.state.roxy_browser = roxy_browser
-        result = wrapper.get("result") if isinstance(wrapper.get("result"), dict) else {}
-        if not result:
-            raise RuntimeError("Roxy subprocess returned empty risk result")
-        return cast(dict[str, Any], result)
-
-    def _run_signup_context_risk_with_roxy(
-        self,
-        signup_url: str,
-        token: str,
-        *,
-        seeded_signup_html: str = "",
-        seeded_signup_status: int = 200,
-    ) -> dict[str, Any]:
-        mode = self._roxy_signup_context_subprocess_mode()
-        if mode == "force":
-            return self._run_signup_context_risk_with_roxy_subprocess(
-                signup_url,
-                token,
-                seeded_signup_html=seeded_signup_html,
-                seeded_signup_status=seeded_signup_status,
-            )
-        try:
-            from paypal.roxy_fingerprint import run_phase1_risk_with_roxy_browser
-
-            roxy_browser = self._ensure_roxy_browser_for_datadome()
-            return cast(
-                dict[str, Any],
-                run_phase1_risk_with_roxy_browser(
-                    roxy_browser,
-                    signup_url,
-                    cookies=self.session.export_cookies_for_browser(),
-                    wait_seconds=self._risk_roxy_wait_seconds(),
-                    app_id="CHECKOUTUINODEWEB_ONBOARDING_LITE",
-                    correlation_id=token,
-                    document_html=seeded_signup_html,
-                    document_status=seeded_signup_status,
-                ),
-            )
-        except Exception as exc:
-            if mode == "auto" and self._roxy_subprocess_should_retry_error(exc):
-                logger.warning(
-                    "Roxy signup-context sync runtime hit an active asyncio loop; retrying in isolated subprocess."
-                )
-                return self._run_signup_context_risk_with_roxy_subprocess(
-                    signup_url,
-                    token,
-                    seeded_signup_html=seeded_signup_html,
-                    seeded_signup_status=seeded_signup_status,
-                )
-            raise
-
-    def _send_signup_context_risk_signals_with_roxy(self, signup_url: str, token: str, *, force: bool = False) -> bool:
-        mode = self._signup_context_risk_mode()
-        if not force and mode not in {"roxy", "auto"} and not self._roxy_risk_runtime_active():
-            return False
-        try:
-            seeded_signup_html = ""
-            seeded_signup_status = 200
-            last_signup_url = str(getattr(self, "_last_signup_url", "") or "")
-            if (
-                str(getattr(self, "_last_signup_html", "") or "")
-                and "/checkoutweb/signup" in last_signup_url
-            ):
-                seeded_signup_html = str(getattr(self, "_last_signup_html", "") or "")
-                try:
-                    seeded_signup_status = int(getattr(self, "_last_signup_status", 200) or 200)
-                except Exception:
-                    seeded_signup_status = 200
-            result = self._run_signup_context_risk_with_roxy(
-                signup_url,
-                token,
-                seeded_signup_html=seeded_signup_html,
-                seeded_signup_status=seeded_signup_status,
-            )
-            if result.get("cookies"):
-                self.session.import_browser_cookies(result["cookies"])
-            browser_ok = self._normalize_phase1_roxy_datadog_runtime_result(result)
-            counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
-            signup_context_result = {
-                "ok": browser_ok,
-                "runtime": "roxy",
-                "status": result.get("status"),
-                "url": result.get("url"),
-                "reason": result.get("reason") or "",
-                "app_id": "CHECKOUTUINODEWEB_ONBOARDING_LITE",
-                "correlation_id": token,
-                "observed": result.get("observed") or [],
-                "observed_order": result.get("observed_order") or [],
-                "missing": result.get("missing") or [],
-                "counts": counts,
-                "response_counts": result.get("response_counts") or {},
-                "cookie_count": len(result.get("cookies") or []),
-                "requests": result.get("requests") or [],
-                "responses": result.get("responses") or [],
-                "request_failures": result.get("request_failures") or [],
-                "failed_requests": result.get("failed_requests") or result.get("request_failures") or [],
-                "injected_scripts": result.get("injected_scripts") or [],
-                "inject_errors": result.get("inject_errors") or [],
-                "datadog_runtime": result.get("datadog_runtime") or {},
-                "datadog_runtime_fulfilled": bool(result.get("datadog_runtime_fulfilled")),
-                "datadog_runtime_fulfilled_reason": result.get("datadog_runtime_fulfilled_reason") or "",
-                "datadog_probes": result.get("datadog_probes") or [],
-                "datadog_flushes": result.get("datadog_flushes") or [],
-                "runtime_signals": result.get("runtime_signals") or [],
-                "interaction_profile": result.get("interaction_profile") or "",
-                "interaction_summary": result.get("interaction_summary") or {},
-                "idle_interaction_summary": result.get("idle_interaction_summary") or {},
-                "interaction_error": result.get("interaction_error") or "",
-                "idle_interaction_error": result.get("idle_interaction_error") or "",
-                "required_signals": result.get("required_signals") or [],
-                "required_missing": result.get("required_missing") or [],
-                "reloads": result.get("reloads") or [],
-                "max_reloads": result.get("max_reloads"),
-                "blocked_requests": result.get("blocked_requests") or [],
-                "allowed_requests": result.get("allowed_requests") or [],
-                "learned_rules": result.get("learned_rules") or [],
-                "intercept": result.get("intercept") or {},
-                "missing_diagnostic_path": result.get("missing_diagnostic_path") or "",
-                "missing_diagnostic_error": result.get("missing_diagnostic_error") or "",
-                "debug_log_path": result.get("debug_log_path") or "",
-            }
-            previous = getattr(self.state, "risk_signals_browser_result", {})
-            if isinstance(previous, dict):
-                merged = dict(previous)
-                merged["signup_context"] = signup_context_result
-                merged["ok"] = bool(previous.get("ok")) or browser_ok
-                self.state.risk_signals_browser_result = merged
-            else:
-                self.state.risk_signals_browser_result = {"signup_context": signup_context_result}
-            self.state.risk_signals_runtime_source = "roxy"
-            logger.info(
-                "Signup context risk signals executed through Roxy browser observed={} missing={}",
-                ",".join(str(item) for item in (result.get("observed") or [])) or "<none>",
-                ",".join(str(item) for item in (result.get("missing") or [])) or "<none>",
-            )
-            required_missing = [
-                str(item)
-                for item in (result.get("required_missing") or [])
-                if str(item)
-            ]
-            if required_missing:
-                message = (
-                    "Roxy signup-context risk runtime is missing required browser signals: "
-                    f"{','.join(required_missing)}"
-                )
-                if mode == "roxy" or strict_browser_risk_enabled():
-                    raise RuntimeError(message)
-                logger.warning(message)
-            return browser_ok
-        except Exception as exc:
-            error_text = self._safe_error_text(exc)
-            self.state.risk_signals_runtime_source = "roxy_failed"
-            self.state.risk_signals_browser_result = {
-                "ok": False,
-                "signup_context": {"ok": False, "error": error_text},
-            }
-            if (mode == "roxy" and not self._roxy_runtime_fallback_enabled()) or strict_browser_risk_enabled():
-                raise RuntimeError(error_text) from None
-            self._disable_roxy_runtime(exc)
-            logger.warning(
-                "Roxy signup-context risk runtime failed; falling back to local headless signup-context risk: {}",
-                error_text,
-            )
-            return False
-
-    def _send_signup_context_risk_signals_with_headless(self, signup_url: str, token: str) -> bool:
-        mode = self._signup_context_risk_mode()
-        if mode != "headless":
-            return False
-        if not self._headless_runtime_enabled():
-            error_text = "Local headless signup-context risk runtime is disabled."
-            self.state.risk_signals_runtime_source = "headless_failed"
-            self.state.risk_signals_browser_result = {
-                "ok": False,
-                "signup_context": {"ok": False, "runtime": "headless", "error": error_text},
-            }
-            raise RuntimeError(error_text)
-        try:
-            from paypal.local_headless import run_local_headless_mtr_phase1
-
-            headless_session = self._get_headless_session()
-            dfp_config = self._headless_mtr_config_for_page(signup_url)
-            run_mtr = self._mtr_runtime_mode() == "headless"
-            seeded_signup_html = ""
-            seeded_signup_status = 200
-            last_signup_url = str(getattr(self, "_last_signup_url", "") or "")
-            if (
-                str(getattr(self, "_last_signup_html", "") or "")
-                and "/checkoutweb/signup" in last_signup_url
-            ):
-                seeded_signup_html = str(getattr(self, "_last_signup_html", "") or "")
-                try:
-                    seeded_signup_status = int(getattr(self, "_last_signup_status", 200) or 200)
-                except Exception:
-                    seeded_signup_status = 200
-            result = run_local_headless_mtr_phase1(
-                signup_url,
-                dfp_config=dfp_config,
-                dfp_script_url=self.state.mtr_dfp_script_url,
-                cookies=self.session.export_cookies_for_browser(),
-                wait_seconds=self._risk_headless_wait_seconds(),
-                proxy_url=self.proxy_config.url or "",
-                browser_profile=cast(dict[str, object], self.state.browser_profile or {}),
-                screen=cast(dict[str, object], self.state.screen or {}),
-                viewport=cast(dict[str, object], self.state.viewport or {}),
-                app_id="CHECKOUTUINODEWEB_ONBOARDING_LITE",
-                correlation_id=token,
-                session=headless_session,
-                stage="signup_context",
-                new_page=True,
-                run_mtr=run_mtr,
-                runtime="headless",
-                document_html=seeded_signup_html,
-                document_status=seeded_signup_status,
-            )
-            raw_cookies = result.get("cookies")
-            result_cookies = cast(list[dict[str, Any]], raw_cookies) if isinstance(raw_cookies, list) else []
-            if result_cookies:
-                self.session.import_browser_cookies(result_cookies)
-            if (
-                self._signup_context_headless_result_is_datadome_challenge(result)
-                and self._headless_signup_context_roxy_fallback_enabled()
-            ):
-                logger.warning(
-                    "Local headless signup-context stopped on DataDome challenge; retrying signup-context risk through Roxy fallback."
-                )
-                try:
-                    if self._send_signup_context_risk_signals_with_roxy(signup_url, token, force=True):
-                        return True
-                except Exception as roxy_exc:
-                    if strict_browser_risk_enabled():
-                        raise
-                    logger.warning(
-                        "Roxy fallback after signup-context DataDome challenge failed: {}",
-                        self._safe_error_text(roxy_exc),
-                    )
-            browser_ok = self._normalize_phase1_roxy_datadog_runtime_result(result)
-            counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
-            observed = list(cast(list[object], result.get("observed"))) if isinstance(result.get("observed"), list) else []
-            missing = list(cast(list[object], result.get("missing"))) if isinstance(result.get("missing"), list) else []
-            required_missing = list(cast(list[object], result.get("required_missing"))) if isinstance(result.get("required_missing"), list) else []
-            signup_context_result = {
-                "ok": browser_ok,
-                "runtime": "headless",
-                "status": result.get("status"),
-                "url": result.get("url"),
-                "reason": result.get("reason") or "",
-                "app_id": "CHECKOUTUINODEWEB_ONBOARDING_LITE",
-                "correlation_id": token,
-                "observed": observed,
-                "observed_order": result.get("observed_order") or [],
-                "missing": missing,
-                "counts": counts,
-                "response_counts": result.get("response_counts") or {},
-                "cookie_count": len(result_cookies),
-                "requests": result.get("requests") or [],
-                "responses": result.get("responses") or [],
-                "request_failures": result.get("request_failures") or [],
-                "failed_requests": result.get("failed_requests") or result.get("request_failures") or [],
-                "injected_scripts": result.get("injected_scripts") or [],
-                "inject_errors": result.get("inject_errors") or [],
-                "datadog_runtime": result.get("datadog_runtime") or {},
-                "datadog_runtime_fulfilled": bool(result.get("datadog_runtime_fulfilled")),
-                "datadog_runtime_fulfilled_reason": result.get("datadog_runtime_fulfilled_reason") or "",
-                "datadog_probes": result.get("datadog_probes") or [],
-                "datadog_flushes": result.get("datadog_flushes") or [],
-                "runtime_signals": result.get("runtime_signals") or [],
-                "required_signals": result.get("required_signals") or [],
-                "required_missing": required_missing,
-                "signup_context_page": result.get("signup_context_page") or {},
-                "signup_context_bootstrap": result.get("signup_context_bootstrap") or {},
-                "signup_context_seeded_document": result.get("signup_context_seeded_document") or {},
-                "blocked_by_datadome": bool(result.get("blocked_by_datadome")),
-                "blocked_requests": result.get("blocked_requests") or [],
-                "allowed_requests": result.get("allowed_requests") or [],
-                "learned_rules": result.get("learned_rules") or [],
-                "intercept": result.get("intercept") or {},
-                "missing_diagnostic_path": result.get("missing_diagnostic_path") or "",
-                "missing_diagnostic_error": result.get("missing_diagnostic_error") or "",
-                "debug_log_path": result.get("debug_log_path") or "",
-            }
-            previous = getattr(self.state, "risk_signals_browser_result", {})
-            if isinstance(previous, dict):
-                merged = dict(previous)
-                merged["signup_context"] = signup_context_result
-                merged["ok"] = bool(previous.get("ok")) or browser_ok
-                self.state.risk_signals_browser_result = merged
-            else:
-                self.state.risk_signals_browser_result = {"signup_context": signup_context_result}
-            self.state.risk_signals_runtime_source = "headless"
-            logger.info(
-                "Signup context risk signals executed through local headless observed={} missing={}",
-                ",".join(str(item) for item in observed) or "<none>",
-                ",".join(str(item) for item in missing) or "<none>",
-            )
-            required_missing_text = [str(item) for item in required_missing if str(item)]
-            if required_missing_text:
-                message = "Headless signup-context risk runtime is missing required browser signals: " + ",".join(required_missing_text)
-                diagnostic_path = str(result.get("missing_diagnostic_path") or "")
-                if diagnostic_path:
-                    message += f" diagnostic={diagnostic_path}"
-                if strict_browser_risk_enabled():
-                    raise RuntimeError(message)
-                logger.warning(message)
-            return browser_ok
-        except Exception as exc:
-            error_text = self._safe_error_text(exc)
-            self.state.risk_signals_runtime_source = "headless_failed"
-            self.state.risk_signals_browser_result = {
-                "ok": False,
-                "signup_context": {"ok": False, "runtime": "headless", "error": error_text},
-            }
-            logger.warning("Local headless signup-context risk runtime failed: {}", error_text)
-            raise RuntimeError(error_text) from None
-
-    def _cleanup_roxy_browser(self) -> None:
-        roxy_browser = getattr(self.state, "roxy_browser", None) or {}
-        if not roxy_browser:
-            return
-        try:
-            from paypal.roxy_fingerprint import close_roxy_browser
-
-            close_roxy_browser(roxy_browser, delete=True)
-        except Exception as exc:
-            logger.debug("Roxy browser cleanup failed: {}", exc)
-        finally:
-            try:
-                self.state.roxy_browser = {}
-            except Exception:
-                pass
-
-    def _cleanup_headless_session(self) -> None:
-        session = getattr(self, "_headless_session", None) or getattr(self, "_headless_optimized_session", None)
-        if session is None:
-            return
-        try:
-            session.close()
-        except Exception as exc:
-            logger.debug("Local headless session cleanup failed: {}", exc)
-        finally:
-            self._headless_session = None
-            self._headless_optimized_session = None
-
-    def _cleanup_headless_optimized_session(self) -> None:
-        self._cleanup_headless_session()
-
-    @staticmethod
-    def _headless_env_enabled() -> bool:
-        from paypal.local_headless import headless_enabled
-
-        return headless_enabled()
-
-    @staticmethod
-    def _headless_optimized_env_enabled() -> bool:
-        return PayPalFlow._headless_env_enabled()
-
-    def _headless_runtime_enabled(self) -> bool:
-        # The old local-headless path has been removed; "headless" always means
-        # the local-headless runner unless explicitly disabled.
-        return self._headless_env_enabled()
-
-    def _headless_optimized_runtime_enabled(self) -> bool:
-        return self._headless_runtime_enabled()
-
-    def _get_headless_session(self):
-        from paypal.local_headless import LocalHeadlessSession
-
-        session = getattr(self, "_headless_session", None) or getattr(self, "_headless_optimized_session", None)
-        if session is None:
-            session = LocalHeadlessSession(
-                cookies=self.session.export_cookies_for_browser(),
-                proxy_url=self.proxy_config.url or "",
-                browser_profile=cast(dict[str, object], self.state.browser_profile or {}),
-                screen=cast(dict[str, object], self.state.screen or {}),
-                viewport=cast(dict[str, object], self.state.viewport or {}),
-                job_id=f"headless-{uuid4().hex[:12]}",
-                runtime="headless",
-            )
-            self._headless_session = session
-            self._headless_optimized_session = session
-        else:
-            session.import_cookies(self.session.export_cookies_for_browser())
-        return session
-
-    def _get_headless_optimized_session(self):
-        return self._get_headless_session()
-
-    def _warn_challenge_locale_mismatch(self, challenge_html: str) -> None:
-        iframe_src = (
-            self._extract_hcaptcha_passive_iframe_src(challenge_html)
-            or self._extract_hcaptcha_iframe_src(challenge_html)
-            or ""
-        )
-        country = self._first_query_value(iframe_src, "country.x")
-        locale = self._first_query_value(iframe_src, "locale.x")
-        expected_country = self.address.country
-        expected_locale = (self.state.browser_profile or {}).get("locale") or "pt_BR"
-        if country and country.upper() != expected_country.upper():
-            logger.warning(
-                "Challenge server country.x={} differs from configured checkout country {}; "
-                "proxy/IP/cookie locale may be inconsistent.",
-                country,
-                expected_country,
-            )
-        if locale and locale != expected_locale:
-            logger.warning(
-                "Challenge server locale.x={} differs from configured browser locale {}; "
-                "Accept-Language/profile may be inconsistent.",
-                locale,
-                expected_locale,
-            )
-
-    def _captcha_frontend_disable_enabled(self) -> bool:
-        return captcha_frontend_disable_enabled()
-
-    @staticmethod
-    def _env_truthy(name: str) -> bool:
-        return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-    @staticmethod
-    def _env_int_between(name: str, default: int, minimum: int, maximum: int) -> int:
-        raw = os.getenv(name, "").strip()
-        if not raw:
-            return default
-        try:
-            value = int(raw)
-        except ValueError:
-            logger.warning("Invalid {}={!r}; using default {}", name, raw, default)
-            return default
-        return max(minimum, min(maximum, value))
-
-    @staticmethod
-    def _modxo_static_action_ids_enabled() -> bool:
-        raw = (
-            _load_proxy_dotenv_value("PAYPAL_MODXO_STATIC_ACTION_IDS")
-            or _load_proxy_dotenv_value("PAYPAL_MODXO_HARDCODED_ACTION_IDS")
-            or "1"
-        ).strip().lower()
-        return raw not in {
-            "0",
-            "false",
-            "no",
-            "off",
-            "disable",
-            "disabled",
-            "dynamic",
-            "scan",
-        }
-
-    @staticmethod
-    def _synthetic_captcha_allowed() -> bool:
-        return PayPalFlow._env_truthy("PAYPAL_ALLOW_SYNTHETIC_CAPTCHA")
-
-    @staticmethod
-    def _synthetic_risk_signals_allowed() -> bool:
-        return not strict_browser_risk_enabled()
-
-    def _roxy_risk_runtime_active(self) -> bool:
-        """True when browser/Roxy owns risk telemetry for this flow."""
-        return (
-            self._risk_signals_mode() in {"roxy", "headless"}
-            or getattr(self.state, "risk_signals_runtime_source", "") in {"roxy", "headless", "headless_optimized"}
-        )
-
-    def _skip_synthetic_behavior_telemetry(self, family: str) -> bool:
-        if not self._roxy_risk_runtime_active():
-            return False
-        logged = self._roxy_skipped_telemetry_families
-        if family not in logged:
-            logger.info(
-                "Skipping synthetic {} telemetry because browser risk runtime is active.",
-                family,
-            )
-            try:
-                logged.add(family)
-                self._roxy_skipped_telemetry_families = logged
-            except Exception:
-                pass
-        return True
-
-    def _send_tealeaf_data(self, *args, **kwargs):
-        if self._skip_synthetic_behavior_telemetry("Tealeaf"):
-            return None
-        return send_tealeaf_data(*args, **kwargs)
-
-    def _send_datadog_rum_view(self, *args, **kwargs):
-        if strict_browser_risk_enabled() and self._skip_synthetic_behavior_telemetry("Datadog RUM view"):
-            return None
-        return send_datadog_rum_view(*args, **kwargs)
-
-    def _send_datadog_rum_action(self, *args, **kwargs):
-        if strict_browser_risk_enabled() and self._skip_synthetic_behavior_telemetry("Datadog RUM action"):
-            return None
-        return send_datadog_rum_action(*args, **kwargs)
-
-    def _send_authchallenge_datadog_rum(self, page_url: str, action_name: str = "authchallenge_detected") -> None:
-        self._send_datadog_rum_view(
-            self.session,
-            page_url,
-            self.ba_token,
-            dd_config=_DD_AUTHCHALLENGE_CONFIG,
-            referrer=page_url,
-            api="fetch",
-        )
-        self._send_datadog_rum_action(
-            self.session,
-            action_name,
-            page_url,
-            dd_config=_DD_AUTHCHALLENGE_CONFIG,
-            referrer=page_url,
-            api="fetch",
-        )
-
-    def _is_step3_signup_field_events_call(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-        app_id = str(kwargs.get("app_id") or "CHECKOUTUINODEWEB_ONBOARDING_LITE")
-        if app_id != "CHECKOUTUINODEWEB_ONBOARDING_LITE":
-            return False
-        token = str((args[1] if len(args) > 1 else kwargs.get("ec_token")) or "")
-        fields_arg = args[2] if len(args) > 2 else kwargs.get("field_ids")
-        try:
-            fields = {str(item) for item in (fields_arg or [])}
-        except Exception:
-            fields = set()
-        step3_fields = {
-            "email",
-            "phone",
-            "cardNumber",
-            "cardExpiry",
-            "cardCvv",
-            "password",
-            "firstName",
-            "lastName",
-            "billingLine1",
-            "billingCity",
-            "billingPostalCode",
-            "billingState",
-            "dateOfBirth",
-            "identityDocumentNumber",
-        }
-        if fields and not fields.intersection(step3_fields):
-            return False
-        state_token = str(getattr(self.state, "ec_token", "") or "")
-        return bool(token and (token == state_token or token.startswith("EC-")))
-
-    def _send_signup_field_events(self, *args, **kwargs):
-        if self._is_step3_signup_field_events_call(args, kwargs):
-            return None
-        if self._skip_synthetic_behavior_telemetry("signup field-events"):
-            return None
-        return send_signup_field_events(*args, **kwargs)
-
-    def _send_tealeaf_form_interaction_batch(self, page_url: str, fields: list[str]) -> None:
-        if self._skip_synthetic_behavior_telemetry("Tealeaf form-interaction batch"):
-            return
-        tl = TealeafSession(self.session, page_url)
-        tl.send_form_interaction_batch(fields)
-
-    def _capture_mtr_metadata(self, html: str, page_url: str = "") -> None:
-        config = extract_mtr_config(html)
-        if config:
-            page_channel = str(config.get("dfpChannel") or "").strip()
-            page_cmid = str(config.get("clientMetaDataId") or "").strip()
-            page_api_key = str(config.get("fppAPIKey") or "").strip()
-            if page_channel:
-                self.state.mtr_channel = page_channel
-            if page_cmid:
-                self.state.mtr_client_metadata_id = page_cmid
-            if page_api_key:
-                self.state.mtr_api_key = page_api_key
-            self.state.mtr_is_qa = bool(config.get("isQA", self.state.mtr_is_qa))
-            if page_channel and page_cmid and page_api_key:
-                logger.info(
-                    "MTR dfpconfig captured: channel={} cmid={} api_key_present={}",
-                    self.state.mtr_channel or "<missing>",
-                    sanitize_for_log({"token": self.state.mtr_client_metadata_id or ""})["token"],
-                    bool(self.state.mtr_api_key),
-                )
-            else:
-                logger.info(
-                    "MTR partial dfpconfig found; applying fallback: page_channel={} page_cmid={} page_api_key_present={}",
-                    page_channel or "<missing>",
-                    sanitize_for_log({"token": page_cmid or ""})["token"],
-                    bool(page_api_key),
-                )
-        script_url = extract_dfp_script_url(html)
-        if script_url:
-            self.state.mtr_dfp_script_url = script_url
-        after_page_config = {
-            "channel": self.state.mtr_channel,
-            "cmid": self.state.mtr_client_metadata_id,
-            "api_key": self.state.mtr_api_key,
-        }
-        config_complete_after_page = bool(
-            self.state.mtr_channel
-            and self.state.mtr_client_metadata_id
-            and self.state.mtr_api_key
-        )
-        if ensure_mtr_config(self.state, page_url=page_url) and (
-            not config_complete_after_page
-            or after_page_config["channel"] != self.state.mtr_channel
-            or after_page_config["cmid"] != self.state.mtr_client_metadata_id
-            or after_page_config["api_key"] != self.state.mtr_api_key
-        ):
-            logger.info(
-                "MTR dfpconfig fallback applied: channel={} cmid={} api_key_present={}",
-                self.state.mtr_channel or "<missing>",
-                sanitize_for_log({"token": self.state.mtr_client_metadata_id or ""})["token"],
-                bool(self.state.mtr_api_key),
-            )
-
-    def _risk_runtime_report(self) -> dict[str, object]:
-        """Summarize strict-browser-risk gaps from automation_vs_real_browser_risk_diff.md."""
-        high_entropy_forced = os.getenv("PAYPAL_FORCE_HIGH_ENTROPY_CH", "0").strip().lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
-        mtr_sealed_result_present = bool(self.state.mtr_sealed_result)
-        datadome_cookie_present = bool(self.state.datadome_cookie)
-        datadome_header_injected = bool(self.state.datadome_header_injected)
-        captcha_synthetic_used = bool(self.state.captcha_synthetic_used)
-        captcha_synthetic_allowed = self._synthetic_captcha_allowed()
-        risk_browser_result = getattr(self.state, "risk_signals_browser_result", {}) or {}
-        risk_browser_ok = bool(
-            getattr(self.state, "risk_signals_runtime_source", "") in {"roxy", "headless", "headless_optimized"}
-            and isinstance(risk_browser_result, dict)
-            and risk_browser_result.get("ok")
-        )
-        synthetic_risk_families_used = not risk_browser_ok
-        synthetic_risk_families_allowed = self._synthetic_risk_signals_allowed() or not synthetic_risk_families_used
-        mtr_config_present = bool(
-            self.state.mtr_channel
-            and self.state.mtr_client_metadata_id
-            and self.state.mtr_api_key
-        )
-        blockers: list[str] = []
-        if not mtr_sealed_result_present:
-            blockers.append("mtr_sealedResult_missing")
-        if self.state.mtr_runtime_source == MTR_RUNTIME_PYTHON_GENERATED:
-            blockers.append("mtr_python_generated_runtime")
-        if captcha_synthetic_used or (
-            self.captcha_bypass_mode == CAPTCHA_FRONTEND_DISABLE_MODE
-            and not captcha_synthetic_allowed
-        ):
-            blockers.append("captcha_synthetic_or_fake_path")
-        if datadome_header_injected and not datadome_cookie_present:
-            blockers.append("datadome_header_without_cookie_chain")
-        if high_entropy_forced:
-            blockers.append("client_hints_forced_high_entropy")
-        if synthetic_risk_families_used and not synthetic_risk_families_allowed:
-            blockers.append("synthetic_fraudnet_fpti_tealeaf_datadog")
-        mtr_browser_result = cast(
-            dict[str, object],
-            sanitize_for_log(getattr(self.state, "mtr_browser_result", {}) or {}),
-        )
-        datadome_browser_result = cast(
-            dict[str, object],
-            sanitize_for_log(getattr(self.state, "datadome_browser_result", {}) or {}),
-        )
-        risk_browser_result_public = cast(dict[str, object], sanitize_for_log(risk_browser_result))
-        return {
-            "strict_browser_risk": strict_browser_risk_enabled(),
-            "mtr": {
-                "config_present": mtr_config_present,
-                "dfp_script_url": self.state.mtr_dfp_script_url,
-                "get_status": self.state.mtr_get_status,
-                "post_status": self.state.mtr_post_status,
-                "sealed_result_present": mtr_sealed_result_present,
-                "runtime_source": self.state.mtr_runtime_source or "not_sent",
-                "browser_result": mtr_browser_result,
-            },
-            "datadome": {
-                "mode": self._datadome_mode(),
-                "cookie_present": datadome_cookie_present,
-                "clientid_present": bool(self.state.datadome_clientid),
-                "header_injected": datadome_header_injected,
-                "browser_solved": bool(getattr(self.state, "datadome_browser_solved", False)),
-                "browser_result": datadome_browser_result,
-                "browser_js_cookie_chain_verified": bool(
-                    datadome_cookie_present and getattr(self.state, "datadome_browser_solved", False)
-                ),
-            },
-            "captcha": {
-                "mode": self.captcha_bypass_mode,
-                "paypal_captcha_solved": bool(self.state.paypal_captcha_solved),
-                "synthetic_used": captcha_synthetic_used,
-                "synthetic_allowed": captcha_synthetic_allowed,
-            },
-            "client_hints": {
-                "force_high_entropy_env": high_entropy_forced,
-                "accept_ch_observed": bool(getattr(self.session, "_accept_ch_received", False)),
-            },
-            "synthetic_risk_families": {
-                "mode": self._risk_signals_mode(),
-                "runtime_source": getattr(self.state, "risk_signals_runtime_source", "") or "not_sent",
-                "browser_result": risk_browser_result_public,
-                "fraudnet_python_generated": synthetic_risk_families_used,
-                "fpti_python_generated": synthetic_risk_families_used,
-                "tealeaf_template_generated": synthetic_risk_families_used,
-                "datadog_template_generated": synthetic_risk_families_used,
-                "allowed": synthetic_risk_families_allowed,
-            },
-            "strict_blockers": blockers,
-        }
-
-    def _with_risk_runtime_report(self, result: dict[str, object]) -> dict[str, object]:
-        result = dict(result)
-        result["risk_runtime"] = self._risk_runtime_report()
-        return result
-
-    def _strict_signup_preflight_or_raise(self) -> None:
-        if not strict_browser_risk_enabled():
-            return
-        report = self._risk_runtime_report()
-        raw_blockers = report.get("strict_blockers")
-        blocker_items = raw_blockers if isinstance(raw_blockers, list) else []
-        blockers = [
-            str(blocker)
-            for blocker in blocker_items
-            if str(blocker)
-        ]
-        if not blockers:
-            return
-        raise RuntimeError(
-            "Strict browser-risk preflight blocked SignUpNewMemberMutation because "
-            f"browser proof is incomplete: {','.join(blockers)}. "
-            f"report={json.dumps(sanitize_for_log(report), ensure_ascii=False)}"
-        )
-
-    @staticmethod
-    def _url_with_paypal_client_cfci(url: str, cfci: str) -> str:
-        parts = urllib.parse.urlsplit(url)
-        query = [
-            (key, value)
-            for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-            if key != "paypal_client_cfci"
-        ]
-        query.append(("paypal_client_cfci", cfci))
-        return urllib.parse.urlunsplit(
-            (
-                parts.scheme,
-                parts.netloc,
-                parts.path,
-                urllib.parse.urlencode(query),
-                parts.fragment,
-            )
-        )
-
-    @staticmethod
-    def _url_append_params(url: str, params: dict[str, str]) -> str:
-        parts = urllib.parse.urlsplit(url)
-        query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-        for key, value in (params or {}).items():
-            query.append((str(key), str(value)))
-        return urllib.parse.urlunsplit(
-            (
-                parts.scheme,
-                parts.netloc,
-                parts.path,
-                urllib.parse.urlencode(query),
-                parts.fragment,
-            )
-        )
-
-    def _mark_frontend_captcha_solved(self, reason: str) -> None:
-        if not self.state.paypal_captcha_solved:
-            logger.info(
-                "PayPal frontend CAPTCHA state noted via {} mode={}",
-                reason,
-                self.captcha_bypass_mode,
-            )
-        self.state.paypal_captcha_solved = True
-
-    def _modxo_cfci(self, action: str) -> str:
-        action = (action or "").strip()
-        if action.startswith("modxo_vaulted_not_recurring-"):
-            return action
-        return f"modxo_vaulted_not_recurring-{action}"
-
-    def _modxo_url_with_cfci(self, url: str, action: str) -> str:
-        return self._url_with_paypal_client_cfci(url, self._modxo_cfci(action))
-
-    def _paypal_nsid_header_value(self) -> str:
-        """Return the browser header form of the signed PayPal nsid cookie."""
-        nsid = (self.state.nsid or "").strip()
-        if not nsid:
-            return ""
-        try:
-            decoded = urllib.parse.unquote(nsid)
-        except Exception:
-            decoded = nsid
-        if decoded.startswith("s:"):
-            decoded = decoded[2:]
-            if "." in decoded:
-                decoded = decoded.rsplit(".", 1)[0]
-        return decoded
-
-    @staticmethod
-    def _modxo_router_state_tree_header() -> str:
-        """Next router state header captured from the ModXO app-router flow."""
-        tree = [
-            "",
-            {
-                "children": [
-                    "(identity)",
-                    {
-                        "children": ["__PAGE__", {}, None, None, 0],
-                        "authFlow": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "cookiedViewUl": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "emailUl": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "onboarding": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "otp": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "otpInput": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "passkeyUl": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "passwordUl": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                        "tokenizedLogin": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
-                    },
-                    None,
-                    None,
-                    0,
-                ]
-            },
-            None,
-            None,
-            16,
-        ]
-        return urllib.parse.quote(json.dumps(tree, separators=(",", ":")), safe="()")
-
-    def _modxo_server_action_headers(self, *, referer: str, action_id: str) -> dict[str, str]:
-        headers = {
-            **self._browser_headers(accept="text/x-component"),
-            "Origin": "https://www.paypal.com",
-            "Referer": referer,
-            "Next-Action": action_id,
-            "Next-Router-State-Tree": self._modxo_router_state_tree_header(),
-            "PayPal-Client-Cfci": self._modxo_cfci("server_action"),
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-        nsid = self._paypal_nsid_header_value()
-        if nsid:
-            headers["PayPal-NSID"] = nsid
-        if self.state.modxo_deployment_id:
-            headers["X-Deployment-Id"] = self.state.modxo_deployment_id
-        return headers
-
-    def _send_modxo_countries_packet(
-        self,
-        *,
-        page_url: str,
-        country: str | None = None,
-        cfci: str | None = None,
-    ) -> None:
-        countries_base = "https://www.paypal.com/pay/api/countries"
-        if country:
-            countries_base = f"{countries_base}?country.x={urllib.parse.quote(country)}"
-        cfci = cfci or self._modxo_cfci("countries_country" if country else "countries")
-        countries_url = self._url_with_paypal_client_cfci(countries_base, cfci)
-        try:
-            headers = {
-                **self._browser_headers(
-                    accept="*/*",
-                    content_type="application/json",
-                ),
-                "Referer": page_url,
-                "PayPal-Client-Cfci": cfci,
-                "X-TRPC-Source": "client",
-                "X-TRPC-Token": self.ba_token,
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Dest": "empty",
-            }
-            nsid = self._paypal_nsid_header_value()
-            if nsid:
-                headers["PayPal-NSID"] = nsid
-            resp = self.session.get(
-                countries_url,
-                headers=headers,
-                timeout=20,
-            )
-            logger.info(
-                "ModXO countries packet status={} url={}",
-                resp.status_code,
-                countries_url,
-            )
-        except Exception as e:
-            logger.debug("ModXO countries packet failed: {}", e)
-
-    def _frontend_captcha_solved_cfci(self) -> str:
-        return CAPTCHA_SOLVED_CFCI
-
-    def _post_modxo_country_action(
-        self,
-        *,
-        page_url: str,
-        country: str,
-        cfci: str,
-    ):
-        """Submit the inline ModXO country handleChange server action.
-
-        The browser trace does this right after the passive captcha path is
-        accepted.  The body is deployment-bound: action id and encrypted bound
-        argument are extracted from the live ModXO Flight stream in Phase 0.
-        """
-        if not (self.state.modxo_country_action_id and self.state.modxo_country_action_bound):
-            logger.debug("Skipping ModXO country action: dynamic action metadata is missing")
-            return None
-
-        headers = self._modxo_server_action_headers(
-            referer=page_url,
-            action_id=self.state.modxo_country_action_id,
-        )
-        headers["PayPal-Client-Cfci"] = cfci
-        action_url = self._url_with_paypal_client_cfci(page_url, cfci)
-        try:
-            resp = self.session.post(
-                action_url,
-                files=[
-                    ("1", (None, f'"{self.state.modxo_country_action_bound}"')),
-                    ("0", (None, f'["$@1","{country}"]')),
-                ],
-                headers=headers,
-            )
-            logger.info(
-                "ModXO country action status={} country={} cfci={}",
-                resp.status_code,
-                country,
-                cfci,
-            )
-            if looks_like_paypal_authchallenge(resp.text):
-                return resp
-            redirect_url = self._modxo_action_redirect_url(resp)
-            if redirect_url:
-                redirect_url = urllib.parse.urljoin(page_url, redirect_url)
-                self.state.modxo_pay_page_url = redirect_url
-                ctx_id = self._first_query_value(redirect_url, "ctxId")
-                if ctx_id:
-                    self.state.ctx_id = ctx_id
-                self.state.modxo_country_selected = True
-            elif 200 <= resp.status_code < 400:
-                # Some deployments return a Flight payload without an explicit
-                # Location header.  Keep the caller on the current page URL but
-                # still remember that the country action was accepted.
-                self.state.modxo_country_selected = True
-            return resp
-        except Exception as e:
-            logger.debug("ModXO country action failed: {}", e)
-            return None
-
-    def _send_modxo_frontend_captcha_solved_packets(
-        self,
-        page_url: str,
-        *,
-        include_base: bool = True,
-        include_country: bool = False,
-    ) -> None:
-        if strict_browser_risk_enabled() and not self._synthetic_captcha_allowed():
-            logger.warning(
-                "Skipping synthetic ModXO CAPTCHA_SOLVED packets in strict browser-risk mode."
-            )
-            return
-        if os.getenv("PAYPAL_SKIP_MODXO_CAPTCHA_SOLVED_PACKETS", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            return
-
-        cfci = self._frontend_captcha_solved_cfci()
-        country = self._profile_country()
-        self._mark_frontend_captcha_solved("modxo_frontend_packets")
-
-        if include_base:
-            self._send_modxo_countries_packet(page_url=page_url, cfci=cfci)
-            self._send_tealeaf_data(
-                self.session,
-                self._url_with_paypal_client_cfci(page_url, cfci),
-                endpoint_url=self._url_with_paypal_client_cfci(
-                    "https://www.paypal.com/platform/tealeaftarget",
-                    cfci,
-                ),
-            )
-            country_resp = self._post_modxo_country_action(
-                page_url=page_url,
-                country=country,
-                cfci=cfci,
-            )
-            if country_resp is not None and not self.state.modxo_pay_page_url:
-                redirect_url = self._modxo_action_redirect_url(country_resp)
-                if redirect_url:
-                    self.state.modxo_pay_page_url = urllib.parse.urljoin(page_url, redirect_url)
-
-        if include_country or self.state.modxo_country_selected:
-            country_page_url = (
-                self.state.modxo_pay_page_url
-                or f"https://www.paypal.com/pay/?ssrt={self.state.ssrt}"
-                f"&token={self.ba_token}&ul=1&ctxId={self.state.ctx_id}"
-                f"&country.x={country}"
-            )
-            self._send_modxo_countries_packet(
-                page_url=country_page_url,
-                country=country,
-                cfci=cfci,
-            )
-            self._send_tealeaf_data(
-                self.session,
-                self._url_with_paypal_client_cfci(country_page_url, cfci),
-                endpoint_url=self._url_with_paypal_client_cfci(
-                    "https://www.paypal.com/platform/tealeaftarget",
-                    cfci,
-                ),
-            )
-
-    def run(self) -> dict[str, object]:
+    def run(self) -> dict:
         """Execute the complete flow. Returns result dict with status and return_url."""
-        final_result: dict[str, object] | None = None
         try:
-            for flow_attempt in range(1, self.max_flow_attempts + 1):
-                if flow_attempt > 1:
-                    self._reset_for_full_retry(flow_attempt)
+            logger.info(f"=== PayPal Billing Agreement Flow ===")
+            logger.info("BA Token: {}", sanitize_for_log({"ba_token": self.ba_token})["ba_token"])
+            logger.info("Email: {}", sanitize_for_log({"email": self.user.email})["email"])
+            logger.info("Phone: {}", sanitize_for_log({"phone": self.user.phone})["phone"])
+            logger.debug("Outbound transport ready")
 
-                self._log_flow_attempt_start(flow_attempt)
+            self._phase0_initial_load()
+            self._phase1_risk_controls()
+            self._phase2_create_account()
+            self._phase3_signup_and_2fa()
+            result = self._phase4_authorize()
 
-                try:
-                    self._phase0_initial_load()
-                    self._phase2_create_account()
-                    self._phase3_signup_and_2fa()
-                    result = self._with_risk_runtime_report(self._phase4_authorize())
-                except Exception as attempt_error:
-                    if (
-                        self._should_retry_full_flow_exception(attempt_error)
-                        and flow_attempt < self.max_flow_attempts
-                    ):
-                        final_result = {
-                            "status": "error",
-                            "error": str(attempt_error),
-                            "reason": "SIGNUP_RETRYABLE_FAILURE",
-                            "retryable": True,
-                            "risk_runtime": self._risk_runtime_report(),
-                        }
-                        logger.warning(
-                            "Flow attempt {}/{} failed with a retryable signup/session "
-                            "error: {}. Retrying from Phase 0 with fresh data...",
-                            flow_attempt,
-                            self.max_flow_attempts,
-                            attempt_error,
-                        )
-                        continue
-                    raise
-                final_result = result
+            if not isinstance(result, dict):
+                logger.error("Final flow result had unexpected type: {}", type(result).__name__)
+                result = {
+                    "status": "error",
+                    "error_code": "UNEXPECTED_RESPONSE_TYPE",
+                    "error": f"final flow result type was {type(result).__name__}",
+                }
 
-                if result.get("status") == "success":
-                    logger.success("=== Flow completed successfully ===")
-                    return result
-
-                if self._should_retry_full_flow(result) and flow_attempt < self.max_flow_attempts:
-                    logger.warning(
-                        "Flow attempt {}/{} ended with {}. Retrying from Phase 0 "
-                        "with a fresh session, user, address and card...",
-                        flow_attempt,
-                        self.max_flow_attempts,
-                        result.get("reason") or result.get("error") or "retryable error",
-                    )
-                    continue
-
-                logger.error("=== Flow completed with error status ===")
-                return result
-
-            logger.error("=== Flow completed with error status ===")
-            return final_result or {
-                "status": "error",
-                "error": "flow ended without result",
-                "risk_runtime": self._risk_runtime_report(),
-            }
+            if result.get("status") == "success":
+                logger.success(f"=== Flow completed successfully ===")
+            else:
+                logger.error(f"=== Flow completed with error status ===")
+            return result
         except Exception as e:
-            logger.error("Flow failed: {}", self._safe_error_text(e))
+            logger.error(f"Flow failed: {e}")
             raise
         finally:
             self.close()
-
-    def _log_flow_attempt_start(self, flow_attempt: int):
-        suffix = (
-            f" (attempt {flow_attempt}/{self.max_flow_attempts})"
-            if self.max_flow_attempts > 1
-            else ""
-        )
-        logger.info(f"=== PayPal Billing Agreement Flow{suffix} ===")
-        logger.info("BA Token: {}", sanitize_for_log({"ba_token": self.ba_token})["ba_token"])
-        logger.info("Email: {}", sanitize_for_log({"email": self.user.email})["email"])
-        logger.info("Phone: {}", sanitize_for_log({"phone": self.user.phone})["phone"])
-        logger.info(f"Proxy: {self.proxy_config.label}")
-        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
-        logger.info("CAPTCHA mode: {}", self.captcha_bypass_mode)
-        self._log_profile_consistency()
-
-    def _should_retry_full_flow(self, result: dict[str, object] | None) -> bool:
-        if not isinstance(result, dict):
-            return False
-        if result.get("retryable") is True:
-            return True
-        return result.get("reason") in {
-            "BUYER_NOT_SET",
-            "buyer_not_set_after_partial_signup",
-        }
-
-    @staticmethod
-    def _should_retry_full_flow_exception(error: Exception) -> bool:
-        text = str(error)
-        retry_markers = (
-            "Signup failed: card was rejected",
-            "Signup failed: no usable access token",
-            "ACCOUNT_ALREADY_EXISTS and no prior access token",
-            "Create account flow did not produce an EC checkout token",
-        )
-        return any(marker in text for marker in retry_markers)
-
-    def _on_full_retry_generated(self, flow_attempt: int):
-        """Hook for UI adapters to publish regenerated retry data."""
-
-    def _on_signup_retry_generated(self, signup_attempt: int, reason: str):
-        """Hook for UI adapters to publish regenerated in-place signup data."""
-
-    def _reset_for_full_retry(self, flow_attempt: int):
-        """Start a clean browser/session attempt after an unrecoverable EC state.
-
-        BUYER_NOT_SET after a partial SignUpNewMember response means the current
-        EC checkout has an access token but no buyer bound to the billing
-        agreement. Reusing the same SignUpNewMember request usually produces
-        ACCOUNT_ALREADY_EXISTS, so the safer retry is a completely fresh HTTP
-        session plus freshly generated signup/card data.
-        """
-        current_phone = self.user.phone
-        current_address = self.address
-        try:
-            self.close()
-        except Exception:
-            pass
-
-        self.user = generate_user(current_phone, country=self.address.country)
-        self.card = generate_card(proxy_url=self.proxy_config.url, country=self.address.country)
-        self.address = current_address
-        self.state = SessionState(ba_token=self.ba_token)
-        ensure_runtime_profile(
-            self.state,
-            source=self.fingerprint_source,
-            roxy_proxy_url=self.proxy_config.url or "",
-            keep_roxy_browser=self._roxy_runtime_requested(),
-        )
-        self.session = PayPalSession(
-            self.state,
-            proxy_url=self.proxy_config.url,
-            proxy_label=self.proxy_config.label,
-        )
-        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
-        self._used_partial_signup_token = False
-        self._billing_address_autocomplete_succeeded = False
-        self._signup_billing_address_prepared = False
-        self._headless_session = None
-        self._headless_optimized_session = None
-        self._datadome_browser_document = {}
-        self._on_full_retry_generated(flow_attempt)
-
-        logger.info(
-            "Regenerated retry identity: email={}, phone={}, card={} exp={}, address={}, {}-{} (preserved)",
-            sanitize_for_log({"email": self.user.email})["email"],
-            sanitize_for_log({"phone": self.user.phone})["phone"],
-            self._masked_card_number(),
-            self.card.expiry,
-            self.address.district,
-            self.address.city,
-            self.address.state,
-        )
 
     def _phase0_initial_load(self):
         """Load the agreement approval page, handle DataDome if needed."""
         logger.info("--- Phase 0: Initial page load ---")
 
-        url = f"https://www.paypal.com/agreements/approve?ba_token={self.ba_token}"
-        datadome_mode = self._datadome_mode()
-        resp = None
-        if (
-            datadome_mode in {"roxy", "headless"}
-            and not self.state.datadome_cookie
-            and self._datadome_phase0_preflight_enabled()
-        ):
-            solved_preflight = self._solve_datadome_with_roxy_browser(url, reason="phase0_preflight")
-            datadome_mode = self._datadome_mode()
-            if solved_preflight and datadome_mode == "headless":
-                resp = self._response_from_browser_document(self._datadome_browser_document)
-                if resp is not None:
-                    logger.info(
-                        "Using local headless browser document for Phase 0 after DataDome preflight status={} url={}",
-                        resp.status_code,
-                        sanitize_for_log({"url": str(resp.url)})["url"],
-                    )
-        elif datadome_mode in {"roxy", "headless"} and not self.state.datadome_cookie:
-            logger.debug(
-                "Skipping Phase 0 DataDome browser preflight; protocol GET will run first and browser runtime is reserved for HTTP 403."
-            )
+        url = "https://www.paypal.com/agreements/approve?" + urllib.parse.urlencode({
+            "ba_token": self.ba_token,
+        })
 
-        # First GET - may return 403 with DataDome challenge or 302 redirect
-        if resp is None:
-            resp = self.session.get(url, headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-User": "?1",
-                "Sec-Fetch-Dest": "document",
-            })
-        self._capture_datadome_clientid(resp.text)
+        # Direct address-bar navigation. curl_cffi supplies UA, client hints
+        # and Accept values matching its native TLS/HTTP2 fingerprint.
+        resp = self.session.get(url, headers={
+            "Accept-Language": self.accept_language,
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-User": "?1",
+        })
 
         if resp.status_code == 403:
             logger.info("Got 403 - DataDome challenge detected")
-            browser_resp = self._response_from_browser_document(self._datadome_browser_document)
-            if browser_resp is not None and datadome_mode == "headless":
-                logger.info(
-                    "Protocol Phase 0 replay was challenged; continuing with the local headless browser document status={} url={}",
-                    browser_resp.status_code,
-                    sanitize_for_log({"url": str(browser_resp.url)})["url"],
-                )
-                resp = browser_resp
+            manual_response = self._handle_datadome_challenge(resp, url)
+            if manual_response is not None:
+                resp = manual_response
             else:
-                solved = self._solve_datadome_with_roxy_browser(url, reason="phase0_403") if datadome_mode in {"roxy", "headless", "auto"} else False
-                datadome_mode = self._datadome_mode()
-                if solved:
-                    browser_resp = self._response_from_browser_document(self._datadome_browser_document)
-                    if browser_resp is not None and datadome_mode == "headless":
-                        logger.info(
-                            "Using local headless browser document for Phase 0 after 403 challenge status={} url={}",
-                            browser_resp.status_code,
-                            sanitize_for_log({"url": str(browser_resp.url)})["url"],
-                        )
-                        resp = browser_resp
-                    else:
-                        resp = self.session.get(url, headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                            "Upgrade-Insecure-Requests": "1",
-                            "Sec-Fetch-Site": "none",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-User": "?1",
-                            "Sec-Fetch-Dest": "document",
-                        })
-                    self._capture_datadome_clientid(resp.text)
-                elif datadome_mode in {"roxy", "headless"}:
-                    raise RuntimeError(f"{datadome_mode} DataDome did not produce a datadome cookie after HTTP 403")
-                else:
-                    # DataDome returns a page with embedded dd object and ct.ddc.paypal.com/c.js.
-                    # Keep the old protocol/header method as the second configurable path.
-                    logger.warning("DataDome challenge using protocol fallback. "
-                                   "Cookie/client-id from response stored, attempting to proceed...")
-
-                    # Try the POST approach that the browser uses after DataDome resolves
-                    post_url = f"{url}&YWRzZGRjYXB0Y2hh=1"
-                    resp = self.session.post(post_url, headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Origin": "https://www.paypal.com",
-                        "Upgrade-Insecure-Requests": "1",
-                        "Sec-Fetch-Site": "same-origin",
-                        "Sec-Fetch-Mode": "navigate",
-                        "Sec-Fetch-User": "?1",
-                        "Sec-Fetch-Dest": "document",
-                    }, data={"adsddtoken": ""})
-                    self._capture_datadome_clientid(resp.text)
+                logger.warning("DataDome challenge requires manual solving; attempting protocol fallback...")
+                post_url = f"{url}&YWRzZGRjYXB0Y2hh=1"
+                resp = self.session.post(post_url, headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "https://www.paypal.com",
+                }, data={"adsddtoken": ""})
 
         if resp.status_code == 302:
             redirect_url = resp.headers.get("Location", "")
@@ -2594,25 +267,16 @@ class PayPalFlow:
             # Follow the redirect
             if redirect_url.startswith("/"):
                 redirect_url = f"https://www.paypal.com{redirect_url}"
-            resp = self.session.get(redirect_url, headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-User": "?1",
-                "Sec-Fetch-Dest": "document",
-            })
-            self._capture_datadome_clientid(resp.text)
+            resp = self.session.get(redirect_url)
 
         # Parse the login/signup page
         html = resp.text
-        self._last_modxo_html = html
-        self._last_modxo_base_url = str(resp.url)
-        self._capture_datadome_clientid(html)
-        self._capture_mtr_metadata(html, str(resp.url))
         logger.info(f"Page loaded: {resp.status_code}, {len(html)} bytes")
-        self._apply_modxo_inline_metadata(html)
-        self._extract_modxo_action_ids(html, str(resp.url))
+        # Keep the approve page for a deferred Next-Action fallback. The normal
+        # guest onboarding path does not need to crawl dozens of JS chunks.
+        self._approve_html = html
+        self._approve_url = str(resp.url)
+        self._approve_response = resp
 
         # Extract ctxId
         ctx_match = re.search(r'"ctxId"[^"]*"([^"]+)"', html)
@@ -2629,17 +293,70 @@ class PayPalFlow:
                 self.state.ssrt = ssrt_match.group(1)
                 logger.info(f"SSRT: {self.state.ssrt}")
 
-        if not self.state.ec_token:
-            ec_match = re.search(r"\b(EC-[A-Z0-9]+)\b", f"{resp.url}\n{html}")
-            if ec_match:
-                self.state.ec_token = ec_match.group(1)
-                logger.info(
-                    "EC Token already present on approval page: {}",
-                    sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"],
-                )
+        onboard_match = re.search(
+            r'onboardingLink"\s*:\s*"([^"]*?/agreements/approve\?[^"]+)',
+            html or "",
+            re.I,
+        ) or re.search(
+            r'href=["\']([^"\']*?ulOnboardRedirect=true[^"\']*)["\']',
+            html or "",
+            re.I,
+        )
+        if onboard_match:
+            onboard_url = onboard_match.group(1).replace("\\u0026", "&").replace("&amp;", "&").replace("\\/", "/")
+            onboard_url = urllib.parse.urljoin(str(resp.url), onboard_url)
+            parsed = urllib.parse.urlparse(onboard_url)
+            query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            forced = {
+                "ul": "1",
+                "modxo_redirect_reason": "guest_user",
+                "ulOnboardRedirect": "true",
+                "ba_token": self.ba_token,
+                "locale.x": self.locale,
+                "country.x": self.address.country,
+            }
+            query_items = [(key, value) for key, value in query_items if key not in forced]
+            query_items.extend(forced.items())
+            self.state.onboarding_url = urllib.parse.urlunparse(
+                parsed._replace(query=urllib.parse.urlencode(query_items))
+            )
+        else:
+            params = []
+            if self.state.ssrt:
+                params.append(("ssrt", self.state.ssrt))
+            params.extend([
+                ("ul", "1"),
+                ("modxo_redirect_reason", "guest_user"),
+                ("ulOnboardRedirect", "true"),
+                ("ba_token", self.ba_token),
+                ("locale.x", self.locale),
+                ("country.x", self.address.country),
+            ])
+            self.state.onboarding_url = "https://www.paypal.com/agreements/approve?" + urllib.parse.urlencode(params)
+        # The refreshed /pay Next.js/RSC document embeds the checkout EC
+        # directly as `ecToken`. Prefer it over the legacy onboarding route.
+        decoded_bootstrap = urllib.parse.unquote(html or "")
+        initial_ec_match = re.search(
+            r'(?:\\?"ecToken\\?"\s*:\s*\\?"?)(EC-[A-Za-z0-9_-]+)',
+            decoded_bootstrap,
+            re.I,
+        ) or re.search(r'EC-[A-Za-z0-9_-]+', decoded_bootstrap, re.I)
+        if initial_ec_match:
+            self.state.ec_token = initial_ec_match.group(1) if initial_ec_match.lastindex else initial_ec_match.group(0)
+            self.state.onboarding_url = ""
+            logger.info(
+                "EC Token (Next.js/RSC bootstrap): {}",
+                sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"],
+            )
+        else:
+            logger.info("Guest onboarding route prepared")
+
+    def _handle_datadome_challenge(self, response, agreement_url: str):
+        """Optional interactive hook. CLI mode keeps the protocol fallback."""
+        return None
 
     @staticmethod
-    def _extract_window_initial_data(html: str) -> dict[str, object]:
+    def _extract_window_initial_data(html: str) -> dict:
         """Extract checkoutweb/weasley window.__INITIAL_DATA__ JSON."""
         # The page contains many reads of window.__INITIAL_DATA__ before the
         # actual server-side assignment.  Anchor on `= {` so we do not parse a
@@ -2682,804 +399,28 @@ class PayPalFlow:
         return {}
 
     @staticmethod
-    def _metadata_search_texts(text: str) -> list[str]:
-        """Return decoded variants for metadata regex scanning.
-
-        PayPal can expose checkout content metadata in plain JSON, escaped
-        JSON-in-JS strings, URL-encoded RSC payloads, or HTML-escaped chunks.
-        Searching only the raw HTML misses several currently observed shapes.
-        """
-        if not text:
-            return []
-        variants: list[str] = []
-
-        def add(value: str) -> None:
-            if value and value not in variants:
-                variants.append(value)
-
-        add(text)
-        add(html_lib.unescape(text))
-        for value in list(variants):
-            try:
-                add(urllib.parse.unquote(value))
-            except Exception:
-                pass
-            try:
-                add(value.replace("\\/", "/"))
-            except Exception:
-                pass
-
-        # Decode common JavaScript string escapes conservatively.  Keep failures
-        # silent because arbitrary JS chunks are not guaranteed to be valid
-        # Python unicode_escape input.
-        for value in list(variants):
-            if "\\" not in value:
-                continue
-            try:
-                add(bytes(value, "utf-8").decode("unicode_escape"))
-            except Exception:
-                pass
-
-        # Extract and decode string payloads from React/Next flight pushes such
-        # as self.__next_f.push([1,"..."]).
-        for m in re.finditer(r"__next_f\.push\(\s*\[\s*\d+\s*,\s*(['\"])((?:\\.|(?!\1).){20,})\1", text or "", re.S):
-            raw = m.group(2)
-            try:
-                add(json.loads(m.group(1) + raw + m.group(1)))
-            except Exception:
-                add(raw.replace("\\/", "/"))
-
-        return variants
-
-    @staticmethod
-    def _extract_content_identifier(
-        html: str,
-        country: str = "BR",
-        lang: str = "pt",
-        initial_data: dict[str, object] | None = None,
-    ) -> str:
+    def _extract_content_identifier(html: str, country: str = "BR", lang: str = "pt") -> str:
         """Extract or build the dynamic signup terms contentIdentifier."""
-        candidates: list[str] = []
-
-        def add_candidate(value) -> None:
-            if not isinstance(value, str):
-                return
-            value = html_lib.unescape(value.strip().replace("\\/", "/"))
-            if not value or "signupTerms" not in value:
-                return
-            try:
-                value = urllib.parse.unquote(value)
-            except Exception:
-                pass
-            if value and value not in candidates:
-                candidates.append(value)
-
-        initial_identifier = PayPalFlow._find_first_recursive(
-            initial_data or {},
-            {"contentIdentifier", "content_identifier"},
-            lambda item: isinstance(item, str) and "signupTerms" in item,
-        )
-        add_candidate(initial_identifier)
-
-        for text in PayPalFlow._metadata_search_texts(html or ""):
-            for pattern in (
-                r'"contentIdentifier"\s*:\s*"([^"]*signupTerms[^"]*)"',
-                r'"content_identifier"\s*:\s*"([^"]*signupTerms[^"]*)"',
-                r"'contentIdentifier'\s*:\s*'([^']*signupTerms[^']*)'",
-                r"'content_identifier'\s*:\s*'([^']*signupTerms[^']*)'",
-                r'\\"contentIdentifier\\"\s*:\s*\\"([^"\\]*signupTerms[^"\\]*)\\"',
-                r'\\"content_identifier\\"\s*:\s*\\"([^"\\]*signupTerms[^"\\]*)\\"',
-                r"\\'contentIdentifier\\'\s*:\s*\\'([^'\\]*signupTerms[^'\\]*)\\'",
-                r"\\'content_identifier\\'\s*:\s*\\'([^'\\]*signupTerms[^'\\]*)\\'",
-                r'([A-Z]{2}:[a-z]{2}:[A-Za-z0-9_-]{8,128}:compliance\.signupTerms)',
-                r'([A-Z]{2}:[a-z]{2}:compliance\.signupTerms)',
-            ):
-                for match in re.finditer(pattern, text, re.I | re.S):
-                    add_candidate(match.group(1))
-
-        expected_prefix = f"{country}:{lang}:".lower()
-        for candidate in candidates:
-            if (
-                PayPalFlow._content_identifier_hash(candidate)
-                and candidate.lower().startswith(expected_prefix)
-            ):
-                return candidate
-        for candidate in candidates:
-            if PayPalFlow._content_identifier_hash(candidate):
-                return candidate
-        for candidate in candidates:
-            if not PayPalFlow._is_short_content_identifier_value(candidate):
-                return candidate
-        for candidate in candidates:
-            if candidate.lower() == f"{country}:{lang}:compliance.signupTerms".lower():
-                return candidate
-        if candidates:
-            return candidates[0]
+        for pattern in (
+            r'"contentIdentifier"\s*:\s*"([^"]*signupTerms[^"]*)"',
+            r'\\"contentIdentifier\\"\s*:\s*\\"([^"\\]*signupTerms[^"\\]*)\\"',
+            r'([A-Z]{2}:[a-z]{2}:[0-9a-f]{16,64}:compliance\.signupTerms)',
+        ):
+            match = re.search(pattern, html or "", re.I)
+            if match:
+                return match.group(1).replace("\\/", "/")
         return f"{country}:{lang}:compliance.signupTerms"
-
-    @staticmethod
-    def _find_first_recursive(value, key_names: set[str], predicate=None):
-        """Find the first nested value whose key matches key_names."""
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if str(key) in key_names and (predicate is None or predicate(item)):
-                    return item
-                found = PayPalFlow._find_first_recursive(item, key_names, predicate)
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for item in value:
-                found = PayPalFlow._find_first_recursive(item, key_names, predicate)
-                if found:
-                    return found
-        return None
-
-    @staticmethod
-    def _extract_content_hash(
-        html: str,
-        initial_data: dict[str, Any] | None = None,
-        *,
-        include_generic_content_hash: bool = True,
-    ) -> str:
-        """Extract the signupTerms content hash.
-
-        The browser capture shows SignUpNewMember uses the per-locale entry
-        from weasley `content-manifest.*.json` for compliance.signupTerms, for
-        example `BR_pt -> 759169...`, not necessarily the generic
-        `window.__INITIAL_DATA__.contentHash` value from the signup shell.
-        Callers therefore disable generic `contentHash` extraction whenever a
-        content manifest URL is present and fetch the manifest instead.
-        """
-        identifier = PayPalFlow._find_first_recursive(
-            initial_data or {},
-            {"contentIdentifier", "content_identifier"},
-            lambda item: isinstance(item, str) and "signupTerms" in item,
-        )
-        embedded_hash = PayPalFlow._content_identifier_hash(identifier or "")
-        if embedded_hash:
-            return embedded_hash
-        if include_generic_content_hash:
-            value = PayPalFlow._find_first_recursive(
-                initial_data or {},
-                {"contentHash", "content_hash"},
-                lambda item: isinstance(item, str) and bool(item),
-            )
-            if isinstance(value, str) and value:
-                return value
-        for text in PayPalFlow._metadata_search_texts(html or ""):
-            for pattern in (
-                r'([A-Za-z0-9_-]{8,128}):compliance\.signupTerms',
-            ):
-                match = re.search(pattern, text, re.I)
-                if match:
-                    return match.group(1)
-            if include_generic_content_hash:
-                for pattern in (
-                    r'"contentHash"\s*:\s*"([A-Za-z0-9_-]{8,128})"',
-                    r'"content_hash"\s*:\s*"([A-Za-z0-9_-]{8,128})"',
-                    r'\\"contentHash\\"\s*:\s*\\"([A-Za-z0-9_-]{8,128})\\"',
-                    r'\\"content_hash\\"\s*:\s*\\"([A-Za-z0-9_-]{8,128})\\"',
-                    r'contentHash["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{8,128})["\']',
-                    r'content_hash["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{8,128})["\']',
-                ):
-                    match = re.search(pattern, text, re.I)
-                    if match:
-                        return match.group(1)
-        return ""
-
-    @staticmethod
-    def _extract_content_manifest_url(
-        html: str,
-        initial_data: dict[str, Any] | None = None,
-        base_url: str = "https://www.paypal.com/checkoutweb/signup",
-    ) -> str:
-        """Extract weasley content-manifest URL from signup HTML/initial data."""
-        initial_data = initial_data or {}
-        value = PayPalFlow._find_first_recursive(
-            initial_data,
-            {"contentManifestUrl", "content_manifest_url"},
-            lambda item: isinstance(item, str) and "content-manifest" in item,
-        )
-        if isinstance(value, str) and value:
-            return urllib.parse.urljoin(base_url, html_lib.unescape(value).replace("\\/", "/"))
-
-        value = PayPalFlow._find_first_recursive(
-            initial_data,
-            {"contentManifest", "content_manifest"},
-            lambda item: isinstance(item, str) and "content-manifest" in item,
-        )
-        if isinstance(value, str) and value:
-            cdn_host = (
-                ((initial_data.get("geo") or {}).get("cdnHostName"))
-                or "www.paypalobjects.com"
-            )
-            manifest_base = f"https://{cdn_host}/checkoutweb/release/weasley/"
-            return urllib.parse.urljoin(manifest_base, html_lib.unescape(value).replace("\\/", "/"))
-
-        for text in PayPalFlow._metadata_search_texts(html or ""):
-            match = re.search(
-                r'https?:\\?/\\?/[^"\']+/checkoutweb/release/weasley/content-manifest\.[A-Za-z0-9_-]+\.json',
-                text,
-                re.I,
-            )
-            if match:
-                return html_lib.unescape(match.group(0)).replace("\\/", "/")
-            match = re.search(
-                r'["\']([^"\']*content-manifest\.[A-Za-z0-9_-]+\.json)["\']',
-                text,
-                re.I,
-            )
-            if match:
-                raw = html_lib.unescape(match.group(1)).replace("\\/", "/")
-                if raw.startswith("//"):
-                    raw = "https:" + raw
-                if raw.startswith("http"):
-                    return raw
-                return urllib.parse.urljoin(
-                    "https://www.paypalobjects.com/checkoutweb/release/weasley/",
-                    raw,
-                )
-        return ""
-
-    def _content_manifest_key_candidates(self) -> list[str]:
-        country = self._content_country().upper()
-        lang = self._content_lang().lower()
-        candidates = [
-            f"{country}_{lang}",
-            f"{country}_{lang.split('-', 1)[0]}",
-        ]
-        if country == "BR":
-            candidates.append("BR_pt")
-        candidates.extend([
-            f"{country}_en",
-            f"Base_{lang}",
-            "Base_en",
-        ])
-        seen: set[str] = set()
-        return [key for key in candidates if not (key in seen or seen.add(key))]
-
-    def _apply_signup_content_manifest(self, manifest_data, source_url: str = "") -> bool:
-        """Apply signupTerms hash from weasley content-manifest JSON."""
-        if isinstance(manifest_data, str):
-            try:
-                manifest_data = json.loads(manifest_data)
-            except Exception:
-                return False
-        if not isinstance(manifest_data, dict):
-            return False
-
-        selected_key = ""
-        selected_hash = ""
-        for key in self._content_manifest_key_candidates():
-            value = manifest_data.get(key)
-            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{8,128}", value):
-                selected_key = key
-                selected_hash = value
-                break
-        if not selected_hash:
-            return False
-
-        self.state.content_manifest_key = selected_key
-        self.state.content_hash = selected_hash
-        self.state.content_identifier = self._content_identifier_from_hash(selected_hash)
-        try:
-            payload = {
-                "manifest_url": source_url,
-                "manifest_key": selected_key,
-                "content_hash": self.state.content_hash,
-                "content_identifier": self.state.content_identifier,
-            }
-            for path in self._signup_content_manifest_cache_paths():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-        except Exception:
-            pass
-        logger.info(
-            "Content metadata found in content manifest: key={} hash={} identifier={}",
-            selected_key,
-            self.state.content_hash,
-            self.state.content_identifier,
-        )
-        return True
-
-    def _fetch_signup_content_manifest_metadata(self, manifest_url: str, referer: str = "") -> bool:
-        """Fetch weasley content-manifest and resolve signupTerms contentIdentifier."""
-        manifest_url = (manifest_url or "").strip()
-        if not manifest_url or not urllib.parse.urlparse(manifest_url).scheme.startswith("http"):
-            return False
-        self.state.content_manifest_url = manifest_url
-        try:
-            resp = self.session.get(
-                manifest_url,
-                headers={
-                    **self._browser_headers(accept="*/*"),
-                    "Origin": "https://www.paypal.com",
-                    "Referer": referer or "https://www.paypal.com/",
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Site": "cross-site"
-                    if "paypalobjects.com" in manifest_url
-                    else "same-origin",
-                },
-            )
-            if resp.status_code != 200:
-                logger.debug(
-                    "Signup content manifest fetch returned status={} url={}",
-                    resp.status_code,
-                    manifest_url[:160],
-                )
-                return False
-            try:
-                manifest_data = resp.json()
-            except Exception:
-                manifest_data = json.loads(resp.text or "{}")
-            return self._apply_signup_content_manifest(manifest_data, manifest_url)
-        except Exception as e:
-            logger.debug("Signup content manifest fetch failed {}: {}", manifest_url[:160], e)
-            return False
-
-    def _apply_signup_content_metadata(self, html: str) -> None:
-        """Refresh contentHash/contentIdentifier from the loaded signup app."""
-        country = self._content_country()
-        lang = self._content_lang()
-        initial_data = self._extract_window_initial_data(html)
-        manifest_url = self._extract_content_manifest_url(html, initial_data)
-        if manifest_url:
-            self.state.content_manifest_url = manifest_url
-        content_hash = self._extract_content_hash(
-            html,
-            initial_data,
-            include_generic_content_hash=True,
-        )
-        if content_hash:
-            self.state.content_hash = content_hash
-            logger.info(f"Content hash: {self.state.content_hash}")
-
-        content_identifier = self._extract_content_identifier(
-            html,
-            country,
-            lang,
-            initial_data,
-        )
-        has_signup_metadata_signal = bool(content_hash) or bool(manifest_url) or any(
-            "signupTerms" in text for text in self._metadata_search_texts(html or "")
-        )
-        if (
-            not has_signup_metadata_signal
-            and self._is_short_content_identifier_value(content_identifier)
-        ):
-            # This can be a DataDome/authchallenge shell or a redirect/error
-            # page.  Do not replace a previously fresh identifier with a short
-            # fallback merely because the loaded document had no signup app
-            # metadata at all.
-            logger.debug(
-                "Loaded signup document did not contain content metadata; "
-                "preserving contentIdentifier={}",
-                self.state.content_identifier or "<missing>",
-            )
-            return
-        if (
-            (content_hash or self.state.content_hash)
-            and content_identifier.endswith(":compliance.signupTerms")
-            and (content_hash or self.state.content_hash) not in content_identifier
-        ):
-            content_identifier = f"{country}:{lang}:{content_hash or self.state.content_hash}:compliance.signupTerms"
-        elif self._is_short_content_identifier_value(content_identifier):
-            # Do not warn here yet: the metadata often lives in linked JS chunks
-            # or in weasley content-manifest rather than the HTML shell.
-            # Callers fetch the manifest/scan assets and only warn if the hash
-            # is still unavailable afterwards.
-            if self.state.content_identifier and not self._content_metadata_is_short():
-                logger.debug(
-                    "Signup document only exposed a short contentIdentifier; "
-                    "preserving previous fresh identifier={}",
-                    self.state.content_identifier,
-                )
-                return
-            logger.debug(
-                "Signup contentIdentifier is short in HTML shell; content manifest "
-                "and linked assets will be checked before submission."
-            )
-        self.state.content_identifier = content_identifier
-        logger.info(f"Content identifier: {self.state.content_identifier}")
-
-    def _content_metadata_is_short(self) -> bool:
-        return self._is_short_content_identifier_value(self.state.content_identifier or "")
-
-    def _content_metadata_is_unresolved(self) -> bool:
-        return not self.state.content_identifier or self._content_metadata_is_short()
-
-    @staticmethod
-    def _project_cache_dir() -> Path:
-        return Path(__file__).resolve().parents[1] / "cache"
-
-    def _signup_content_manifest_cache_paths(self) -> list[Path]:
-        paths = [
-            Path("/tmp/paypal_signup_content_manifest_last.json"),
-            self._project_cache_dir() / "paypal_signup_content_manifest_last.json",
-        ]
-        configured = (os.getenv("PAYPAL_SIGNUP_CONTENT_CACHE") or "").strip()
-        if configured:
-            paths.append(Path(configured).expanduser())
-        seen: set[str] = set()
-        unique: list[Path] = []
-        for path in paths:
-            key = str(path)
-            if key not in seen:
-                seen.add(key)
-                unique.append(path)
-        return unique
-
-    def _signup_content_asset_cache_paths(self) -> list[Path]:
-        return [
-            Path("/tmp/paypal_signup_metadata_asset_last.json"),
-            self._project_cache_dir() / "paypal_signup_metadata_asset_last.json",
-        ]
-
-    @staticmethod
-    def _configured_signup_content_manifest_url() -> str:
-        return (
-            os.getenv("PAYPAL_SIGNUP_CONTENT_MANIFEST_URL")
-            or os.getenv("PAYPAL_CONTENT_MANIFEST_URL")
-            # Last known checkoutweb/weasley release from the verified Roxy flow.
-            # It is only used when the live signup document is an authchallenge
-            # shell and therefore cannot expose its own `content` manifest field.
-            or "https://www.paypalobjects.com/checkoutweb/release/weasley/content-manifest.269d408d25fd72bcea4047a79fb8ff61.json"
-        ).strip()
-
-    def _apply_configured_or_cached_signup_content_metadata(self) -> bool:
-        """Use explicit/cache metadata when the live signup HTML is a challenge shell."""
-        country = self._content_country()
-        lang = self._content_lang()
-
-        configured_identifier = (
-            os.getenv("PAYPAL_SIGNUP_CONTENT_IDENTIFIER")
-            or os.getenv("PAYPAL_CONTENT_IDENTIFIER")
-            or ""
-        ).strip()
-        configured_hash = (
-            os.getenv("PAYPAL_SIGNUP_CONTENT_HASH")
-            or os.getenv("PAYPAL_CONTENT_HASH")
-            or ""
-        ).strip()
-        if configured_identifier and not self._is_short_content_identifier_value(configured_identifier):
-            self.state.content_identifier = configured_identifier
-            embedded_hash = self._content_identifier_hash(configured_identifier)
-            if embedded_hash:
-                self.state.content_hash = embedded_hash
-            logger.info("Content metadata loaded from environment identifier={}", configured_identifier)
-            return True
-        if configured_hash:
-            self.state.content_hash = configured_hash
-            self.state.content_identifier = self._content_identifier_from_hash(configured_hash)
-            logger.info("Content metadata loaded from environment hash={}", configured_hash)
-            return True
-
-        cache_paths = [
-            *self._signup_content_manifest_cache_paths(),
-            *self._signup_content_asset_cache_paths(),
-        ]
-        for path in cache_paths:
-            try:
-                if not path.is_file():
-                    continue
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            cached_identifier = str(data.get("content_identifier") or "").strip()
-            cached_hash = str(data.get("content_hash") or "").strip()
-            cached_key = str(data.get("manifest_key") or "").strip().upper()
-            cached_manifest_url = str(data.get("manifest_url") or "").strip()
-            expected_keys = {
-                f"{country}_{lang}".upper(),
-                f"{country}-{lang}".upper(),
-                f"{country}:{lang}".upper(),
-            }
-            if cached_key and cached_key not in expected_keys:
-                continue
-            if cached_identifier and not self._is_short_content_identifier_value(cached_identifier):
-                embedded_hash = self._content_identifier_hash(cached_identifier)
-                if embedded_hash:
-                    cached_hash = embedded_hash
-                self.state.content_identifier = cached_identifier
-                self.state.content_hash = cached_hash or self.state.content_hash
-                self.state.content_manifest_key = cached_key or self.state.content_manifest_key
-                if cached_manifest_url.startswith("http"):
-                    self.state.content_manifest_url = cached_manifest_url
-                logger.info(
-                    "Content metadata restored from cache {} identifier={}",
-                    path,
-                    self.state.content_identifier,
-                )
-                return True
-            if cached_hash:
-                self.state.content_hash = cached_hash
-                self.state.content_identifier = self._content_identifier_from_hash(cached_hash)
-                self.state.content_manifest_key = cached_key or self.state.content_manifest_key
-                if cached_manifest_url.startswith("http"):
-                    self.state.content_manifest_url = cached_manifest_url
-                logger.info(
-                    "Content metadata restored from cache {} hash={}",
-                    path,
-                    self.state.content_hash,
-                )
-                return True
-        return False
-
-    def _scan_signup_assets_for_content_metadata(self, html: str, base_url: str) -> bool:
-        """Search linked PayPal JS chunks for signupTerms content metadata."""
-        country = self._content_country()
-        lang = self._content_lang()
-        script_urls: list[str] = []
-
-        def add_asset_url(raw_url: str) -> None:
-            if not raw_url:
-                return
-            url = urllib.parse.urljoin(base_url, html_lib.unescape(raw_url).replace("\\/", "/"))
-            host = urllib.parse.urlparse(url).netloc.lower()
-            if not (host.endswith("paypal.com") or host.endswith("paypalobjects.com")):
-                return
-            if not re.search(r'\.(?:js|mjs)(?:\?|$)', url, re.I):
-                return
-            if url not in script_urls:
-                script_urls.append(url)
-
-        for attr in ("src", "href"):
-            for raw in re.findall(rf'\b{attr}=["\']([^"\']+)["\']', html or "", re.I):
-                add_asset_url(raw)
-        for raw in re.findall(r'["\']([^"\']*(?:/_next/static/|/checkoutweb/|/web/res/)[^"\']+?\.m?js(?:\?[^"\']*)?)["\']', html or "", re.I):
-            add_asset_url(raw)
-
-        # Stable order: app-specific chunks first, then framework/runtime chunks.
-        script_urls.sort(
-            key=lambda u: (
-                0 if re.search(r"signup|weasley|onboard|checkout", u, re.I) else 1,
-                u,
-            )
-        )
-
-        for script_url in script_urls[:140]:
-            try:
-                resp = self.session.get(
-                    script_url,
-                    headers={
-                        **self._browser_headers(accept="*/*"),
-                        "Referer": base_url,
-                        "Sec-Fetch-Dest": "script",
-                        "Sec-Fetch-Mode": "no-cors",
-                        "Sec-Fetch-Site": "cross-site"
-                        if "paypalobjects.com" in script_url
-                        else "same-origin",
-                    },
-                )
-                if resp.status_code != 200:
-                    continue
-                text = resp.text or ""
-                if "signupTerms" not in text and "contentHash" not in text:
-                    continue
-                content_hash = self._extract_content_hash(text)
-                content_identifier = self._extract_content_identifier(
-                    text,
-                    country,
-                    lang,
-                )
-                if content_hash:
-                    self.state.content_hash = content_hash
-                if (
-                    self._is_short_content_identifier_value(content_identifier)
-                    and (content_hash or self.state.content_hash)
-                ):
-                    content_identifier = (
-                        f"{country}:{lang}:{content_hash or self.state.content_hash}:compliance.signupTerms"
-                    )
-                if not self._is_short_content_identifier_value(content_identifier):
-                    self.state.content_identifier = content_identifier
-                    embedded_hash = self._content_identifier_hash(content_identifier)
-                    if embedded_hash:
-                        self.state.content_hash = embedded_hash
-                    try:
-                        payload = {
-                            "script_url": script_url,
-                            "content_hash": self.state.content_hash,
-                            "content_identifier": self.state.content_identifier,
-                        }
-                        for path in self._signup_content_asset_cache_paths():
-                            path.parent.mkdir(parents=True, exist_ok=True)
-                            path.write_text(
-                                json.dumps(payload, ensure_ascii=False, indent=2),
-                                encoding="utf-8",
-                            )
-                    except Exception:
-                        pass
-                    logger.info(
-                        "Content metadata found in asset: hash={} identifier={}",
-                        self.state.content_hash or "<missing>",
-                        self.state.content_identifier,
-                    )
-                    return True
-            except Exception as e:
-                logger.debug("Signup metadata asset scan failed {}: {}", script_url[:140], e)
-        return False
-
-    def _refresh_signup_content_metadata(self, referer: str = "") -> bool:
-        """Reload checkoutweb/signup and refresh dynamic compliance metadata."""
-        if not self.state.ec_token:
-            return False
-        signup_url = self.state.signup_url or self._build_signup_url()
-        self.state.signup_url = signup_url
-        try:
-            resp = self.session.get(
-                signup_url,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                    "Referer": referer or self.state.signup_url or "https://www.paypal.com/",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Cache-Control": "max-age=0",
-                    "Sec-Fetch-Site": "same-origin",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-User": "?1",
-                    "Sec-Fetch-Dest": "document",
-                },
-            )
-            if resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location", "")
-                if location:
-                    location = urllib.parse.urljoin(signup_url, location)
-                    if "/checkoutweb/signup" in location:
-                        self.state.signup_url = location
-                    resp = self.session.get(
-                        location,
-                        headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                            "Referer": signup_url,
-                            "Upgrade-Insecure-Requests": "1",
-                            "Cache-Control": "max-age=0",
-                            "Sec-Fetch-Site": "same-origin",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-User": "?1",
-                            "Sec-Fetch-Dest": "document",
-                        },
-                    )
-            if looks_like_paypal_authchallenge(resp.text):
-                logger.info(
-                    "Signup metadata refresh returned authchallenge HTML; "
-                    "validating challenge before extracting content manifest."
-                )
-                if self._validate_authchallenge_if_possible(resp.text, str(resp.url or signup_url)):
-                    resp = self.session.get(
-                        signup_url,
-                        headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                            "Referer": str(resp.url or signup_url),
-                            "Upgrade-Insecure-Requests": "1",
-                            "Cache-Control": "max-age=0",
-                            "Sec-Fetch-Site": "same-origin",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-User": "?1",
-                            "Sec-Fetch-Dest": "document",
-                        },
-                    )
-                    self._capture_datadome_clientid(resp.text)
-            try:
-                Path("/tmp/paypal_signup_metadata_last.html").write_text(
-                    resp.text or "",
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-            self._apply_signup_content_metadata(resp.text)
-            manifest_url = (
-                self._extract_content_manifest_url(
-                    resp.text,
-                    self._extract_window_initial_data(resp.text),
-                    str(resp.url or signup_url),
-                )
-                or self.state.content_manifest_url
-            )
-            if manifest_url and (
-                self._content_metadata_is_unresolved()
-                or not self.state.content_manifest_key
-            ):
-                self._fetch_signup_content_manifest_metadata(
-                    manifest_url,
-                    referer=str(resp.url or signup_url),
-                )
-            if self._content_metadata_is_unresolved():
-                self._scan_signup_assets_for_content_metadata(resp.text, str(resp.url or signup_url))
-            if self._content_metadata_is_unresolved() and self.state.content_hash:
-                self.state.content_identifier = self._resolved_content_identifier()
-            if self._content_metadata_is_unresolved():
-                self._apply_configured_or_cached_signup_content_metadata()
-            if self._content_metadata_is_unresolved():
-                try:
-                    Path("/tmp/paypal_signup_metadata_last.json").write_text(
-                        json.dumps(
-                            {
-                                "signup_url": str(resp.url or signup_url),
-                                "status_code": resp.status_code,
-                                "content_hash": self.state.content_hash,
-                                "content_identifier": self.state.content_identifier,
-                                "content_manifest_url": self.state.content_manifest_url,
-                                "content_manifest_key": self.state.content_manifest_key,
-                                "content_country": self._content_country(),
-                                "content_lang": self._content_lang(),
-                                "authchallenge_html": looks_like_paypal_authchallenge(resp.text),
-                                "html_bytes": len(resp.content or b""),
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
-                logger.warning(
-                    "Signup contentIdentifier is still missing contentHash after HTML refresh "
-                    "and asset scan; diagnostics saved to /tmp/paypal_signup_metadata_last.json"
-                )
-            return not self._content_metadata_is_unresolved()
-        except Exception as e:
-            logger.warning(f"Refreshing signup content metadata failed: {e}")
-            return False
-
-    def _ensure_live_signup_content_manifest(self, referer: str = "") -> bool:
-        """Always try one live content-manifest request before SignUpNewMember.
-
-        The successful browser flow performs a real
-        `checkoutweb/release/weasley/content-manifest.*.json` fetch.  Cached
-        contentIdentifier is a useful fallback, but relying on it removes this
-        browser-visible fetch and can leave the flow with a stale hash.  This
-        helper first uses any manifest URL extracted from the current signup
-        page/cache; if missing, it refreshes signup once to discover the URL.
-        """
-        if self.state.content_manifest_url and not self.state.content_manifest_url.startswith("http"):
-            self.state.content_manifest_url = ""
-
-        if self.state.content_manifest_url:
-            return self._fetch_signup_content_manifest_metadata(
-                self.state.content_manifest_url,
-                referer=referer or self.state.signup_url or "https://www.paypal.com/",
-            )
-
-        # If cache has the last manifest URL, apply it only to discover the URL;
-        # `_fetch_signup_content_manifest_metadata` below still performs the
-        # live request and overwrites hash/key with the current response.
-        self._apply_configured_or_cached_signup_content_metadata()
-        if self.state.content_manifest_url:
-            return self._fetch_signup_content_manifest_metadata(
-                self.state.content_manifest_url,
-                referer=referer or self.state.signup_url or "https://www.paypal.com/",
-            )
-
-        self._refresh_signup_content_metadata(referer=referer or self.state.signup_url)
-        if self.state.content_manifest_url:
-            return self._fetch_signup_content_manifest_metadata(
-                self.state.content_manifest_url,
-                referer=referer or self.state.signup_url or "https://www.paypal.com/",
-            )
-        manifest_url = self._configured_signup_content_manifest_url()
-        if manifest_url:
-            return self._fetch_signup_content_manifest_metadata(
-                manifest_url,
-                referer=referer or self.state.signup_url or "https://www.paypal.com/",
-            )
-        return not self._content_metadata_is_unresolved()
 
     def _build_signup_url(self) -> str:
         """Build the canonical checkoutweb/signup URL used as GraphQL Referer."""
-        country = self._profile_country()
-        locale = self._profile_locale()
         params: list[tuple[str, str]] = []
         if self.state.ssrt:
             params.append(("ssrt", self.state.ssrt))
         params.extend([
             ("ul", "1"),
             ("modxo_redirect_reason", "guest_user"),
-            ("locale.x", locale),
-            ("country.x", country),
+            ("locale.x", self.locale),
+            ("country.x", self.country),
             ("ba_token", self.ba_token),
             ("token", self.state.ec_token),
             ("rcache", "1"),
@@ -3493,7 +434,7 @@ class PayPalFlow:
         match = re.search(r'"onboardingRedirectUrl"\s*:\s*"([^"]+)"', rsc_text or "")
         if not match:
             return ""
-        return PayPalFlow._unescape_auth_url(match.group(1))
+        return match.group(1).replace("\\/", "/")
 
     @staticmethod
     def _find_access_token(value) -> str:
@@ -3512,1666 +453,6 @@ class PayPalFlow:
                     return found
         return ""
 
-
-    @staticmethod
-    def _find_funding_instrument_id(value) -> str:
-        """Find a fundingInstrument.id in onboarding/approve response order.
-
-        Weasley responseHandlers use `fundingOptions[0].fundingInstrument.id`
-        for BILLING_WITHOUT_PURCHASE, and `allPlans[0].fundingSources[0]` for
-        purchase flows.  Search those common shapes before falling back to a
-        recursive scan.
-        """
-        if isinstance(value, dict):
-            funding_options = value.get("fundingOptions")
-            if isinstance(funding_options, list):
-                for option in funding_options:
-                    if not isinstance(option, dict):
-                        continue
-                    instrument = option.get("fundingInstrument")
-                    if isinstance(instrument, dict) and isinstance(instrument.get("id"), str) and instrument.get("id"):
-                        return instrument["id"]
-                    for plan in option.get("allPlans") or []:
-                        if not isinstance(plan, dict):
-                            continue
-                        for source in plan.get("fundingSources") or []:
-                            if not isinstance(source, dict):
-                                continue
-                            instrument = source.get("fundingInstrument")
-                            if isinstance(instrument, dict) and isinstance(instrument.get("id"), str) and instrument.get("id"):
-                                return instrument["id"]
-            for key, item in value.items():
-                if key == "fundingInstrument" and isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("id"):
-                    return item["id"]
-                found = PayPalFlow._find_funding_instrument_id(item)
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for item in value:
-                found = PayPalFlow._find_funding_instrument_id(item)
-                if found:
-                    return found
-        return ""
-
-    def _sync_euat_token_from_cookie(self) -> str:
-        """Refresh SessionState from the cookie jar and return the EUAT token if present."""
-        try:
-            sync = getattr(self.session, "_sync_state_cookies", None)
-            if callable(sync):
-                sync()
-        except Exception as exc:
-            logger.debug("EUAT cookie sync failed: {}", exc)
-        return str(getattr(self.state, "euat_token", "") or "")
-
-    def _signup_access_token_candidate(self, signup_result) -> str:
-        """Find an access token in the full signup response or EUAT cookie state."""
-        response_token = self._find_access_token(signup_result)
-        if response_token:
-            logger.info("Access token found in SignUpNewMember response; continuing.")
-            return response_token
-        cookie_token = self._sync_euat_token_from_cookie()
-        if cookie_token:
-            logger.info("EUAT token found in cookie jar after SignUpNewMember; continuing.")
-            return cookie_token
-        logger.info("No access token/EUAT found after SignUpNewMember response.")
-        return ""
-
-    @staticmethod
-    def _unescape_auth_url(value: str) -> str:
-        return (
-            (value or "")
-            .replace("&amp;", "&")
-            .replace("&#38;", "&")
-            .replace("&#x26;", "&")
-            .replace("\\u0026", "&")
-            .replace("\\/", "/")
-        )
-
-    @staticmethod
-    def _first_query_value(url: str, name: str) -> str:
-        try:
-            return (urllib.parse.parse_qs(urllib.parse.urlparse(url or "").query).get(name) or [""])[0]
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _is_ec_token(token: str) -> bool:
-        return bool(re.match(r"^EC-[A-Z0-9]+$", token or "", re.I))
-
-    @staticmethod
-    def _graphql_errors(result) -> list[dict[str, Any]]:
-        items = result if isinstance(result, list) else [result]
-        errors: list[dict[str, Any]] = []
-        for item in items:
-            if isinstance(item, dict) and isinstance(item.get("errors"), list):
-                errors.extend([err for err in item.get("errors") or [] if isinstance(err, dict)])
-        return errors
-
-    @staticmethod
-    def _html_attr_value(html: str, attr: str) -> str:
-        m = re.search(r'\b' + re.escape(attr) + r'=["\']([^"\']*)', html or "", re.I)
-        return html_lib.unescape(m.group(1)) if m else ""
-
-    @staticmethod
-    def _extract_auth_fpti(challenge_html: str) -> dict[str, str]:
-        m = re.search(r"PAYPAL\.analytics\.setup\(\{data:'([^']+)'", challenge_html or "", re.I)
-        if not m:
-            return {}
-        try:
-            return {
-                str(k): str(v)
-                for k, v in urllib.parse.parse_qsl(m.group(1), keep_blank_values=True)
-            }
-        except Exception:
-            return {}
-
-    @staticmethod
-    def _authchallenge_captcha_type(challenge_html: str) -> str:
-        return (PayPalFlow._html_attr_value(challenge_html, "data-captcha-type") or "").strip().lower()
-
-    @staticmethod
-    def _extract_hcaptcha_passive_iframe_src(challenge_html: str) -> str:
-        m = re.search(
-            r'<iframe[^>]+src=["\']([^"\']*hcaptcha/hcaptchapassive(?:_eval)?\.html[^"\']*)',
-            challenge_html or "",
-            re.I,
-        )
-        return PayPalFlow._unescape_auth_url(m.group(1)) if m else ""
-
-    @staticmethod
-    def _is_hcaptcha_passive_challenge(challenge_html: str) -> bool:
-        captcha_type = PayPalFlow._authchallenge_captcha_type(challenge_html)
-        return "hcaptchapassive" in captcha_type or bool(
-            PayPalFlow._extract_hcaptcha_passive_iframe_src(challenge_html)
-        )
-
-    @staticmethod
-    def _hcaptcha_passive_frontend_skip_enabled() -> bool:
-        value = os.getenv("PAYPAL_HCAPTCHA_PASSIVE_FRONTEND_SKIP", "1").strip().lower()
-        return value not in {"0", "false", "no", "off", "disable", "disabled"}
-
-    @staticmethod
-    def _extract_hcaptcha_site_key(challenge_html: str, iframe_src: str = "") -> str:
-        candidates = [
-            PayPalFlow._first_query_value(iframe_src, "siteKey"),
-            PayPalFlow._first_query_value(iframe_src, "sitekey"),
-            PayPalFlow._html_attr_value(challenge_html, "data-sitekey"),
-            PayPalFlow._html_attr_value(challenge_html, "data-site-key"),
-        ]
-        for value in candidates:
-            if value:
-                return value
-        m = re.search(r'\bsiteKey=([0-9a-f-]{20,})', challenge_html or "", re.I)
-        return html_lib.unescape(m.group(1)) if m else ""
-
-    @staticmethod
-    def _extract_hcaptcha_iframe_src(challenge_html: str) -> str:
-        """Extract any hCaptcha iframe source from an authchallenge document."""
-        for pattern in (
-            r'<iframe[^>]+src=["\']([^"\']*hcaptcha[^"\']*)',
-            r'<iframe[^>]+src=["\']([^"\']*hcaptcha\.com[^"\']*)',
-        ):
-            m = re.search(pattern, challenge_html or "", re.I)
-            if m:
-                return PayPalFlow._unescape_auth_url(m.group(1))
-        return ""
-
-    @staticmethod
-    def _extract_hcaptcha_rqdata(challenge_html: str, iframe_src: str = "") -> str:
-        """Best-effort extraction for enterprise hCaptcha rqdata payloads."""
-        candidates = [
-            PayPalFlow._first_query_value(iframe_src, "rqdata"),
-            PayPalFlow._first_query_value(iframe_src, "rqData"),
-            PayPalFlow._html_attr_value(challenge_html, "data-rqdata"),
-            PayPalFlow._html_attr_value(challenge_html, "data-rqData"),
-            PayPalFlow._html_attr_value(challenge_html, "data-hcaptcha-rqdata"),
-        ]
-        for value in candidates:
-            if value:
-                return value
-        m = re.search(r'\brqdata["\']?\s*[:=]\s*["\']([^"\']+)', challenge_html or "", re.I)
-        return html_lib.unescape(m.group(1)) if m else ""
-
-    def _authchallenge_session_cookie_dict(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        try:
-            for cookie in self.session.client.cookies.jar:
-                out[str(cookie.name)] = str(cookie.value)
-        except Exception:
-            pass
-        return out
-
-    def _paypal_auth_logclientdata(
-        self,
-        *,
-        challenge_html: str,
-        csrf: str,
-        session_id: str,
-        ec_token: str,
-        captcha_state: str,
-        signup_url: str,
-    ) -> None:
-        """Replay authchallenge captcha-state telemetry seen in browser traces."""
-        fpti = self._extract_auth_fpti(challenge_html)
-        if not fpti:
-            fpti = {
-                "pgrp": "main:authchallenge::checkoutweb:signup",
-                "page": "main:authchallenge::checkoutweb:signup",
-                "comp": "checkoutuinodeweb",
-                "tsrce": "xorouternodeweb",
-                "pgtf": "Nodejs",
-                "s": "ci",
-                "env": "live",
-                "pgst": str(int(time.time() * 1000)),
-                "calc": "".join(random.choices("0123456789abcdef", k=13)),
-                "csci": "".join(random.choices("0123456789abcdef", k=32)),
-                "nsid": session_id,
-                "rsta": self._profile_locale(),
-                "ccpg": self._profile_country(),
-            }
-        profile = self.state.browser_profile or {}
-        fpti.update({
-            "pgrp": fpti.get("pgrp") or "main:authchallenge::checkoutweb:signup",
-            "page": fpti.get("page") or "main:authchallenge::checkoutweb:signup",
-            "comp": fpti.get("comp") or "checkoutuinodeweb",
-            "tsrce": fpti.get("tsrce") or "xorouternodeweb",
-            "flnm": "Weasley",
-            "fltk": ec_token,
-            "captchaState": captcha_state,
-            "nsid": fpti.get("nsid") or session_id,
-            "rsta": fpti.get("rsta") or self._profile_locale(),
-            "ccpg": fpti.get("ccpg") or self._profile_country(),
-        })
-        fpti.setdefault("g", str(profile.get("timezone_offset_minutes", 180)))
-        if captcha_state != "CLIENT_SIDE_RECAPTCHAV3_SERVED":
-            fpti.setdefault("message", "")
-        if captcha_state == "CLIENT_SIDE_PPCAPTCHA_SOLVED":
-            fpti.setdefault("adsCaptcha", "explicit")
-
-        body = {"fpti": fpti, "_csrf": csrf, "_sessionID": session_id}
-        headers = {
-            **self._browser_headers(accept="*/*", content_type="application/json;charset=UTF-8"),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "X-Requested-With": "XMLHttpRequest",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-        try:
-            resp = self.session.post(
-                "https://www.paypal.com/auth/logclientdata",
-                json=body,
-                headers=headers,
-                timeout=20,
-            )
-            logger.info("auth logclientdata {} status={}", captcha_state, resp.status_code)
-        except Exception as e:
-            logger.debug("auth logclientdata {} soft-failed: {}", captcha_state, e)
-
-    def _authchallenge_frontend_disable_states(self, challenge_html: str) -> list[str]:
-        captcha_type = self._authchallenge_captcha_type(challenge_html)
-        lowered = (challenge_html or "").lower()
-        if "hcaptchapassive" in captcha_type or self._extract_hcaptcha_passive_iframe_src(challenge_html):
-            return [
-                "CLIENT_SIDE_HCAPTCHA_PASSIVE_SERVED",
-                "CLIENT_SIDE_HCAPTCHA_PASSIVE_SCRIPT_ONLOAD",
-                "CLIENT_SIDE_HCAPTCHA_PASSIVE_JS_LOADED",
-                "CLIENT_SIDE_HCAPTCHA_PASSIVE_SOLVED",
-                "CLIENT_SIDE_PPCAPTCHA_SOLVED",
-            ]
-        if captcha_type == "recaptchav3" or "grcv3" in lowered or "recaptcha_v3" in lowered:
-            return [
-                "CLIENT_SIDE_RECAPTCHAV3_SERVED",
-                "CLIENT_SIDE_RECAPTCHAV3_ENTERPRISE_API_JS_LOADED",
-                "CLIENT_SIDE_RECAPTCHAV3_SOLVED",
-                "CLIENT_SIDE_PPCAPTCHA_SOLVED",
-            ]
-        if captcha_type == "recaptcha" or "recaptcha" in lowered:
-            return [
-                "CLIENT_SIDE_RECAPTCHA_SERVED",
-                "CLIENT_SIDE_RECAPTCHA_ENTERPRISE_API_JS_LOADED",
-                "CLIENT_SIDE_PPCAPTCHA_SOLVED",
-            ]
-        if captcha_type == "hcaptcha" or "hcaptcha" in lowered:
-            return [
-                "CLIENT_SIDE_HCAPTCHA_SERVED",
-                "CLIENT_SIDE_PPCAPTCHA_SOLVED",
-            ]
-        return ["CLIENT_SIDE_PPCAPTCHA_SOLVED"]
-
-    def _post_frontend_disable_graphql_challenge_form(
-        self,
-        *,
-        url: str,
-        fields: dict[str, str],
-        challenge_html: str,
-        signup_url: str,
-        fake_token: str,
-    ):
-        captcha_type = self._authchallenge_captcha_type(challenge_html)
-        lowered = (challenge_html or "").lower()
-        now = int(time.time() * 1000)
-
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        if jse:
-            fields["jse"] = jse
-
-        if "hcaptchapassive" in captcha_type or self._extract_hcaptcha_passive_iframe_src(challenge_html):
-            fields["hcaptchaToken"] = fake_token
-            iframe_src = self._extract_hcaptcha_passive_iframe_src(challenge_html)
-            if iframe_src:
-                iframe_src = urllib.parse.urljoin("https://www.paypal.com/", iframe_src)
-            site_key = self._extract_hcaptcha_site_key(challenge_html, iframe_src)
-            if site_key:
-                fields.setdefault("publicKey", site_key)
-            fields.setdefault("hcaptcha_passive_eval_start_time_utc", str(now - random.randint(5200, 7400)))
-            fields.setdefault("hcaptcha_passive_render_start_time_utc", str(now - random.randint(4500, 6500)))
-            fields.setdefault("hcaptcha_passive_render_end_time_utc", str(now - random.randint(300, 1200)))
-            fields.setdefault("hcaptcha_passive_verification_time_utc", str(now))
-        elif captcha_type == "recaptchav3" or "grcv3" in lowered or "recaptcha_v3" in lowered:
-            fields["grcV3EntToken"] = fake_token
-        elif captcha_type == "hcaptcha" or "hcaptcha" in lowered:
-            fields["hcaptcha"] = fake_token
-            fields.setdefault("hcaptcha_render_start_time_utc", str(now - random.randint(4500, 6500)))
-            fields.setdefault("hcaptcha_render_end_time_utc", str(now - random.randint(300, 1200)))
-            fields.setdefault("hcaptcha_verification_time_utc", str(now))
-        else:
-            fields["recaptcha"] = fake_token
-
-        headers = {
-            **self._browser_headers(
-                accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                content_type="application/x-www-form-urlencoded",
-            ),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        }
-        logger.info(
-            "frontend_disable submitting authchallenge form action={} fields={}",
-            url,
-            sorted(k for k in fields.keys() if k not in {"hcaptchaToken", "hcaptcha", "recaptcha", "grcV3EntToken"}),
-        )
-        resp = self.session.post(url, data=fields, headers=headers, timeout=60)
-        text = resp.text or ""
-        try:
-            Path("/tmp/paypal_authchallenge_frontend_disable_form_last.json").write_text(
-                json.dumps(
-                    {
-                        "url": url,
-                        "status_code": resp.status_code,
-                        "content_type": resp.headers.get("content-type", ""),
-                        "fields": sanitize_for_log(fields),
-                        "response_head": text[:3000],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-        if looks_like_paypal_authchallenge(text):
-            logger.warning(
-                "frontend_disable authchallenge form returned another challenge head={}",
-                text[:700],
-            )
-            return False
-        try:
-            return resp.json()
-        except ValueError:
-            stripped = text.strip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                return json.loads(stripped)
-            return resp.status_code in {200, 202, 204, 302, 303}
-
-    def _post_frontend_disable_verifyhcaptchapassive_fake(
-        self,
-        challenge_html: str,
-        signup_url: str,
-        *,
-        fake_token: str = "frontend-hcaptcha-disabled",
-        force_synthetic: bool = False,
-    ) -> bool:
-        """Replay the browser's passive hCaptcha verify packet before close.
-
-        Roxy's successful flow sends `/auth/verifyhcaptchapassive` for passive
-        challenges.  In frontend-disable mode PayPalSession answers the endpoint
-        locally, but the request shape is still recorded and cookies/CH/header
-        context stay aligned with the browser path.
-        """
-        fields = self._extract_input_values(challenge_html)
-        csrf = fields.get("_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        session_id = (
-            fields.get("_sessionID")
-            or self._html_attr_value(challenge_html, "data-sessionid")
-            or self.state.nsid
-        )
-        iframe_src = self._extract_hcaptcha_passive_iframe_src(challenge_html)
-        if iframe_src:
-            iframe_src = urllib.parse.urljoin("https://www.paypal.com/", iframe_src)
-        site_key = self._extract_hcaptcha_site_key(challenge_html, iframe_src)
-        now = int(time.time() * 1000)
-        render_start = now - random.randint(7000, 11000)
-        render_end = now - random.randint(300, 1300)
-        form = {
-            "_csrf": csrf,
-            "hcaptcha_passive_eval_start_time_utc": str(render_start - random.randint(250, 900)),
-            "hcaptchaToken": fake_token,
-            "publicKey": site_key,
-            "hcaptcha_passive_render_start_time_utc": str(render_start),
-            "hcaptcha_passive_render_end_time_utc": str(render_end),
-            "hcaptcha_passive_verification_time_utc": str(now),
-            "_sessionID": session_id,
-        }
-        form = {k: v for k, v in form.items() if v}
-        headers = {
-            **self._browser_headers(accept="*/*", content_type="application/x-www-form-urlencoded"),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "X-Requested-With": "XMLHttpRequest",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-        try:
-            resp = self.session.post(
-                "https://www.paypal.com/auth/verifyhcaptchapassive",
-                data=form,
-                headers=headers,
-                force_captcha_synthetic=force_synthetic,
-                timeout=30,
-            )
-            ok = resp.status_code in {200, 202, 204, 302, 303}
-            logger.info("frontend_disable fake /auth/verifyhcaptchapassive status={} ok={}", resp.status_code, ok)
-            try:
-                Path("/tmp/paypal_authchallenge_frontend_disable_verifyhcaptchapassive_last.json").write_text(
-                    json.dumps(
-                        {
-                            "status_code": resp.status_code,
-                            "content_type": resp.headers.get("content-type", ""),
-                            "fields": sanitize_for_log(form),
-                            "response_head": (resp.text or "")[:1000],
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-            return ok
-        except Exception as e:
-            logger.debug("frontend_disable fake verifyhcaptchapassive soft-failed: {}", e)
-            return False
-
-    def _post_frontend_disable_validatecaptcha_fake(
-        self,
-        challenge_html: str,
-        signup_url: str,
-        *,
-        force_synthetic: bool = False,
-    ):
-        action = self._extract_form_action(challenge_html) or "/auth/validatecaptcha"
-        url = urllib.parse.urljoin("https://www.paypal.com/", self._unescape_auth_url(action))
-        path = urllib.parse.urlparse(url).path.lower()
-        if path not in {"/auth/validatecaptcha", "/auth/verifyhcaptchapassive"}:
-            if path.startswith("/graphql"):
-                if (
-                    "hcaptchapassive" in self._authchallenge_captcha_type(challenge_html)
-                    or self._extract_hcaptcha_passive_iframe_src(challenge_html)
-                ):
-                    # Passive hCaptcha's browser path verifies via
-                    # /auth/verifyhcaptchapassive and then lets the app retry
-                    # the original operation.  Submitting the GraphQL form with
-                    # a dummy hcaptcha token escalates to interactive hcaptcha.
-                    return self._post_frontend_disable_verifyhcaptchapassive_fake(
-                        challenge_html,
-                        signup_url,
-                        force_synthetic=force_synthetic,
-                    )
-                return self._post_frontend_disable_graphql_challenge_form(
-                    url=url,
-                    fields=self._extract_input_values(challenge_html),
-                    challenge_html=challenge_html,
-                    signup_url=signup_url,
-                    fake_token="frontend-hcaptcha-disabled",
-                )
-            logger.debug("frontend_disable skips unsupported form action {}", url)
-            return False
-        if path == "/auth/verifyhcaptchapassive":
-            return self._post_frontend_disable_verifyhcaptchapassive_fake(
-                challenge_html,
-                signup_url,
-                force_synthetic=force_synthetic,
-            )
-
-        fields = self._extract_input_values(challenge_html)
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        if jse:
-            fields["jse"] = jse
-
-        now = int(time.time() * 1000)
-        fake_token = "frontend-hcaptcha-disabled"
-        captcha_type = self._authchallenge_captcha_type(challenge_html)
-        lowered = (challenge_html or "").lower()
-        if "hcaptchapassive" in captcha_type or self._extract_hcaptcha_passive_iframe_src(challenge_html):
-            if path != "/auth/verifyhcaptchapassive":
-                self._post_frontend_disable_verifyhcaptchapassive_fake(
-                    challenge_html,
-                    signup_url,
-                    fake_token=fake_token,
-                    force_synthetic=force_synthetic,
-                )
-            fields.setdefault("hcaptchaToken", fake_token)
-            iframe_src = self._extract_hcaptcha_passive_iframe_src(challenge_html)
-            if iframe_src:
-                iframe_src = urllib.parse.urljoin("https://www.paypal.com/", iframe_src)
-            site_key = self._extract_hcaptcha_site_key(challenge_html, iframe_src)
-            if site_key:
-                fields.setdefault("publicKey", site_key)
-            fields.setdefault("hcaptcha_passive_eval_start_time_utc", str(now - random.randint(5200, 7400)))
-            fields.setdefault("hcaptcha_passive_render_start_time_utc", str(now - random.randint(4500, 6500)))
-            fields.setdefault("hcaptcha_passive_render_end_time_utc", str(now - random.randint(300, 1200)))
-            fields.setdefault("hcaptcha_passive_verification_time_utc", str(now))
-        elif captcha_type == "recaptchav3" or "grcv3" in lowered or "recaptcha_v3" in lowered:
-            fields.setdefault("grcV3EntToken", fake_token)
-        elif captcha_type == "hcaptcha" or "hcaptcha" in lowered:
-            fields.setdefault("hcaptcha", fake_token)
-            fields.setdefault("hcaptcha_render_start_time_utc", str(now - random.randint(4500, 6500)))
-            fields.setdefault("hcaptcha_render_end_time_utc", str(now - random.randint(300, 1200)))
-            fields.setdefault("hcaptcha_verification_time_utc", str(now))
-        else:
-            fields.setdefault("recaptcha", fake_token)
-
-        headers = {
-            **self._browser_headers(accept="*/*", content_type="application/x-www-form-urlencoded"),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "X-Requested-With": "fetch",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-        resp = self.session.post(
-            url,
-            data=fields,
-            headers=headers,
-            force_captcha_synthetic=force_synthetic,
-            timeout=30,
-        )
-        ok = resp.status_code in {200, 202, 204, 302, 303}
-        logger.info(
-            "frontend_disable fake {} status={} ok={}",
-            path,
-            resp.status_code,
-            ok,
-        )
-        return ok
-
-    def _frontend_disable_authchallenge_close(
-        self,
-        challenge_html: str,
-        signup_url: str,
-        *,
-        force_synthetic: bool = False,
-    ) -> bool | dict[str, Any] | list[Any]:
-        """Backend equivalent of the console `paypal_hcaptcha_console_disable_v2.js`.
-
-        It does not ask CapSolver/hCaptcha/Google for a token.  Instead it
-        mirrors the browser patch: captcha submission endpoints are locally
-        answered by PayPalSession, the PPCAPTCHA_SOLVED telemetry is emitted,
-        and the caller retries the original PayPal operation with cookies kept.
-        """
-        if strict_browser_risk_enabled() and not self._synthetic_captcha_allowed():
-            logger.warning(
-                "frontend_disable/fake CAPTCHA close is disabled by strict browser-risk mode."
-            )
-            return False
-        if not force_synthetic and not self._captcha_frontend_disable_enabled():
-            return False
-
-        captcha_type = self._authchallenge_captcha_type(challenge_html) or "unknown"
-        csrf = self._html_input_value(challenge_html, "_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        session_id = (
-            self._html_input_value(challenge_html, "_sessionID")
-            or self._html_attr_value(challenge_html, "data-sessionid")
-            or self.state.nsid
-        )
-        ec_token = self.state.ec_token or self._first_query_value(signup_url, "token")
-        states = self._authchallenge_frontend_disable_states(challenge_html)
-
-        logger.info(
-            "authchallenge type={} -> frontend_disable fake-close states={} forced={}",
-            captcha_type,
-            ",".join(states),
-            force_synthetic,
-        )
-        if csrf and session_id:
-            for state in states:
-                self._paypal_auth_logclientdata(
-                    challenge_html=challenge_html,
-                    csrf=csrf,
-                    session_id=session_id,
-                    ec_token=ec_token,
-                    captcha_state=state,
-                    signup_url=signup_url,
-                )
-        else:
-            logger.warning(
-                "frontend_disable cannot replay auth logclientdata: csrf={} session_id={}",
-                bool(csrf),
-                bool(session_id),
-            )
-
-        fake_post_result = False
-        try:
-            fake_post_result = self._post_frontend_disable_validatecaptcha_fake(
-                challenge_html,
-                signup_url,
-                force_synthetic=force_synthetic,
-            )
-        except Exception as e:
-            logger.debug("frontend_disable fake validatecaptcha soft-failed: {}", e)
-
-        self._mark_frontend_captcha_solved(f"authchallenge_{captcha_type}")
-        try:
-            Path("/tmp/paypal_authchallenge_frontend_disable_last.json").write_text(
-                json.dumps(
-                    {
-                        "mode": self.captcha_bypass_mode,
-                        "forced": force_synthetic,
-                        "captcha_type": captcha_type,
-                        "telemetry_states": states,
-                        "csrf": bool(csrf),
-                        "session_id": bool(session_id),
-                        "fake_post_ok": bool(fake_post_result),
-                        "fake_post_result_type": type(fake_post_result).__name__,
-                        "signup_url": signup_url,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-        if isinstance(fake_post_result, (dict, list)):
-            return fake_post_result
-        if bool(fake_post_result):
-            return True
-
-        if force_synthetic and self._is_hcaptcha_passive_challenge(challenge_html):
-            logger.info(
-                "frontend_disable forced hcaptchapassive close without backend validate; "
-                "retrying original operation"
-            )
-            return True
-
-        # Some ModXO server-action challenges post the captcha form back to the
-        # same /pay URL instead of /auth/validatecaptcha.  The browser console
-        # disable script closes the widget and lets the original server-action be
-        # retried; there is no separate validatecaptcha packet to send.  Treat a
-        # successfully logged frontend-disable sequence as solved so callers can
-        # retry the original request instead of falling back to the legacy compact
-        # /pay form.
-        if csrf and session_id and captcha_type in {"hcaptcha", "recaptcha", "recaptchav3"}:
-            logger.info(
-                "frontend_disable solved {} without standalone validate endpoint; retrying original operation",
-                captcha_type,
-            )
-            return True
-        return False
-
-    def _mint_hcaptcha_passive_token_via_node(
-        self,
-        *,
-        iframe_url: str,
-        parent_url: str,
-        timeout: int = 60,
-    ) -> tuple[str, dict[str, object]]:
-        """Use the reference happy-dom helper to mint PayPal hCaptcha passive token."""
-        iframe_url = (iframe_url or "").strip()
-        if not iframe_url:
-            return "", {}
-
-        manual = (
-            os.environ.get("PAYPAL_HCAPTCHA_TOKEN")
-            or os.environ.get("PPS_PAYPAL_HCAPTCHA_TOKEN")
-            or ""
-        ).strip()
-        if manual:
-            logger.info("hcaptchapassive: using pre-supplied backend token len={}", len(manual))
-            return manual, {"source": "env"}
-
-        helper_candidates = [
-            Path(__file__).resolve().parents[1] / "tools" / "hcaptcha_passive_node.js",
-            Path(__file__).with_name("hcaptcha_passive_node.js"),
-            Path("/home/nonewhite/Downloads/gpt-plus-pp/botcore/paypal_plus/hcaptcha_passive_node.js"),
-        ]
-        helper = next((p for p in helper_candidates if p.exists()), None)
-        if not helper:
-            logger.warning("hcaptchapassive node helper missing")
-            return "", {}
-
-        payload = {
-            "iframeUrl": iframe_url,
-            "parentUrl": parent_url or "https://www.paypal.com/",
-            "userAgent": self._profile_user_agent(),
-            "browserProfile": self.state.browser_profile or {},
-            "screen": self.state.screen or {},
-            "viewport": self.state.viewport or {},
-            "acceptLanguage": self._browser_headers().get("Accept-Language", ""),
-            "timeoutMs": int(max(15, timeout) * 1000),
-        }
-        env = os.environ.copy()
-        node_paths = [
-            p.strip()
-            for p in (env.get("NODE_PATH", "") or "").split(os.pathsep)
-            if p.strip()
-        ]
-        node_paths.extend([
-            "/home/nonewhite/Downloads/gpt-plus-pp/webui/frontend/node_modules",
-            "/home/nonewhite/Downloads/GuJumpgate-v0.2.0/node_modules",
-            "/app/webui/frontend/node_modules",
-            "/usr/local/lib/node_modules",
-        ])
-        env["NODE_PATH"] = os.pathsep.join(dict.fromkeys([p for p in node_paths if p]))
-        if self.proxy_config.url:
-            env["HTTPS_PROXY"] = self.proxy_config.url
-            env["HTTP_PROXY"] = self.proxy_config.url
-            env["ALL_PROXY"] = self.proxy_config.url
-
-        try:
-            proc = subprocess.run(
-                [os.environ.get("NODE", "node"), str(helper)],
-                input=json.dumps(payload, ensure_ascii=False),
-                text=True,
-                capture_output=True,
-                timeout=max(90, int(timeout) + 30),
-                env=env,
-                cwd=str(helper.parent),
-            )
-        except Exception as e:
-            logger.warning("hcaptchapassive node helper launch failed: {}", e)
-            return "", {}
-
-        stderr = (proc.stderr or "").strip()
-        if stderr:
-            logger.debug("hcaptchapassive node helper stderr: {}", stderr[-2000:])
-        stdout = (proc.stdout or "").strip()
-        if not stdout:
-            logger.warning("hcaptchapassive node helper produced no stdout rc={}", proc.returncode)
-            return "", {}
-        try:
-            data = json.loads(stdout)
-        except Exception as e:
-            logger.warning("hcaptchapassive node helper JSON parse failed: {} stdout={}", e, stdout[:500])
-            return "", {}
-
-        try:
-            Path("/tmp/paypal_hcaptchapassive_node_last.json").write_text(
-                json.dumps(
-                    {
-                        "returncode": proc.returncode,
-                        "ok": bool(data.get("token")),
-                        "error": data.get("error"),
-                        "elapsedMs": data.get("elapsedMs"),
-                        "states": data.get("states"),
-                        "iframeCount": data.get("iframeCount"),
-                        "iframeSrcs": data.get("iframeSrcs"),
-                        "token_len": len(str(data.get("token") or "")),
-                        "renderData": data.get("renderData") or {},
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-        token = str(data.get("token") or "").strip()
-        if token:
-            logger.info("hcaptchapassive node helper token ready len={}", len(token))
-            render = data.get("renderData") if isinstance(data.get("renderData"), dict) else {}
-            return token, render
-        logger.warning(
-            "hcaptchapassive node helper no token rc={} error={}",
-            proc.returncode,
-            data.get("error"),
-        )
-        return "", {}
-
-    def _mint_hcaptcha_passive_token_via_capsolver(
-        self,
-        *,
-        iframe_url: str,
-        parent_url: str,
-        site_key: str,
-    ) -> tuple[str, dict[str, Any]]:
-        _ = (iframe_url, parent_url, site_key)
-        logger.warning("CapSolver hcaptchapassive support has been removed; skipping external solver.")
-        return "", {}
-
-    def _mint_hcaptcha_passive_token(
-        self,
-        *,
-        iframe_url: str,
-        parent_url: str,
-        site_key: str,
-    ) -> tuple[str, dict[str, Any]]:
-        preference = (
-            os.getenv("PAYPAL_HCAPTCHA_PASSIVE_SOLVER")
-            or os.getenv("PAYPAL_SIGNUP_CAPTCHA_SOLVER")
-            or "node"
-        ).strip().lower()
-        solvers = [
-            item.strip().replace("-", "_")
-            for item in re.split(r"[,>\s]+", preference)
-            if item.strip()
-        ] or ["node"]
-        seen: set[str] = set()
-        for solver in solvers:
-            if solver in seen:
-                continue
-            seen.add(solver)
-            if solver in {"capsolver", "cap_solver", "real", "solve", "solver"}:
-                if strict_browser_risk_enabled() and not self._env_truthy("PAYPAL_ALLOW_EXTERNAL_CAPTCHA_SOLVER"):
-                    logger.warning(
-                        "Skipping external hcaptchapassive solver={} in strict browser-risk mode.",
-                        solver,
-                    )
-                    continue
-                token, data = self._mint_hcaptcha_passive_token_via_capsolver(
-                    iframe_url=iframe_url,
-                    parent_url=parent_url,
-                    site_key=site_key,
-                )
-            elif solver in {"node", "local", "happy_dom", "hcaptcha_passive_node"}:
-                if strict_browser_risk_enabled():
-                    logger.warning(
-                        "Skipping local happy-dom hcaptchapassive helper in strict browser-risk mode."
-                    )
-                    continue
-                token, data = self._mint_hcaptcha_passive_token_via_node(
-                    iframe_url=iframe_url,
-                    parent_url=parent_url,
-                    timeout=int(os.getenv("PAYPAL_HCAPTCHA_PASSIVE_NODE_TIMEOUT", "60")),
-                )
-            else:
-                logger.debug("Unknown hcaptchapassive solver preference {}; skipping", solver)
-                continue
-            if token:
-                logger.info("hcaptchapassive solver={} produced token len={}", solver, len(token))
-                return token, data
-        return "", {}
-
-    def _validate_paypal_hcaptcha_passive(self, challenge_html: str, signup_url: str) -> bool:
-        """Submit PayPal `/auth/verifyhcaptchapassive` for hcaptchapassive challenge."""
-        csrf = self._html_input_value(challenge_html, "_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        request_id = self._html_input_value(challenge_html, "_requestId")
-        hsh = self._html_input_value(challenge_html, "_hash")
-        session_id = self._html_input_value(challenge_html, "_sessionID") or self._html_attr_value(challenge_html, "data-sessionid")
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        iframe_src = self._extract_hcaptcha_passive_iframe_src(challenge_html)
-        if iframe_src:
-            iframe_src = urllib.parse.urljoin("https://www.paypal.com/", iframe_src)
-        site_key = self._extract_hcaptcha_site_key(challenge_html, iframe_src)
-        ec_token = self.state.ec_token or self._first_query_value(signup_url, "token")
-
-        if not all([csrf, session_id, iframe_src, site_key]):
-            logger.warning(
-                "hcaptchapassive fields missing csrf={} request={} hash={} session={} jse={} iframe={} sitekey={}",
-                bool(csrf), bool(request_id), bool(hsh), bool(session_id), bool(jse), bool(iframe_src), bool(site_key),
-            )
-            return False
-
-        for state in (
-            "CLIENT_SIDE_HCAPTCHA_PASSIVE_SERVED",
-            "CLIENT_SIDE_HCAPTCHA_PASSIVE_SCRIPT_ONLOAD",
-            "CLIENT_SIDE_HCAPTCHA_PASSIVE_JS_LOADED",
-        ):
-            self._paypal_auth_logclientdata(
-                challenge_html=challenge_html,
-                csrf=csrf,
-                session_id=session_id,
-                ec_token=ec_token,
-                captcha_state=state,
-                signup_url=signup_url,
-            )
-
-        token, solution = self._mint_hcaptcha_passive_token(
-            iframe_url=iframe_src,
-            parent_url=signup_url,
-            site_key=site_key,
-        )
-        if not token:
-            return False
-
-        for state in ("CLIENT_SIDE_HCAPTCHA_PASSIVE_SOLVED", "CLIENT_SIDE_PPCAPTCHA_SOLVED"):
-            self._paypal_auth_logclientdata(
-                challenge_html=challenge_html,
-                csrf=csrf,
-                session_id=session_id,
-                ec_token=ec_token,
-                captcha_state=state,
-                signup_url=signup_url,
-            )
-
-        now = int(time.time() * 1000)
-        render_start = int(
-            solution.get("hcaptchaPassiveRenderStartTime")
-            or solution.get("hcaptcha_passive_render_start_time_utc")
-            or solution.get("renderStartTime")
-            or (now - random.randint(3500, 6500))
-        )
-        render_end = int(
-            solution.get("hcaptchaPassiveRenderEndTime")
-            or solution.get("hcaptcha_passive_render_end_time_utc")
-            or solution.get("renderEndTime")
-            or (now - random.randint(500, 1800))
-        )
-        verify_ts = int(
-            solution.get("hcaptchaPassiveVerificationTime")
-            or solution.get("hcaptcha_passive_verification_time_utc")
-            or solution.get("verificationTime")
-            or now
-        )
-        form = {
-            "_csrf": csrf,
-            "hcaptcha_passive_eval_start_time_utc": str(render_start - random.randint(250, 900)),
-            "hcaptchaToken": token,
-            "publicKey": site_key,
-            "hcaptcha_passive_render_start_time_utc": str(render_start),
-            "hcaptcha_passive_render_end_time_utc": str(render_end),
-            "hcaptcha_passive_verification_time_utc": str(verify_ts),
-            "_sessionID": session_id,
-        }
-        if request_id:
-            form["_requestId"] = request_id
-        if hsh:
-            form["_hash"] = hsh
-        if jse:
-            form["jse"] = jse
-        headers = {
-            **self._browser_headers(accept="*/*", content_type="application/x-www-form-urlencoded"),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "X-Requested-With": "XMLHttpRequest",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-        try:
-            resp = self.session.post(
-                "https://www.paypal.com/auth/verifyhcaptchapassive",
-                data=form,
-                headers=headers,
-                disable_captcha_synthetic=True,
-                timeout=60,
-            )
-            text = resp.text or ""
-            try:
-                Path("/tmp/paypal_verifyhcaptchapassive_last.json").write_text(
-                    json.dumps(
-                        {
-                            "kind": "hcaptchapassive",
-                            "status_code": resp.status_code,
-                            "content_type": resp.headers.get("content-type", ""),
-                            "token_len": len(token),
-                            "site_key": site_key,
-                            "iframe_src": iframe_src[:500],
-                            "response_head": text[:1000],
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-            if resp.status_code in {302, 303} and resp.headers.get("Location"):
-                ok = True
-            elif resp.status_code in {200, 202, 204}:
-                head = text[:800].lower()
-                ok = not looks_like_paypal_authchallenge(text) and (
-                    not text.strip()
-                    or text.lstrip().startswith("{")
-                    or "captcha" not in head
-                ) and "errors" not in head
-            else:
-                ok = False
-            logger.info(
-                "hcaptchapassive verifyhcaptchapassive status={} len={} token_len={} ok={}",
-                resp.status_code,
-                len(text),
-                len(token),
-                ok,
-            )
-            if not ok:
-                logger.warning("hcaptchapassive verifyhcaptchapassive reject head={}", text[:700])
-                return False
-
-            action = self._extract_form_action(challenge_html) or "/auth/validatecaptcha"
-            action_url = urllib.parse.urljoin("https://www.paypal.com/", self._unescape_auth_url(action))
-            action_path = urllib.parse.urlparse(action_url).path.lower()
-            if action_path != "/auth/validatecaptcha":
-                return True
-
-            validate_fields = self._extract_input_values(challenge_html)
-            if jse:
-                validate_fields["jse"] = jse
-            validate_fields.update(
-                {
-                    "hcaptchaToken": token,
-                    "publicKey": site_key,
-                    "hcaptcha_passive_eval_start_time_utc": form["hcaptcha_passive_eval_start_time_utc"],
-                    "hcaptcha_passive_render_start_time_utc": form["hcaptcha_passive_render_start_time_utc"],
-                    "hcaptcha_passive_render_end_time_utc": form["hcaptcha_passive_render_end_time_utc"],
-                    "hcaptcha_passive_verification_time_utc": form["hcaptcha_passive_verification_time_utc"],
-                }
-            )
-            validate_resp = self.session.post(
-                action_url,
-                data=validate_fields,
-                headers=headers,
-                disable_captcha_synthetic=True,
-                timeout=60,
-            )
-            validate_text = validate_resp.text or ""
-            validate_ok = validate_resp.status_code in {200, 202, 204, 302, 303} and not looks_like_paypal_authchallenge(validate_text)
-            try:
-                Path("/tmp/paypal_hcaptchapassive_validatecaptcha_last.json").write_text(
-                    json.dumps(
-                        {
-                            "status_code": validate_resp.status_code,
-                            "content_type": validate_resp.headers.get("content-type", ""),
-                            "location": validate_resp.headers.get("Location", "")[:500],
-                            "token_len": len(token),
-                            "site_key": site_key,
-                            "fields": sanitize_for_log(validate_fields),
-                            "response_head": validate_text[:1200],
-                            "ok": validate_ok,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-            logger.info(
-                "hcaptchapassive validatecaptcha status={} len={} token_len={} ok={}",
-                validate_resp.status_code,
-                len(validate_text),
-                len(token),
-                validate_ok,
-            )
-            if not validate_ok:
-                logger.warning("hcaptchapassive validatecaptcha reject head={}", validate_text[:700])
-            return validate_ok
-        except Exception as e:
-            logger.warning("hcaptchapassive verifyhcaptchapassive soft-failed: {}", e)
-            return False
-
-    @staticmethod
-    def _extract_recaptcha_site_key(challenge_html: str) -> str:
-        candidates = [
-            PayPalFlow._html_attr_value(challenge_html, "data-sitekey"),
-            PayPalFlow._html_attr_value(challenge_html, "data-site-key"),
-            PayPalFlow._html_attr_value(challenge_html, "data-grc-v3-ent-site-key"),
-            PayPalFlow._html_attr_value(challenge_html, "grcV3EntSiteKey"),
-        ]
-        for value in candidates:
-            if value:
-                return value
-        for pattern in (
-            r'\bgrcV3EntSiteKey["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})',
-            r'\bsitekey["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})',
-            r'recaptcha/(?:enterprise|api2)/anchor[^"\']*[?&]k=([A-Za-z0-9_-]{20,})',
-        ):
-            m = re.search(pattern, challenge_html or "", re.I)
-            if m:
-                return html_lib.unescape(m.group(1))
-        return ""
-
-    @staticmethod
-    def _extract_recaptcha_action(challenge_html: str) -> str:
-        return (
-            PayPalFlow._html_attr_value(challenge_html, "data-policy-based-challenge-action")
-            or PayPalFlow._html_attr_value(challenge_html, "data-action")
-            or "default"
-        )
-
-    def _mint_recaptcha_v3_token_via_capsolver(
-        self,
-        *,
-        challenge_html: str,
-        signup_url: str,
-    ) -> tuple[str, dict[str, Any]]:
-        _ = (challenge_html, signup_url)
-        logger.warning("CapSolver reCAPTCHA v3 support has been removed; skipping external solver.")
-        return "", {}
-
-    def _validate_paypal_recaptcha_v3(self, challenge_html: str, signup_url: str) -> bool:
-        """Submit PayPal `/auth/validatecaptcha` for reCAPTCHA Enterprise v3."""
-        csrf = self._html_input_value(challenge_html, "_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        request_id = self._html_input_value(challenge_html, "_requestId")
-        hsh = self._html_input_value(challenge_html, "_hash")
-        session_id = self._html_input_value(challenge_html, "_sessionID") or self._html_attr_value(challenge_html, "data-sessionid")
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        ec_token = self.state.ec_token or self._first_query_value(signup_url, "token")
-
-        if not all([csrf, request_id, hsh, session_id, jse]):
-            logger.warning(
-                "recaptchav3 fields missing csrf={} request={} hash={} session={} jse={}",
-                bool(csrf), bool(request_id), bool(hsh), bool(session_id), bool(jse),
-            )
-            return False
-
-        for state in (
-            "CLIENT_SIDE_RECAPTCHAV3_SERVED",
-            "CLIENT_SIDE_RECAPTCHAV3_ENTERPRISE_API_JS_LOADED",
-        ):
-            self._paypal_auth_logclientdata(
-                challenge_html=challenge_html,
-                csrf=csrf,
-                session_id=session_id,
-                ec_token=ec_token,
-                captcha_state=state,
-                signup_url=signup_url,
-            )
-
-        token, solution = self._mint_recaptcha_v3_token_via_capsolver(
-            challenge_html=challenge_html,
-            signup_url=signup_url,
-        )
-        if not token:
-            return False
-
-        self._paypal_auth_logclientdata(
-            challenge_html=challenge_html,
-            csrf=csrf,
-            session_id=session_id,
-            ec_token=ec_token,
-            captcha_state="CLIENT_SIDE_RECAPTCHAV3_SOLVED",
-            signup_url=signup_url,
-        )
-
-        now = int(time.time() * 1000)
-        render_start = int(
-            (solution.get("renderStartTime") if isinstance(solution, dict) else 0)
-            or (now - random.randint(2500, 6000))
-        )
-        render_end = int(
-            (solution.get("renderEndTime") if isinstance(solution, dict) else 0)
-            or (now - random.randint(150, 900))
-        )
-        form = {
-            "_csrf": csrf,
-            "_requestId": request_id,
-            "_hash": hsh,
-            "_sessionID": session_id,
-            "jse": jse,
-            "grcV3EntToken": token,
-            "grcV3RenderEndTime": str(render_end),
-            "grcV3RenderStartTime": str(render_start),
-        }
-        site_key = self._extract_recaptcha_site_key(challenge_html)
-        if site_key:
-            form["publicKey"] = site_key
-
-        headers = {
-            **self._browser_headers(
-                accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                content_type="application/x-www-form-urlencoded",
-            ),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        }
-        try:
-            resp = self.session.post(
-                "https://www.paypal.com/auth/validatecaptcha",
-                data=form,
-                headers=headers,
-                disable_captcha_synthetic=True,
-                timeout=60,
-            )
-            text = resp.text or ""
-            location = resp.headers.get("Location", "")
-            try:
-                Path("/tmp/paypal_recaptcha_v3_validatecaptcha_last.json").write_text(
-                    json.dumps(
-                        {
-                            "status_code": resp.status_code,
-                            "content_type": resp.headers.get("content-type", ""),
-                            "location": location[:500],
-                            "token_len": len(token),
-                            "site_key": site_key,
-                            "response_head": text[:1000],
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-            ok = resp.status_code in {200, 202, 204, 302, 303} and not looks_like_paypal_authchallenge(text)
-            logger.info(
-                "recaptchav3 validatecaptcha status={} len={} token_len={} location={} ok={}",
-                resp.status_code,
-                len(text),
-                len(token),
-                location[:120] or "-",
-                ok,
-            )
-            if not ok:
-                logger.warning("recaptchav3 validatecaptcha reject head={}", text[:700])
-            return ok
-        except Exception as e:
-            logger.warning("recaptchav3 validatecaptcha soft-failed: {}", e)
-            return False
-
-    def _mint_recaptcha_v2_token_via_capsolver(
-        self,
-        *,
-        challenge_html: str,
-        signup_url: str,
-    ) -> tuple[str, dict[str, Any]]:
-        _ = (challenge_html, signup_url)
-        logger.warning("CapSolver reCAPTCHA v2 support has been removed; skipping external solver.")
-        return "", {}
-
-    def _submit_paypal_recaptcha_challenge(self, challenge_html: str, signup_url: str, token: str):
-        action = self._extract_form_action(challenge_html) or "/auth/validatecaptcha"
-        url = urllib.parse.urljoin("https://www.paypal.com/", self._unescape_auth_url(action))
-        fields = self._extract_input_values(challenge_html)
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        if jse:
-            fields["jse"] = jse
-        site_key = self._extract_recaptcha_site_key(challenge_html)
-        now = int(time.time() * 1000)
-        fields["recaptcha"] = token
-        if site_key:
-            fields.setdefault("publicKey", site_key)
-        fields.setdefault("grc_render_start_time_utc", str(now - random.randint(9000, 17000)))
-        fields.setdefault("grc_render_end_time_utc", str(now - random.randint(3500, 6500)))
-        fields.setdefault("grc_verification_time_utc", str(now))
-
-        csrf = fields.get("_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        session_id = fields.get("_sessionID") or self._html_attr_value(challenge_html, "data-sessionid")
-        ec_token = self.state.ec_token or self._first_query_value(signup_url, "token")
-        if csrf and session_id:
-            for state in (
-                "CLIENT_SIDE_RECAPTCHA_SERVED",
-                "CLIENT_SIDE_RECAPTCHA_ENTERPRISE_API_JS_LOADED",
-                "CLIENT_SIDE_RECAPTCHA_SOLVED",
-            ):
-                self._paypal_auth_logclientdata(
-                    challenge_html=challenge_html,
-                    csrf=csrf,
-                    session_id=session_id,
-                    ec_token=ec_token,
-                    captcha_state=state,
-                    signup_url=signup_url,
-                )
-
-        headers = {
-            **self._browser_headers(
-                accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                content_type="application/x-www-form-urlencoded",
-            ),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        }
-        logger.info(
-            "Posting solved recaptcha action={} fields={}",
-            url,
-            sorted(k for k in fields.keys() if k != "recaptcha"),
-        )
-        resp = self.session.post(
-            url,
-            data=fields,
-            headers=headers,
-            disable_captcha_synthetic=True,
-            timeout=60,
-        )
-        text = resp.text or ""
-        try:
-            Path("/tmp/paypal_recaptcha_submit_last.json").write_text(
-                json.dumps(
-                    {
-                        "url": url,
-                        "status_code": resp.status_code,
-                        "paypal_debug_id": resp.headers.get("paypal-debug-id", ""),
-                        "content_type": resp.headers.get("content-type", ""),
-                        "location": resp.headers.get("Location", "")[:500],
-                        "token_len": len(token),
-                        "site_key": site_key,
-                        "fields": sanitize_for_log(fields),
-                        "response_head": text[:3000],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-        if looks_like_paypal_authchallenge(text):
-            logger.warning(
-                "recaptcha submit returned another authchallenge paypal_debug_id={} head={}",
-                resp.headers.get("paypal-debug-id", ""),
-                text[:800],
-            )
-            return False
-        try:
-            return resp.json()
-        except ValueError:
-            stripped = text.strip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                return json.loads(stripped)
-            return resp.status_code in {200, 202, 204, 302, 303}
-
-    def _validate_paypal_recaptcha(self, challenge_html: str, signup_url: str):
-        token, _solution = self._mint_recaptcha_v2_token_via_capsolver(
-            challenge_html=challenge_html,
-            signup_url=signup_url,
-        )
-        if not token:
-            return False
-        logger.info("authchallenge type=recaptcha -> submitting solved recaptcha token")
-        return self._submit_paypal_recaptcha_challenge(challenge_html, signup_url, token)
-
-    def _mint_hcaptcha_token_via_capsolver(
-        self,
-        *,
-        challenge_html: str,
-        signup_url: str,
-    ) -> tuple[str, dict[str, Any]]:
-        _ = (challenge_html, signup_url)
-        logger.warning("CapSolver hCaptcha support has been removed; skipping external solver.")
-        return "", {}
-
-    def _submit_paypal_hcaptcha_challenge(self, challenge_html: str, signup_url: str, token: str):
-        """Submit a solved regular hCaptcha token back to PayPal authchallenge."""
-        action = self._extract_form_action(challenge_html) or "/graphql?SignUpNewMemberMutation"
-        url = urllib.parse.urljoin("https://www.paypal.com/", self._unescape_auth_url(action))
-        fields = self._extract_input_values(challenge_html)
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        if jse:
-            fields["jse"] = jse
-
-        iframe_src = self._extract_hcaptcha_iframe_src(challenge_html)
-        if iframe_src:
-            iframe_src = urllib.parse.urljoin("https://www.paypal.com/", iframe_src)
-        site_key = self._extract_hcaptcha_site_key(challenge_html, iframe_src)
-        now = int(time.time() * 1000)
-        render_start = now - random.randint(9000, 17000)
-        render_end = now - random.randint(3500, 6500)
-        verify_ts = now
-        fields["hcaptcha"] = token
-        fields.setdefault("publicKey", site_key)
-        fields.setdefault("hcaptcha_render_start_time_utc", str(render_start))
-        fields.setdefault("hcaptcha_render_end_time_utc", str(render_end))
-        fields.setdefault("hcaptcha_verification_time_utc", str(verify_ts))
-
-        csrf = fields.get("_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        session_id = fields.get("_sessionID") or self._html_attr_value(challenge_html, "data-sessionid")
-        ec_token = self.state.ec_token or self._first_query_value(signup_url, "token")
-        if csrf and session_id:
-            for state in ("CLIENT_SIDE_HCAPTCHA_SERVED", "CLIENT_SIDE_HCAPTCHA_SOLVED"):
-                self._paypal_auth_logclientdata(
-                    challenge_html=challenge_html,
-                    csrf=csrf,
-                    session_id=session_id,
-                    ec_token=ec_token,
-                    captcha_state=state,
-                    signup_url=signup_url,
-                )
-
-        headers = {
-            **self._browser_headers(
-                accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                content_type="application/x-www-form-urlencoded",
-            ),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        }
-        logger.info(
-            "Posting solved hcaptcha action={} fields={}",
-            url,
-            sorted(k for k in fields.keys() if k != "hcaptcha"),
-        )
-        resp = self.session.post(
-            url,
-            data=fields,
-            headers=headers,
-            disable_captcha_synthetic=True,
-            timeout=60,
-        )
-        text = resp.text or ""
-        logger.info(
-            "hcaptcha submit HTTP {} bytes={} content-type={}",
-            resp.status_code,
-            len(resp.content),
-            resp.headers.get("content-type", ""),
-        )
-        try:
-            Path("/tmp/paypal_hcaptcha_submit_last.json").write_text(
-                json.dumps(
-                    {
-                        "url": url,
-                        "status_code": resp.status_code,
-                        "paypal_debug_id": resp.headers.get("paypal-debug-id", ""),
-                        "content_type": resp.headers.get("content-type", ""),
-                        "token_len": len(token),
-                        "site_key": site_key,
-                        "fields": sanitize_for_log(fields),
-                        "response_head": text[:3000],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-        if looks_like_paypal_authchallenge(text):
-            logger.warning(
-                "hcaptcha submit returned another authchallenge paypal_debug_id={} head={}",
-                resp.headers.get("paypal-debug-id", ""),
-                text[:800],
-            )
-            return False
-        try:
-            result = resp.json()
-            logger.info("hcaptcha submit returned JSON")
-            return result
-        except ValueError:
-            stripped = text.strip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                return json.loads(stripped)
-            # A non-challenge document or redirect after captcha submission means
-            # the authchallenge layer has been cleared; let caller retry GraphQL.
-            return resp.status_code in {200, 302, 303}
-
-    def _validate_paypal_hcaptcha(self, challenge_html: str, signup_url: str):
-        captcha_type = self._authchallenge_captcha_type(challenge_html) or "hcaptcha"
-        token, _solution = self._mint_hcaptcha_token_via_capsolver(
-            challenge_html=challenge_html,
-            signup_url=signup_url,
-        )
-        if not token:
-            return False
-        logger.info("authchallenge type={} -> submitting solved hcaptcha token", captcha_type)
-        return self._submit_paypal_hcaptcha_challenge(challenge_html, signup_url, token)
-
-    def _validate_authchallenge_real_solver(self, challenge_html: str, signup_url: str):
-        captcha_type = self._authchallenge_captcha_type(challenge_html)
-        logger.warning(
-            "External CAPTCHA solver support has been removed; manual PayPal "
-            "verification is required for authchallenge type={}. signup_url={}",
-            captcha_type or "unknown",
-            signup_url,
-        )
-        return False
-
-    def _validate_authchallenge_if_possible(self, challenge_html: str, signup_url: str):
-        captcha_type = self._authchallenge_captcha_type(challenge_html)
-        self._send_authchallenge_datadog_rum(
-            signup_url or getattr(self.state, "signup_url", "") or "https://www.paypal.com/auth/validatecaptcha",
-            f"authchallenge_{captcha_type or 'unknown'}",
-        )
-        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
-        if self.captcha_bypass_mode == CAPTCHA_FRONTEND_DISABLE_MODE:
-            return self._frontend_disable_authchallenge_close(challenge_html, signup_url)
-        logger.warning(
-            "PayPal authchallenge type={} requires manual/official verification; "
-            "external CAPTCHA solver support is disabled. signup_url={}",
-            captcha_type or "unknown",
-            signup_url,
-        )
-        return False
-
-    @staticmethod
-    def _extract_form_action(challenge_html: str) -> str:
-        m = re.search(r'<form\b[^>]*\baction=["\']([^"\']+)', challenge_html or "", re.I)
-        return html_lib.unescape(m.group(1)) if m else ""
-
-    @staticmethod
-    def _extract_input_values(challenge_html: str) -> dict[str, str]:
-        values: dict[str, str] = {}
-        for tag_match in re.finditer(r"<input\b[^>]*>", challenge_html or "", re.I):
-            tag = tag_match.group(0)
-            name_match = re.search(r'\bname=["\']([^"\']*)', tag, re.I)
-            if not name_match:
-                continue
-            value_match = re.search(r'\bvalue=["\']([^"\']*)', tag, re.I)
-            values[html_lib.unescape(name_match.group(1))] = (
-                html_lib.unescape(value_match.group(1)) if value_match else ""
-            )
-        return values
-
-    def _post_authchallenge_form_close_once(
-        self,
-        *,
-        challenge_html: str,
-        signup_url: str,
-        challenge_token: str,
-    ):
-        """Backend equivalent of console `postMessage(... NOT_REACHABLE ...)`.
-
-        For PayPal JSON captcha flow the form action in the returned HTML is
-        `/graphql?SignUpNewMemberMutation`; the browser appends the captcha
-        token/render fields and submits that form.  This is different from the
-        older `/auth/validatecaptcha` flow.
-        """
-        action = self._extract_form_action(challenge_html) or "/graphql?SignUpNewMemberMutation"
-        url = urllib.parse.urljoin("https://www.paypal.com/", self._unescape_auth_url(action))
-        captcha_type = self._authchallenge_captcha_type(challenge_html)
-        fields = self._extract_input_values(challenge_html)
-        jse = self._html_attr_value(challenge_html, "data-jse")
-        if jse:
-            fields["jse"] = jse
-
-        now = int(time.time() * 1000)
-        if "hcaptchapassive" in captcha_type or self._extract_hcaptcha_passive_iframe_src(challenge_html):
-            fields["hcaptchaToken"] = challenge_token
-            fields.setdefault("hcaptcha_passive_render_start_time_utc", str(now - random.randint(4800, 6200)))
-            fields.setdefault("hcaptcha_passive_render_end_time_utc", str(now - random.randint(80, 350)))
-            if challenge_token not in {"NOT_REACHABLE", "RENDER_FAILURE"}:
-                fields.setdefault("hcaptcha_passive_verification_time_utc", str(now))
-        else:
-            # Generic fallback mirrors authchallenge.js' default token field.
-            fields["recaptcha"] = challenge_token
-
-        csrf = fields.get("_csrf") or self._html_attr_value(challenge_html, "data-csrf")
-        session_id = fields.get("_sessionID") or self._html_attr_value(challenge_html, "data-sessionid")
-        if csrf and session_id:
-            solved_state = (
-                "CLIENT_SIDE_HCAPTCHA_PASSIVE_NOT_REACHABLE"
-                if challenge_token == "NOT_REACHABLE"
-                else "CLIENT_SIDE_HCAPTCHA_PASSIVE_RENDER_FAILURE"
-                if challenge_token == "RENDER_FAILURE"
-                else "CLIENT_SIDE_HCAPTCHA_PASSIVE_SOLVED"
-            )
-            self._paypal_auth_logclientdata(
-                challenge_html=challenge_html,
-                csrf=csrf,
-                session_id=session_id,
-                ec_token=self.state.ec_token or self._first_query_value(signup_url, "token"),
-                captcha_state=solved_state,
-                signup_url=signup_url,
-            )
-
-        headers = {
-            **self._browser_headers(
-                accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                content_type="application/x-www-form-urlencoded",
-            ),
-            "Origin": "https://www.paypal.com",
-            "Referer": signup_url,
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        }
-
-        logger.info(
-            "Posting authchallenge form close token={} action={} fields={}",
-            challenge_token,
-            url,
-            sorted(k for k in fields.keys() if k not in {"hcaptchaToken", "recaptcha"}),
-        )
-        resp = self.session.post(url, data=fields, headers=headers, timeout=60)
-        logger.info(
-            "Authchallenge form close HTTP {} bytes={} content-type={}",
-            resp.status_code,
-            len(resp.content),
-            resp.headers.get("content-type", ""),
-        )
-        try:
-            Path("/tmp/paypal_authchallenge_form_close_last.json").write_text(
-                json.dumps(
-                    {
-                        "url": url,
-                        "status_code": resp.status_code,
-                        "content_type": resp.headers.get("content-type", ""),
-                        "token": challenge_token,
-                        "fields": sanitize_for_log(fields),
-                        "response_head": resp.text[:3000],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-        text = resp.text or ""
-        if looks_like_paypal_authchallenge(text):
-            raise PayPalAuthChallenge(
-                "SignUpNewMemberMutation",
-                resp.status_code,
-                resp.headers.get("paypal-debug-id", ""),
-                text,
-            )
-        try:
-            return resp.json()
-        except ValueError:
-            # Some form-submit challenge responses come back as text/html with a
-            # JSON object body.  Try a conservative object extraction before
-            # giving up.
-            stripped = text.strip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                return json.loads(stripped)
-            logger.warning("Authchallenge form close returned non-JSON head={}", text[:800])
-            return None
-
-    def _post_authchallenge_form_close(self, challenge_html: str, signup_url: str):
-        logger.warning(
-            "Authchallenge form-close fallback is disabled; manual PayPal verification is required. signup_url={}",
-            signup_url,
-        )
-        return None
-        for token_value in ("NOT_REACHABLE", "RENDER_FAILURE", "EMPTY_TOKEN"):
-            try:
-                result = self._post_authchallenge_form_close_once(
-                    challenge_html=challenge_html,
-                    signup_url=signup_url,
-                    challenge_token=token_value,
-                )
-                if result:
-                    logger.info("Authchallenge form close produced JSON using token={}", token_value)
-                    return result
-            except PayPalAuthChallenge:
-                raise
-            except Exception as e:
-                logger.warning("Authchallenge form close token={} failed: {}", token_value, e)
-        return None
-
     @staticmethod
     def _has_buyer_not_set(result) -> bool:
         items = result if isinstance(result, list) else [result]
@@ -5184,259 +465,56 @@ class PayPalFlow:
                 data = err.get("data") or {}
                 if isinstance(data, dict) and data.get("contingency") == "BUYER_NOT_SET":
                     return True
-                if data == "BUYER_NOT_SET" or err.get("message") == "BUYER_NOT_SET":
+                if err.get("message") == "BUYER_NOT_SET":
                     return True
         return False
 
-    @staticmethod
-    def _html_input_value(html: str, name: str) -> str:
-        patterns = (
-            rf'<input\b[^>]*\bname=["\']{re.escape(name)}["\'][^>]*\bvalue=["\']([^"\']*)',
-            rf'<input\b[^>]*\bvalue=["\']([^"\']*)["\'][^>]*\bname=["\']{re.escape(name)}["\']',
-        )
-        for pattern in patterns:
-            m = re.search(pattern, html or "", re.I | re.S)
-            if m:
-                return html_lib.unescape(m.group(1))
-        return ""
-
-    @staticmethod
-    def _extract_modxo_deployment_id(html: str) -> str:
-        for pattern in (
-            r'data-dpl-id=["\']([^"\']+)["\']',
-            r'"x-deployment-id"\s*:\s*"([^"]+)"',
-            r'"deploymentId"\s*:\s*"([^"]+)"',
-        ):
-            m = re.search(pattern, html or "", re.I)
-            if m:
-                return html_lib.unescape(m.group(1))
-        return ""
-
-    def _apply_modxo_public_credential_fields(self, text: str) -> None:
-        """Capture hidden fields used by submitPublicCredential."""
-        if not text:
-            return
-        if not self.state.ctx_id:
-            ctx_id = self._html_input_value(text, "ctxId") or self._first_json_string(text, "ctxId")
-            if ctx_id:
-                self.state.ctx_id = ctx_id
-        passkey = (
-            self._html_input_value(text, "passkeyChallenge")
-            or self._first_json_string(text, "passkeyChallenge")
-        )
-        if passkey:
-            self.state.passkey_challenge = passkey
-        rp_id = self._html_input_value(text, "rpId") or self._first_json_string(text, "rpId")
-        if rp_id:
-            self.state.rp_id = rp_id
-        phone_code = self._html_input_value(text, "login_phone_country_code")
-        if phone_code:
-            self.state.login_phone_country_code = phone_code
-
-    @staticmethod
-    def _first_json_string(text: str, key: str) -> str:
-        for variant in (text or "", html_lib.unescape(text or "")):
-            m = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"', variant)
-            if m:
-                return html_lib.unescape(m.group(1).replace("\\/", "/"))
-        return ""
-
-    def _extract_modxo_country_action(self, html: str) -> tuple[str, str]:
-        """Return the inline country-change server action id and bound token.
-
-        The real browser's first ModXO click does not call
-        showCreateAccountAction directly.  It submits the inline country
-        handleChange action serialized in the React Flight stream:
-
-            6a:{"id":"604...","bound":"$@6b"}
-            6b:["$@70"]
-            70:"<encrypted-bound-arg>"
-
-        The request body then sends field `1=<encrypted-bound-arg>` and
-        `0=["$@1","BR"]`.
-        """
-        def decode_js_string(value: str) -> str:
-            try:
-                return json.loads(f'"{value}"')
-            except Exception:
-                return html_lib.unescape(value.replace("\\/", "/"))
-
-        variants: list[str] = []
-
-        def add_variant(value: str) -> None:
-            if value and value not in variants:
-                variants.append(value)
-
-        for text in self._metadata_search_texts(html or ""):
-            add_variant(text)
-            # The initial HTML often contains React Flight records still wrapped
-            # as JS string fragments inside <script>self.__next_f.push(...)</script>.
-            # Normalize the common escaped shape so one parser can handle both:
-            #   6a:{\"id\":\"...\",\"bound\":\"$@6b\"}
-            #   70:\"<bound>\"
-            add_variant(text.replace('\\"', '"').replace("\\n", "\n").replace("\\/", "/"))
-
-        for text in variants:
-            handle_keys = re.findall(r'"handleChange"\s*:\s*"\$h([0-9a-f]+)"', text)
-
-            candidates: list[tuple[str, str, str]] = []
-            for key in handle_keys:
-                desc = re.search(
-                    rf'{re.escape(key)}:\{{\s*"id"\s*:\s*"([0-9a-f]{{32,64}})"\s*,\s*"bound"\s*:\s*"\$@([0-9a-f]+)"\s*\}}',
-                    text,
-                )
-                if desc:
-                    candidates.append((key, desc.group(1), desc.group(2)))
-
-            # Fallback for captures where the handleChange record and the action
-            # descriptor are split across decoded Flight chunks.  Only records
-            # with a non-null "$@..." bound token can satisfy the browser country
-            # action body, so this does not select the sibling form submit action.
-            if not candidates:
-                for desc in re.finditer(
-                    r'([0-9a-f]+):\{\s*"id"\s*:\s*"([0-9a-f]{32,64})"\s*,\s*"bound"\s*:\s*"\$@([0-9a-f]+)"\s*\}',
-                    text,
-                ):
-                    candidates.append((desc.group(1), desc.group(2), desc.group(3)))
-
-            for _key, action_id, bound_key in candidates:
-                bound = re.search(
-                    rf'{re.escape(bound_key)}:\[\s*"\$@([0-9a-f]+)"\s*\]',
-                    text,
-                )
-                value_key = bound.group(1) if bound else bound_key
-                value = re.search(
-                    rf'{re.escape(value_key)}:"((?:\\.|[^"\\])*)"',
-                    text,
-                )
-                if value:
-                    bound_value = decode_js_string(value.group(1))
-                    if len(bound_value) > 20:
-                        return action_id, bound_value
-        return "", ""
-
-    def _apply_modxo_inline_metadata(self, html: str) -> None:
-        deployment_id = self._extract_modxo_deployment_id(html)
-        if deployment_id:
-            self.state.modxo_deployment_id = deployment_id
-        self._apply_modxo_public_credential_fields(html)
-        action_id, bound = self._extract_modxo_country_action(html)
-        if action_id and bound:
-            self.state.modxo_country_action_id = action_id
-            self.state.modxo_country_action_bound = bound
-            logger.info("ModXO country action id: {}", action_id)
-
-    def _modxo_named_action_ids_complete(self) -> bool:
-        return bool(
-            self.state.show_create_account_action_id
-            and self.state.create_user_action_id
-            and self.state.submit_public_credential_action_id
-            and self.state.fetch_device_fingerprint_action_id
-        )
-
-    def _apply_static_modxo_action_ids(self) -> None:
-        if not self._modxo_static_action_ids_enabled():
-            return
-        for attr, action_id in _MODXO_STATIC_ACTION_IDS.items():
-            if getattr(self.state, attr, ""):
-                continue
-            setattr(self.state, attr, action_id)
-            logger.info("ModXO action {}: {} (static)", attr, action_id)
-
-    def _clear_static_modxo_action_ids_for_refresh(self) -> None:
-        for attr, action_id in _MODXO_STATIC_ACTION_IDS.items():
-            if getattr(self.state, attr, "") == action_id:
-                setattr(self.state, attr, "")
-
-    def _refresh_modxo_action_ids_from_chunks(self, *, reason: str = "") -> bool:
-        html = str(getattr(self, "_last_modxo_html", "") or "")
-        base_url = str(getattr(self, "_last_modxo_base_url", "") or "")
-        if not html or not base_url:
-            logger.debug("Cannot refresh ModXO action ids: Phase 0 HTML/base URL is unavailable")
-            return False
-
-        before = {
-            attr: getattr(self.state, attr, "")
-            for attr in _MODXO_STATIC_ACTION_IDS
-        }
-        logger.warning(
-            "Refreshing ModXO action ids from JS chunks after static ids failed{}",
-            f" reason={reason}" if reason else "",
-        )
-        self._extract_modxo_action_ids(html, base_url, force_refresh=True)
-        after = {
-            attr: getattr(self.state, attr, "")
-            for attr in _MODXO_STATIC_ACTION_IDS
-        }
-        refreshed = self._modxo_named_action_ids_complete() and after != before
-        logger.info("ModXO action id refresh complete={} changed={}", self._modxo_named_action_ids_complete(), after != before)
-        return refreshed
-
-    def _extract_modxo_action_ids(self, html: str, base_url: str, *, force_refresh: bool = False):
-        """Extract Next server-action IDs from ModXO JS chunks.
-
-        The browser sends these values in the Next-Action header. They are
-        deployment-specific, so hard-coding the values from one capture breaks
-        after PayPal ships a new bundle.
-        """
-        action_names = {
-            "show_create_account_action_id": "showCreateAccountAction",
-            "create_user_action_id": "createUserAction",
-            "submit_public_credential_action_id": "submitPublicCredential",
-            "fetch_device_fingerprint_action_id": "fetchDeviceFingerprintDataAction",
+    def _extract_modxo_action_ids(self, html: str, base_url: str):
+        """Discover deployment-specific Next server-action IDs from page chunks."""
+        action_aliases = {
+            "show_create_account_action_id": (
+                "showCreateAccountAction", "showCreateAccount", "createAccountAction",
+            ),
+            "create_user_action_id": (
+                "createUserAction", "createUser", "continueToPaymentAction",
+            ),
         }
 
         def scan(text: str) -> bool:
             changed = False
-            for attr, action_name in action_names.items():
+            for attr, aliases in action_aliases.items():
                 if getattr(self.state, attr):
                     continue
-                name_idx = text.find(f'"{action_name}"')
-                if name_idx < 0:
-                    continue
-                window = text[max(0, name_idx - 500):name_idx]
-                ids = re.findall(r'"([0-9a-f]{32,64})"', window)
-                if ids:
-                    action_id = ids[-1]
+                candidates: list[tuple[int, str]] = []
+                for alias in aliases:
+                    for match in re.finditer(re.escape(alias), text or "", re.I):
+                        left = max(0, match.start() - 3500)
+                        right = min(len(text), match.end() + 3500)
+                        window = text[left:right]
+                        for id_match in re.finditer(r'["\']([0-9a-f]{32,64})["\']', window, re.I):
+                            absolute = left + id_match.start()
+                            candidates.append((abs(absolute - match.start()), id_match.group(1)))
+                if candidates:
+                    action_id = min(candidates, key=lambda item: item[0])[1]
                     setattr(self.state, attr, action_id)
-                    logger.info(f"ModXO action {attr}: {action_id}")
+                    logger.info("ModXO action {} discovered", attr)
                     changed = True
             return changed
 
-        def complete() -> bool:
-            return self._modxo_named_action_ids_complete()
-
-        if force_refresh:
-            self._clear_static_modxo_action_ids_for_refresh()
-        else:
-            self._apply_static_modxo_action_ids()
-            if complete():
-                return
-
         scan(html or "")
-        if complete():
+        if self.state.show_create_account_action_id and self.state.create_user_action_id:
             return
 
-        script_urls = []
+        script_urls: list[str] = []
         for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html or "", re.I):
-            if "/pay/_next/static/chunks/" not in src:
+            if "_next/static/" not in src:
                 continue
-            url = urllib.parse.urljoin(base_url, src)
+            url = urllib.parse.urljoin(base_url, src.replace("\\/", "/"))
             if url not in script_urls:
                 script_urls.append(url)
+        logger.info("ModXO action scan: {} page chunks", len(script_urls))
 
-        script_urls = script_urls[:80]
-        if not script_urls:
-            return
-
-        concurrency = self._env_int_between(
-            "PAYPAL_MODXO_ACTION_CHUNK_CONCURRENCY",
-            12,
-            1,
-            32,
-        )
-
-        def fetch_script(script_url: str) -> tuple[str, int, str]:
+        for script_url in script_urls[:120]:
             try:
                 js_resp = self.session.get(
                     script_url,
@@ -5448,70 +526,12 @@ class PayPalFlow:
                         "Sec-Fetch-Site": "same-origin",
                     },
                 )
-                return script_url, int(getattr(js_resp, "status_code", 0) or 0), getattr(js_resp, "text", "") or ""
+                if js_resp.status_code == 200:
+                    scan(js_resp.text)
+                if self.state.show_create_account_action_id and self.state.create_user_action_id:
+                    return
             except Exception as e:
-                logger.debug(f"Failed to inspect ModXO chunk {script_url}: {e}")
-                return script_url, 0, ""
-
-        started = time.monotonic()
-        fetched = 0
-        failed_urls: list[str] = []
-
-        if concurrency <= 1 or len(script_urls) == 1:
-            for script_url in script_urls:
-                _url, status_code, text = fetch_script(script_url)
-                fetched += 1
-                if status_code == 200:
-                    scan(text)
-                if complete():
-                    break
-        else:
-            logger.debug(
-                "Fetching {} ModXO JS chunks for action ids with concurrency={}",
-                len(script_urls),
-                concurrency,
-            )
-            for start in range(0, len(script_urls), concurrency):
-                batch = script_urls[start:start + concurrency]
-                with ThreadPoolExecutor(max_workers=min(concurrency, len(batch))) as executor:
-                    futures = {executor.submit(fetch_script, script_url): script_url for script_url in batch}
-                    for future in as_completed(futures):
-                        script_url = futures[future]
-                        try:
-                            _url, status_code, text = future.result()
-                        except Exception as e:
-                            logger.debug(f"Failed to inspect ModXO chunk {script_url}: {e}")
-                            continue
-                        fetched += 1
-                        if status_code == 0:
-                            failed_urls.append(script_url)
-                        if status_code == 200:
-                            scan(text)
-                        if complete():
-                            break
-                if complete():
-                    break
-
-        if failed_urls and not complete() and concurrency > 1:
-            logger.debug(
-                "Retrying {} failed ModXO JS chunk fetches serially after concurrent scan",
-                len(failed_urls),
-            )
-            for script_url in failed_urls:
-                _url, status_code, text = fetch_script(script_url)
-                fetched += 1
-                if status_code == 200:
-                    scan(text)
-                if complete():
-                    break
-
-        logger.debug(
-            "ModXO action id chunk scan fetched={}/{} elapsed={:.2f}s complete={}",
-            fetched,
-            len(script_urls),
-            time.monotonic() - started,
-            bool(complete()),
-        )
+                logger.debug("Failed to inspect ModXO chunk {}: {}", script_url, e)
 
     def _card_issuer_type(self) -> str:
         """PayPal GraphQL CardIssuerType enum."""
@@ -5533,12 +553,8 @@ class PayPalFlow:
     def _masked_phone(self) -> str:
         return sanitize_for_log({"phone": self.user.phone})["phone"]
 
-    def _on_phone_updated(self) -> None:
-        pass
-
-
     def _update_user_phone(self, phone: str):
-        """Update phone fields used by the signup/2FA GraphQL calls."""
+        """Update country-specific phone fields used by signup/2FA calls."""
         raw = (phone or "").strip()
         if raw.lower().startswith("phone:"):
             raw = raw.split(":", 1)[1].strip()
@@ -5547,16 +563,15 @@ class PayPalFlow:
         if len(digits) < 8:
             raise ValueError("phone number is too short")
 
-        profile = get_country_profile(self.address.country)
-        dial_code = profile.phone_country_code.lstrip("+")
-        if digits.startswith(dial_code) and len(digits) > len(dial_code) + 7:
-            country_code = f"+{dial_code}"
-            local = digits[len(dial_code):]
+        calling_code = self.phone_code.lstrip("+")
+        if digits.startswith(calling_code) and len(digits) > len(calling_code) + 7:
+            country_code = self.phone_code
+            local = digits[len(calling_code):]
             full = f"+{digits}"
         else:
-            country_code = f"+{dial_code}"
-            local = digits
-            full = f"+{dial_code}{digits}"
+            country_code = self.phone_code
+            local = digits[1:] if self.country in {"GB", "JP", "TH", "ID", "PH", "TW", "MX", "AE", "AU"} and digits.startswith("0") else digits
+            full = f"{self.phone_code}{local}"
 
         if len(local) < 8:
             raise ValueError("local phone number is too short")
@@ -5565,137 +580,6 @@ class PayPalFlow:
         self.user.phone_country_code = country_code
         self.user.phone_local = local
         logger.info("Phone updated for OTP retry: {}", self._masked_phone())
-        self._on_phone_updated()
-
-    def _graphql_with_authchallenge_frontend_retry(
-        self,
-        operation_name: str,
-        query: str,
-        variables: dict[str, Any],
-        signup_url: str,
-        **kwargs: Any,
-    ) -> dict[str, Any] | list[Any]:
-        last_challenge: PayPalAuthChallenge | None = None
-        for attempt in range(1, 4):
-            try:
-                return self.session.graphql(operation_name, query, variables, **kwargs)
-            except PayPalAuthChallenge as challenge:
-                last_challenge = challenge
-                logger.warning(
-                    "GraphQL {} returned authchallenge attempt={} paypal_debug_id={}; "
-                    "attempting configured CAPTCHA validation mode={}.",
-                    operation_name,
-                    attempt,
-                    challenge.debug_id or "<missing>",
-                    self.captcha_bypass_mode,
-                )
-                self.session.purge_security_challenge_state(
-                    challenge.html,
-                    reason=f"{operation_name}_frontend_disable_attempt_{attempt}",
-                    clear_cookies=False,
-                    clear_files=False,
-                )
-                validated = self._validate_authchallenge_if_possible(challenge.html, signup_url)
-                if isinstance(validated, (dict, list)):
-                    return validated
-                if not validated:
-                    raise
-                time.sleep(0.4)
-        if last_challenge:
-            raise last_challenge
-        raise RuntimeError(f"{operation_name} failed without a response")
-
-    @staticmethod
-    def _random_idapps_csrf_nonce(length: int = 96) -> str:
-        alphabet = string.ascii_letters + string.digits + "-_"
-        return "AA" + "".join(random.choice(alphabet) for _ in range(max(8, length - 2)))
-
-    def _send_idapps_get_otp_challenge(self, token: str, signup_url: str) -> bool:
-        """Mirror `/idapps/graphql getOtpChallengeOperation` before OTP flow."""
-        if os.getenv("PAYPAL_SKIP_IDAPPS_OTP_CHALLENGE", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            return False
-        token = token or self.state.ec_token
-        if not self._is_ec_token(token):
-            return False
-        fn_sync_data = build_fn_sync_data(
-            token,
-            source="IWC_LOGIN_APP",
-            include_d=False,
-            session=self.session,
-        )
-        rdata = urllib.parse.quote(
-            json.dumps(
-                {"fn_sync_data": urllib.parse.quote(fn_sync_data, safe="")},
-                separators=(",", ":"),
-            ),
-            safe="",
-        )
-        payload = {
-            "operationName": "getOtpChallengeOperation",
-            "query": "",
-            "csrfNonce": self._random_idapps_csrf_nonce(),
-            "variables": {
-                "clientInfo": {
-                    "fnId": token,
-                    "ctxId": self.state.ctx_id,
-                    "rData": rdata,
-                },
-                "credentials": {
-                    "credentialValue": self.user.email,
-                    "credentialType": "EMAIL",
-                },
-                "challengeInfo": {"autoSmsOtp": False},
-            },
-            "fn_sync_data": fn_sync_data,
-        }
-        headers = {
-            "Accept": "*/*",
-            "Content-Type": "application/json",
-            "Origin": "https://www.paypal.com",
-            "X-Requested-With": "fetch",
-        }
-        try:
-            resp = self.session.post(
-                "https://www.paypal.com/idapps/graphql",
-                json=payload,
-                headers=headers,
-                timeout=30,
-            )
-            text = resp.text or ""
-            logger.info(
-                "idapps getOtpChallengeOperation HTTP {} bytes={}",
-                resp.status_code,
-                len(resp.content),
-            )
-            try:
-                Path("/tmp/paypal_idapps_get_otp_challenge_last.json").write_text(
-                    json.dumps(
-                        {
-                            "status_code": resp.status_code,
-                            "content_type": resp.headers.get("content-type", ""),
-                            "payload": sanitize_for_log(payload),
-                            "response_head": text[:2500],
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-            if looks_like_paypal_authchallenge(text):
-                logger.info("idapps getOtpChallengeOperation returned authchallenge; closing it before OTP.")
-                validated = self._validate_authchallenge_if_possible(text, signup_url)
-                return bool(validated)
-            return 200 <= resp.status_code < 400
-        except Exception as e:
-            logger.warning("idapps getOtpChallengeOperation soft-failed: {}", e)
-            return False
 
     def _initiate_2fa_phone_confirmation(self, token: str, signup_url: str) -> tuple[str, str]:
         """Send a new 2FA SMS and return authId/challengeId."""
@@ -5710,22 +594,17 @@ class PayPalFlow:
                 "weasley_api_request_initiate_risk_based_two_factor_phone_confirmation_mutation",
             ],
             country=self.address.country,
-            lang=get_country_profile(self.address.country).content_language,
+            lang=self.lang,
         )
-        country_profile = get_country_profile(self.address.country)
-        initiate_result = self._graphql_with_authchallenge_frontend_retry(
+        initiate_result = self.session.graphql(
             "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
             INITIATE_2FA_PHONE_MUTATION,
             {
                 "phoneNumber": self.user.phone_local,
-                "locale": {
-                    "country": country_profile.country,
-                    "lang": country_profile.content_language,
-                },
-                "phoneCountry": country_profile.country,
+                "locale": {"country": self.country, "lang": self.lang},
+                "phoneCountry": self.country,
                 "token": token,
             },
-            signup_url,
         )
         logger.info(
             "2FA initiation result (sanitized): {}",
@@ -5741,6 +620,12 @@ class PayPalFlow:
         state = tfa_data.get("state", "")
         logger.info("2FA state: {}, authId=<redacted>, challengeId=<redacted>", state)
 
+        if state != "PENDING":
+            if state == "SMS_LIMIT_EXCEEDED":
+                raise RuntimeError(
+                    "SMS_LIMIT_EXCEEDED: this phone/session has reached the SMS send limit; use a new phone"
+                )
+            raise RuntimeError(f"2FA initiation was not accepted: state={state or '<missing>'}")
         if not auth_id or not challenge_id:
             raise RuntimeError("Failed to get authId/challengeId from 2FA initiation")
         return auth_id, challenge_id
@@ -5764,9 +649,9 @@ class PayPalFlow:
                 "weasley_api_request_confirm_risk_based_two_factor_phone_confirmation_mutation",
             ],
             country=self.address.country,
-            lang=get_country_profile(self.address.country).content_language,
+            lang=self.lang,
         )
-        confirm_result = self._graphql_with_authchallenge_frontend_retry(
+        confirm_result = self.session.graphql(
             "ConfirmRiskBasedTwoFactorPhoneConfirmationMutation",
             CONFIRM_2FA_PHONE_MUTATION,
             {
@@ -5775,7 +660,6 @@ class PayPalFlow:
                 "challengeId": challenge_id,
                 "token": token,
             },
-            signup_url,
         )
         logger.info(
             "OTP confirmation result (sanitized): {}",
@@ -5803,8 +687,6 @@ class PayPalFlow:
 
     def _confirm_phone_with_retry(self, token: str, signup_url: str):
         """Loop until OTP is confirmed; user can enter a new phone to resend."""
-        if self.sms_provider is not None:
-            return self._confirm_phone_with_sms_provider(token, signup_url)
         while True:
             try:
                 auth_id, challenge_id = self._initiate_2fa_phone_confirmation(token, signup_url)
@@ -5858,43 +740,11 @@ class PayPalFlow:
                         e,
                     )
 
-    def _confirm_phone_with_sms_provider(self, token: str, signup_url: str) -> None:
-        if self.sms_provider is None:
-            raise RuntimeError("SMS provider is not configured")
-        for attempt in range(1, self.sms_provider.max_attempts + 1):
-            activation = self.sms_provider.reserve_number()
-            self._update_user_phone(activation.phone_number)
-            try:
-                auth_id, challenge_id = self._initiate_2fa_phone_confirmation(token, signup_url)
-            except Exception as exc:
-                logger.error("Failed to initiate OTP for SMS provider phone {}: {}", self._masked_phone(), exc)
-                self.sms_provider.abandon(activation, "paypal_initiation_failed")
-                continue
-
-            self.sms_provider.mark_sms_sent(activation)
-            logger.info(
-                "Waiting for SMS provider OTP attempt={} provider={} reused={} timeout={}s",
-                attempt,
-                activation.provider_id,
-                activation.reused,
-                self.sms_provider.wait_seconds,
-            )
-            code = self.sms_provider.wait_for_code(activation, timeout_seconds=self.sms_provider.wait_seconds)
-            if not code:
-                self.sms_provider.abandon(activation, "sms_timeout")
-                continue
-            if self._confirm_2fa_phone_confirmation(token, signup_url, auth_id, challenge_id, code):
-                self.sms_provider.register_confirmation_result(activation, True)
-                return
-            self.sms_provider.register_confirmation_result(activation, False)
-            logger.warning("SMS provider OTP was rejected by PayPal; trying another number.")
-        raise RuntimeError("SMS provider OTP confirmation failed after all attempts")
-
     def _card_expiration_date(self) -> str:
         exp_parts = self.card.expiry.split("/")
         return f"{exp_parts[0]}/{exp_parts[1]}" if len(exp_parts) == 2 else self.card.expiry
 
-    def _dob_payload(self) -> dict[str, str]:
+    def _dob_payload(self) -> dict:
         dob_parts = self.user.dob.split("/")
         return (
             {"day": dob_parts[0], "month": dob_parts[1], "year": dob_parts[2]}
@@ -5902,95 +752,84 @@ class PayPalFlow:
             else {}
         )
 
-    def _billing_line1(self) -> str:
-        house_number = self.address.house_number.strip()
-        if house_number and f", {house_number}" in self.address.street:
-            return self.address.street
-        parts = [self.address.street, self.address.house_number]
-        return ", ".join(str(part).strip() for part in parts if str(part or "").strip())
-
-    def _billing_line2(self) -> str:
-        if str(self.address.country or "").upper() == "GB":
-            return ""
-        return self.address.district
-
-    def _billing_state(self) -> str:
-        if str(self.address.country or "").upper() == "GB":
-            return ""
-        return self.address.state
-
-    def _primary_billing_address_payload(self) -> dict[str, object]:
-        billing_autocomplete_type = (
-            "ANS" if self._billing_address_autocomplete_succeeded else "MANUAL"
-        )
-        payload: dict[str, object] = {
-            "postalCode": self.address.postal_code,
-            "line1": self._billing_line1(),
-            "city": self.address.city,
-            "accountQuality": {
-                "autoCompleteType": billing_autocomplete_type,
-                "isUserModified": True,
-            },
-            "country": self.address.country,
-            "familyName": self.user.last_name,
-            "givenName": self.user.first_name,
-        }
-        billing_line2 = self._billing_line2()
-        billing_state = self._billing_state()
-        if billing_line2:
-            payload["line2"] = billing_line2
-        if billing_state:
-            payload["state"] = billing_state
-        return payload
-
-    def _shipping_address_payload(self) -> dict[str, object] | None:
-        # Current Billing Agreement signup pages hide shipping for the
-        # country-specific protocol locales below. The Weasley client only sends
-        # an address object that exists in form state; sending an explicitly
-        # empty shippingAddress is not equivalent and can perturb address
-        # validation. Keep the legacy payload for BR, where the captured
-        # signup-card path still includes the placeholder shipping form state.
-        if str(self.address.country or "").upper() in {"GB", "NL", "AU", "CA", "ID", "JP", "MX", "PH", "TH"}:
-            return None
-        billing_state = self._billing_state()
+    def _runtime_kyc_fields(self) -> dict[str, bool]:
+        schema = getattr(self, "runtime_form_schema", None) or {}
+        fields = ((schema.get("kyc") or {}).get("fields") or [])
         return {
-            "postalCode": "",
-            "line1": "",
-            "city": "",
-            "state": billing_state,
-            "accountQuality": {
-                "autoCompleteType": "MANUAL",
-                "isUserModified": False,
-            },
-            "country": self.address.country,
-            "familyName": self.user.last_name,
-            "givenName": self.user.first_name,
+            str(item.get("name")): bool(item.get("required"))
+            for item in fields
+            if isinstance(item, dict) and item.get("name")
         }
 
-    def _build_signup_variables(self, token: str) -> dict[str, object]:
-        country_profile = get_country_profile(self.address.country)
-        card_type = self._card_issuer_type()
-        if self._content_metadata_is_unresolved() and self.state.content_manifest_url:
-            self._fetch_signup_content_manifest_metadata(
-                self.state.content_manifest_url,
-                referer=self.state.signup_url,
+    def _apply_runtime_kyc_variables(self, variables: dict) -> None:
+        observed = self._runtime_kyc_fields()
+        if not observed:
+            return
+        nationality = self.user.nationality or self.country
+        document_type = self.user.identity_document_type
+        document_number = self.user.identity_document_number
+        # Page bundles contain controls for many countries.  Merely observing a
+        # token in the bundle does not mean that field belongs in this country's
+        # mutation.  Only merge fields explicitly marked required by runtime
+        # metadata/error feedback; known country-specific fields are handled by
+        # the dedicated branches below.
+        if observed.get("nationality"):
+            variables["nationality"] = nationality
+        if observed.get("place_of_birth"):
+            variables["placeOfBirth"] = self.user.place_of_birth or nationality
+        if observed.get("middle_name") and self.user.middle_name:
+            variables["middleName"] = self.user.middle_name
+        if observed.get("occupation") and self.user.occupation:
+            variables["occupation"] = self.user.occupation
+        if observed.get("country_specific_first_name"):
+            variables["countrySpecificFirstName"] = self.user.first_name
+        if observed.get("country_specific_last_name"):
+            variables["countrySpecificLastName"] = self.user.last_name
+        if observed.get("identity_document_type") or observed.get("identity_document_number"):
+            if document_type and document_number:
+                variables["identityDocument"] = {
+                    "type": document_type,
+                    "value": document_number,
+                }
+        missing = []
+        for name, required in observed.items():
+            if not required:
+                continue
+            available = {
+                "date_of_birth": bool(self.user.dob),
+                "nationality": bool(nationality),
+                "place_of_birth": bool(self.user.place_of_birth or nationality),
+                "middle_name": bool(self.user.middle_name),
+                "occupation": bool(self.user.occupation or variables.get("occupation")),
+                "identity_document_type": bool(document_type),
+                "identity_document_number": bool(document_number),
+                "country_specific_first_name": bool(self.user.first_name),
+                "country_specific_last_name": bool(self.user.last_name),
+                "secondary_identity_document": False,
+                "collected_consents": False,
+            }.get(name, True)
+            if not available:
+                missing.append(name)
+        if missing:
+            raise RuntimeError(
+                "DYNAMIC_KYC_INPUT_REQUIRED: " + ",".join(sorted(missing))
             )
-        if self._content_metadata_is_unresolved():
-            self._apply_configured_or_cached_signup_content_metadata()
-        content_identifier = self._resolved_content_identifier()
-        billing_address = self._primary_billing_address_payload()
-        shipping_address = self._shipping_address_payload()
-        card_payload: dict[str, object] = {
-            "cardNumber": self.card.number,
-            "expirationDate": self._card_expiration_date(),
-            "securityCode": self.card.cvv,
-            "type": card_type,
-        }
-        if country_profile.collect_card_product_class:
-            card_payload["productClass"] = self.card.card_type
 
-        variables: dict[str, object] = {
-            "card": card_payload,
+    def _build_signup_variables(self, token: str) -> dict:
+        card_type = self._card_issuer_type()
+        address_normalized_by_paypal = bool(getattr(self, "_address_normalized_by_paypal", False))
+        address_quality = {
+            "autoCompleteType": "ANS" if address_normalized_by_paypal else "MANUAL",
+            "isUserModified": not address_normalized_by_paypal,
+        }
+        variables = {
+            "card": {
+                "cardNumber": self.card.number,
+                "expirationDate": self._card_expiration_date(),
+                "securityCode": self.card.cvv,
+                "type": card_type,
+                "productClass": self.card.card_type,
+            },
             "country": self.address.country,
             "email": self.user.email,
             "firstName": self.user.first_name,
@@ -6002,287 +841,248 @@ class PayPalFlow:
             },
             "supportedThreeDsExperiences": ["IFRAME"],
             "token": token,
-            "billingAddress": billing_address,
-            "contentIdentifier": content_identifier,
-            "marketingOptOut": True,
+            "billingAddress": {
+                "postalCode": self.address.postal_code,
+                "line1": (
+                    f"PO Box {self.address.house_number}"
+                    if self.country == "AE"
+                    else (
+                        f"{self.address.house_number} {self.address.street}"
+                        if self.country in {"GB", "US", "TH", "ID", "PH", "TW", "AU", "CA", "BA", "BH"}
+                        else (
+                            f"{self.address.street} {self.address.house_number}"
+                            if self.country in {"JP", "NL", "DE", "BA"}
+                            else f"{self.address.street}, {self.address.house_number}"
+                        )
+                    )
+                ),
+                # US/GB/JP checkout variants are strict about the address
+                # selected by postcode autocomplete.  Sending a synthetic
+                # neighbourhood in line2 can make the selected address differ
+                # from the residentialAddress object and produce a generic
+                # createMemberAccount/OAS rejection.
+                "line2": "" if self.country in {"GB", "US", "JP", "AU", "CA", "NL", "DE"} else self.address.district,
+                "city": self.address.city,
+                "state": "" if self.country in {"NL", "DE"} else self.address.state,
+                "accountQuality": dict(address_quality),
+                "country": self.address.country,
+                "familyName": self.user.last_name,
+                "givenName": self.user.first_name,
+            },
+            "shippingAddress": {
+                "postalCode": "",
+                "line1": "",
+                "city": "",
+                "state": "",
+                "accountQuality": {
+                    "autoCompleteType": "MANUAL",
+                    "isUserModified": False,
+                },
+                "country": self.address.country,
+                "familyName": self.user.last_name,
+                "givenName": self.user.first_name,
+            },
+            "contentIdentifier": self.state.content_identifier or (
+                f"{self.address.country}:{self.lang}:compliance.signupTerms"
+            ),
+            "marketingOptOut": False,
             "password": self.user.password,
+            "dateOfBirth": self._dob_payload(),
+            "identityDocument": None,
             "crsData": None,
             "legalAgreements": {},
         }
-        if shipping_address is not None:
-            variables["shippingAddress"] = shipping_address
-        if str(self.address.country or "").upper() == "GB":
-            # GB Weasley signup in the captured HAR resolves
-            # hasPrimaryResidentialAddress=true. Frontend variables include a
-            # separate residentialAddress when that form section exists; using
-            # the same verified primary address aligns the protocol path with
-            # the browser path and avoids misclassifying the primary residential
-            # check as a generic billing-address failure.
-            variables["residentialAddress"] = dict(billing_address)
-        if country_profile.card_dob_required or "DateOfBirth" in country_profile.kyc_fields:
-            variables["dateOfBirth"] = self._dob_payload()
-        if "Nationality" in country_profile.kyc_fields:
-            variables["nationality"] = self.address.country
-        if (
-            "IdentityDocumentType" in country_profile.kyc_fields
-            and "IdentityDocumentNumber" in country_profile.kyc_fields
-            and self.address.country.upper() == "BR"
-        ):
-            variables["identityDocument"] = {"type": "CPF", "value": self.user.cpf}
+        if self.country == "BR":
+            variables["identityDocument"] = {
+                "type": "CPF",
+                "value": self.user.cpf,
+            }
+        if self.country == "ID":
+            # The Indonesian signup form explicitly requires National ID,
+            # date of birth and Indonesian nationality.
+            variables["identityDocument"] = {
+                "type": self.user.identity_document_type or "NATIONAL_ID",
+                "value": self.user.identity_document_number,
+            }
+            variables["nationality"] = self.user.nationality or "ID"
+            variables["placeOfBirth"] = "ID"
+        if self.country == "PH":
+            # The Philippine signup form requires date of birth, nationality,
+            # National ID type and ID number.
+            variables["nationality"] = self.user.nationality or "PH"
+            variables["identityDocument"] = {
+                "type": self.user.identity_document_type or "NATIONAL_ID",
+                "value": self.user.identity_document_number,
+            }
+        if self.country == "TW":
+            variables["nationality"] = self.user.nationality or "TW"
+            variables["identityDocument"] = {
+                "type": self.user.identity_document_type or "NATIONAL_ID",
+                "value": self.user.identity_document_number,
+            }
+        if self.country == "AE":
+            variables["nationality"] = self.user.nationality or "AE"
+            variables["identityDocument"] = {
+                "type": self.user.identity_document_type or "NATIONAL_ID",
+                "value": self.user.identity_document_number,
+            }
+        if self.country == "CA":
+            # The Canadian signup UI requires an occupation selection.
+            variables["occupation"] = "BUSINESS"
+        if self.country == "TH":
+            # Current Weasley country config declares these KYC fields for TH:
+            # DateOfBirth, Nationality, IdentityDocumentType and
+            # IdentityDocumentNumber.  Thai nationality restricts the document
+            # type to NATIONAL_ID.  The signup-terms checkbox is client-side
+            # validation and is not an empty CollectedConsent object.
+            variables["nationality"] = self.user.nationality or "TH"
+            variables["identityDocument"] = {
+                "type": self.user.identity_document_type or "NATIONAL_ID",
+                "value": self.user.identity_document_number,
+            }
+        self._apply_runtime_kyc_variables(variables)
+        if self.country in {"GB", "US", "JP", "TH", "ID", "PH", "TW", "AE", "AU", "CA", "NL", "DE", "BA", "BH", "RO"}:
+            # These onboarding variants validate a separate residentialAddress argument.
+            # Supplying only billingAddress can produce RESIDENTIAL_ADDRESS_NOT_FOUND.
+            variables["residentialAddress"] = {
+                **variables["billingAddress"],
+                "accountQuality": dict(variables["billingAddress"]["accountQuality"]),
+            }
         return variables
 
-
-    def _create_member_no_fi_enabled(self) -> bool:
-        """Use the no-backup-FI path only when explicitly requested.
-
-        The current verified success path is SignUpNewMember with a recoverable
-        FI_CONFIRMATION_CONTINGENCY that preserves the member access token, then
-        legacy billing.authorize.  Auto must not silently route US/GB through
-        CreateMemberAccount(no FI), because PayPal can later reject
-        approveMemberPayment(primaryFundingOptionId=null) with
-        NEED_CREDIT_CARD/NO_VALID_FUNDING_INSTRUMENT.
-        """
-        raw = (
-            os.getenv("PAYPAL_APPROVAL_PATH", "")
-            or os.getenv("PAYPAL_ONBOARDING_PATH", "")
-            or "auto"
-        ).strip().lower().replace("-", "_")
-        if raw in {"create_member_no_fi", "member_no_fi", "us_no_fi", "no_fi"}:
-            return True
-        if raw in {"signup", "signup_card", "card", "legacy"}:
-            return False
-        return False
-
-    def _build_create_member_no_fi_variables(self, token: str) -> dict[str, Any]:
-        base = self._build_signup_variables(token)
-        return {
-            "billingAddress": base.get("billingAddress"),
-            "contentIdentifier": base.get("contentIdentifier"),
-            "country": base.get("country") or self.address.country,
-            "crsData": base.get("crsData"),
-            "dateOfBirth": base.get("dateOfBirth"),
-            "email": base.get("email"),
-            "firstName": base.get("firstName"),
-            "gender": base.get("gender"),
-            "identityDocument": base.get("identityDocument"),
-            "lastName": base.get("lastName"),
-            "marketingOptOut": base.get("marketingOptOut"),
-            "nationality": base.get("nationality"),
-            "occupation": base.get("occupation"),
-            "password": base.get("password"),
-            "phone": base.get("phone"),
-            "placeOfBirth": base.get("placeOfBirth"),
-            "secondaryIdentityDocument": base.get("secondaryIdentityDocument"),
-            "shippingAddress": base.get("shippingAddress"),
-            "token": token,
-            "residentialAddress": base.get("residentialAddress") or base.get("billingAddress"),
-            "legalAgreements": base.get("legalAgreements") or {},
-        }
-
-    def _phase3_create_member_no_fi(self, token: str, signup_url: str) -> None:
-        logger.info("No-FI pre-create warm-up: address autocomplete + signup-context risk before CreateMemberAccount")
-        if not getattr(self, "_signup_billing_address_prepared", False):
-            self._send_address_autocomplete(token)
-            self._signup_billing_address_prepared = True
-        else:
-            logger.info("Reusing prepared billing address; skipping AddressAutocompleteFromPostalCodeQuery.")
-
-        if hasattr(self.session, "export_cookies_for_browser"):
-            self._ensure_signup_context_ready_for_create_member(signup_url, token)
-            self._strict_signup_preflight_or_raise()
-        else:
-            logger.debug("Skipping no-FI browser-risk warm-up: session test double has no browser cookie export method.")
-
-        logger.info("Step 3: Creating member account without backup FI (createMemberAccount)")
-        send_weasley_log(
-            self.session,
-            self.state.ec_token,
-            signup_url,
-            [
-                "weasley_create_member_no_fi_submit",
-                "weasley_api_request_create_member_account_mutation",
-            ],
-            country=self.address.country,
-            lang=get_country_profile(self.address.country).content_language,
-        )
-        result = self._graphql_with_authchallenge_frontend_retry(
-            "CreateMemberAccountMutation",
-            CREATE_MEMBER_ACCOUNT_MUTATION,
-            self._build_create_member_no_fi_variables(token),
-            signup_url,
-            extra_body={"fn_sync_data": build_signup_fn_sync_data(token, session=self.session)},
-        )
-        logger.info(
-            "CreateMemberAccount result (sanitized): {}",
-            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
-        )
-        result_obj = result[0] if isinstance(result, list) else result
-        onboard_data = (
-            result_obj.get("data", {}).get("onboardAccount", {})
-            if isinstance(result_obj, dict)
-            else {}
-        )
-        if not isinstance(onboard_data, dict) or not onboard_data:
-            errors = result_obj.get("errors", []) if isinstance(result_obj, dict) else []
-            raise RuntimeError(
-                "createMemberAccount(no FI) failed: "
-                f"{json.dumps(sanitize_for_log(errors), ensure_ascii=False)[:1000]}"
-            )
-        buyer = onboard_data.get("buyer", {}) if isinstance(onboard_data.get("buyer"), dict) else {}
-        auth = buyer.get("auth", {}) if isinstance(buyer.get("auth"), dict) else {}
-        self.state.user_id = str(buyer.get("userId") or self.state.user_id or "")
-        self.state.euat_token = str(auth.get("accessToken") or self.state.euat_token or "")
-        self.state.instrument_id = ""
-        if not self.state.euat_token:
-            raise RuntimeError("createMemberAccount(no FI) returned no access token")
-        self._ensure_euat_cookie()
-        logger.success("Member account created without backup FI. User ID: {}", self.state.user_id)
-
-    def _send_address_autocomplete(self, token: str) -> None:
-        self._billing_address_autocomplete_succeeded = False
-        skip_countries = {
-            item.strip().upper()
-            for item in os.getenv("PAYPAL_SKIP_ADDRESS_AUTOCOMPLETE_COUNTRIES", "GB,NL,AU,CA,ID,JP,MX,PH,TH").split(",")
-            if item.strip()
-        }
-        if str(self.address.country or "").upper() in skip_countries:
-            logger.info(
-                "Skipping AddressAutocompleteFromPostalCodeQuery for country={}; using MANUAL billing address metadata.",
-                self.address.country,
-            )
+    def _apply_normalized_address(self, normalized: dict) -> None:
+        """Apply the address selected by PayPal's own postcode lookup."""
+        if not isinstance(normalized, dict) or not normalized:
             return
-        try:
-            address_result = self.session.graphql(
-                "AddressAutocompleteFromPostalCodeQuery",
-                ADDRESS_AUTOCOMPLETE_FROM_POSTAL_CODE_QUERY,
-                {
-                    "country": self.address.country,
-                    "postalCode": self.address.postal_code,
-                    "token": token,
-                },
-            )
-            result_obj = address_result[0] if isinstance(address_result, list) else address_result
-            result_dict = cast(dict[str, Any], result_obj) if isinstance(result_obj, dict) else {}
-            data = result_dict.get("data") if isinstance(result_dict.get("data"), dict) else {}
-            normalized = cast(dict[str, Any], data).get("addressNormalization") or {}
-            if not isinstance(normalized, dict) or not normalized:
-                logger.warning(
-                    "AddressAutocompleteFromPostalCodeQuery returned no usable normalized "
-                    "address; using MANUAL billing address metadata."
+        normalized_line1 = str(normalized.get("line1") or "").strip()
+        if normalized_line1:
+            if self.country in {"GB", "US", "TH", "ID", "PH", "TW", "AE", "AU", "CA", "BA", "BH"}:
+                match = re.match(
+                    r"^([0-9]+(?:/[0-9A-Za-z-]+)?[A-Za-z]?(?:-[0-9]+[A-Za-z]?)?)\s+(.+)$",
+                    normalized_line1,
                 )
-                return
+                if match:
+                    self.address.house_number = match.group(1)
+                    self.address.street = match.group(2).strip()
+                else:
+                    self.address.street = normalized_line1
+            elif self.country == "BR":
+                normalized_line1 = re.sub(
+                    r",\s*\d+[A-Za-z0-9-]*\s*$", "", normalized_line1
+                ).strip()
+                self.address.street = normalized_line1 or self.address.street
+            elif self.country in {"NL", "DE"}:
+                match = re.match(r"^(.+?)\s+(\d+[A-Za-z]?(?:-\d+)?(?:\s*[A-Za-z])?)$", normalized_line1)
+                if match:
+                    self.address.street = match.group(1).strip()
+                    self.address.house_number = match.group(2).strip()
+                else:
+                    self.address.street = normalized_line1
+            else:
+                self.address.street = normalized_line1
+        self.address.district = str(normalized.get("line2") or "").strip()
+        self.address.city = normalized.get("city") or self.address.city
+        self.address.state = normalized.get("state") or self.address.state
+        self.address.postal_code = normalized.get("postalCode") or self.address.postal_code
+        self._address_normalized_by_paypal = True
 
-            missing_fields = [
-                field
-                for field in ("line1", "city", "state", "postalCode")
-                if not str(normalized.get(field) or "").strip()
-            ]
-            if missing_fields:
-                logger.warning(
-                    "AddressAutocompleteFromPostalCodeQuery returned incomplete normalized "
-                    "address missing={}; using MANUAL billing address metadata. values={} {} {} {}",
-                    ",".join(missing_fields),
-                    normalized.get("line1"),
-                    normalized.get("line2"),
-                    normalized.get("city"),
-                    normalized.get("state"),
-                )
-                return
-
+    def _normalize_address_with_paypal(self, token: str) -> None:
+        # Bahrain postcode lookup may return line1 as only a building number
+        # and move the road into line2. Rebuilding the payload from that shape
+        # produces invalid values such as "144 3". BH only requires line1
+        # and city, so retain the verified map/static address as entered.
+        if self.country in {"BH", "BA"}:
+            logger.info("Skipping postcode normalization for {}; preserving verified street/city fields", self.country)
+            self._address_normalized_by_paypal = False
+            return
+        if not str(self.address.postal_code or "").strip():
+            logger.info("Skipping postcode normalization: this country form has no postal code")
+            return
+        address_result = self.session.graphql(
+            "AddressAutocompleteFromPostalCodeQuery",
+            ADDRESS_AUTOCOMPLETE_FROM_POSTAL_CODE_QUERY,
+            {
+                "country": self.address.country,
+                "postalCode": self.address.postal_code,
+                "token": token,
+            },
+        )
+        result_obj = address_result[0] if isinstance(address_result, list) else address_result
+        normalized = result_obj.get("data", {}).get("addressNormalization") or {}
+        if normalized:
             logger.info(
-                "Address normalized: {}, {}, {} {}",
+                "Address normalized by PayPal: {}, {}, {} {}",
                 normalized.get("line1"),
                 normalized.get("line2"),
                 normalized.get("city"),
                 normalized.get("state"),
             )
-            self.address.street = normalized.get("line1") or self.address.street
-            self.address.district = normalized.get("line2") or self.address.district
-            self.address.city = normalized.get("city") or self.address.city
-            self.address.state = normalized.get("state") or self.address.state
-            self.address.postal_code = normalized.get("postalCode") or self.address.postal_code
-            self._billing_address_autocomplete_succeeded = True
-        except Exception as e:
-            logger.warning(f"AddressAutocompleteFromPostalCodeQuery failed: {e}")
+            self._apply_normalized_address(normalized)
 
-    def _send_signup_attempt(self, token: str, signup_url: str) -> dict[str, Any] | list[Any]:
+    def _send_signup_attempt(self, token: str, signup_url: str) -> dict:
         card_type = self._card_issuer_type()
-        # InstallmentOptionsQuery is only a UI warm-up for BR installment
-        # offers.  PayPal resolves the payee from the EC checkout token here;
-        # sending the original BA token produces INVALID_RESOURCE_ID at
-        # payService.getPayee-contingency.  Do not let this optional preflight
-        # pollute the job as an ERROR or block SignUpNewMember.
-        installment_token = self.state.ec_token or token
-        if self._is_ec_token(installment_token):
-            try:
-                installment_result = self.session.graphql(
-                    "InstallmentOptionsQuery",
-                    INSTALLMENT_OPTIONS_QUERY,
-                    {
-                        "buyerCountry": self.address.country,
-                        "cardNumber": self.card.number,
-                        "cardType": card_type,
-                        "token": installment_token,
-                    },
-                    graphql_error_level="WARNING",
-                )
-                installment_errors = self._graphql_errors(installment_result)
-                if installment_errors:
-                    logger.warning(
-                        "Optional InstallmentOptionsQuery was unavailable; "
-                        "continuing without installment selection. errors={}",
-                        json.dumps(
-                            sanitize_for_log(installment_errors),
-                            ensure_ascii=False,
-                        )[:1000],
-                    )
-            except Exception as e:
-                logger.warning(f"Optional InstallmentOptionsQuery failed: {e}")
-        else:
-            logger.warning(
-                "Skipping optional InstallmentOptionsQuery: no EC checkout token "
-                "is available (current token is {}).",
-                sanitize_for_log({"token": installment_token or ""})["token"] or "<missing>",
+        try:
+            self.session.graphql(
+                "InstallmentOptionsQuery",
+                INSTALLMENT_OPTIONS_QUERY,
+                {
+                    "buyerCountry": self.address.country,
+                    "cardNumber": self.card.number,
+                    "cardType": card_type,
+                    "token": token,
+                },
             )
+        except Exception as e:
+            logger.warning(f"InstallmentOptionsQuery failed: {e}")
 
-        if not getattr(self, "_signup_billing_address_prepared", False):
-            self._send_address_autocomplete(token)
-            self._signup_billing_address_prepared = True
-        else:
-            logger.info(
-                "Reusing prepared billing address for card retry; "
-                "skipping AddressAutocompleteFromPostalCodeQuery."
-            )
-
-        risk_mode = self._signup_context_risk_mode()
-        if risk_mode == "headless":
-            self._send_signup_context_risk_signals_with_headless(signup_url, token)
-        elif risk_mode in {"roxy", "auto"} or self._roxy_risk_runtime_active():
-            sent_signup_context_risk = self._send_signup_context_risk_signals_with_roxy(signup_url, token)
-            if not sent_signup_context_risk and self._signup_context_risk_mode() == "headless":
-                self._send_signup_context_risk_signals_with_headless(signup_url, token)
-
-        self._strict_signup_preflight_or_raise()
-
-        self._send_signup_field_events(
+        signup_fields = [
+            "email",
+            "phone",
+            "cardNumber",
+            "cardExpiry",
+            "cardCvv",
+            "password",
+            "firstName",
+            "lastName",
+            "billingLine1",
+            "billingCity",
+            "billingPostalCode",
+            "billingState",
+            "dateOfBirth",
+        ]
+        if self.country == "BR":
+            signup_fields.append("identityDocumentNumber")
+        if self.country == "ID":
+            signup_fields.extend(["identityDocumentType", "identityDocumentNumber", "nationality"])
+        if self.country == "TH":
+            signup_fields.extend(["identityDocumentType", "identityDocumentNumber", "nationality"])
+        if self.country == "PH":
+            signup_fields.extend(["identityDocumentType", "identityDocumentNumber", "nationality"])
+        if self.country == "TW":
+            signup_fields.extend(["identityDocumentType", "identityDocumentNumber", "nationality"])
+        if self.country == "AE":
+            signup_fields.extend(["identityDocumentType", "identityDocumentNumber", "nationality"])
+        if self.country == "CA":
+            signup_fields.append("occupation")
+        event_names = {
+            "date_of_birth": "dateOfBirth",
+            "nationality": "nationality",
+            "identity_document_type": "identityDocumentType",
+            "identity_document_number": "identityDocumentNumber",
+            "occupation": "occupation",
+            "middle_name": "middleName",
+            "place_of_birth": "placeOfBirth",
+            "country_specific_first_name": "countrySpecificFirstName",
+            "country_specific_last_name": "countrySpecificLastName",
+        }
+        for runtime_name in self._runtime_kyc_fields():
+            event_name = event_names.get(runtime_name)
+            if event_name and event_name not in signup_fields:
+                signup_fields.append(event_name)
+        send_signup_field_events(
             self.session,
             token,
-            [
-                "email",
-                "phone",
-                "cardNumber",
-                "cardExpiry",
-                "cardCvv",
-                "password",
-                "firstName",
-                "lastName",
-                "billingLine1",
-                "billingCity",
-                "billingPostalCode",
-                "billingState",
-                "dateOfBirth",
-                "identityDocumentNumber",
-            ],
+            signup_fields,
         )
         send_weasley_log(
             self.session,
@@ -6293,13 +1093,13 @@ class PayPalFlow:
                 "weasley_api_request_sign_up_new_member_mutation",
             ],
             country=self.address.country,
-            lang=get_country_profile(self.address.country).content_language,
+            lang=self.lang,
         )
-        signup_variables = self._build_signup_variables(token)
-        signup_result = self._post_signup_with_authchallenge_ignore(
-            token,
-            signup_url,
-            signup_variables,
+        signup_result = self.session.graphql(
+            "SignUpNewMemberMutation",
+            SIGNUP_NEW_MEMBER_MUTATION,
+            self._build_signup_variables(token),
+            extra_body={"fn_sync_data": build_signup_fn_sync_data(token)},
         )
         logger.info(
             "Signup result (sanitized): {}",
@@ -6311,280 +1111,53 @@ class PayPalFlow:
         )
         return signup_result
 
-    def _synthetic_signup_success_from_cookie(self, reason: str) -> dict[str, Any]:
-        """Build a GraphQL-shaped success when SignUp set EUAT but returned UI HTML.
-
-        In this PayPal checkout path the authchallenge document is a front-end
-        verification page.  The backend may already have accepted the signup and
-        placed the EUAT cookie before sending that HTML.  When we have that token
-        in the cookie jar there is enough authenticated state for the next
-        billingLite/Hagrid step, so normalize it to the same shape that
-        _consume_signup_result already understands.
-        """
-        return {
-            "data": {
-                "onboardAccount": {
-                    "buyer": {
-                        "userId": self.state.user_id,
-                        "auth": {"accessToken": self.state.euat_token},
-                    }
-                }
-            },
-            "extensions": {
-                "authchallengeIgnored": True,
-                "reason": reason,
-            },
-        }
-
-    def _post_signup_once(self, token: str, signup_variables: dict[str, Any]) -> dict[str, Any]:
-        return cast(dict[str, Any], self.session.graphql(
-            "SignUpNewMemberMutation",
-            SIGNUP_NEW_MEMBER_MUTATION,
-            signup_variables,
-            extra_body={"fn_sync_data": build_signup_fn_sync_data(token, session=self.session)},
-        ))
-
-    def _post_signup_with_authchallenge_ignore(
-        self,
-        token: str,
-        signup_url: str,
-        signup_variables: dict[str, Any],
-    ) -> dict[str, Any] | list[Any]:
-        last_challenge: PayPalAuthChallenge | None = None
-        last_validated = False
-
-        for challenge_attempt in range(1, 4):
-            try:
-                return self._post_signup_once(token, signup_variables)
-            except PayPalAuthChallenge as challenge:
-                last_challenge = challenge
-                captcha_type = self._authchallenge_captcha_type(challenge.html) or "unknown"
-                logger.warning(
-                    "SignUpNewMember returned PayPal authchallenge HTML "
-                    "attempt={} paypal_debug_id={} captcha_type={} mode={}",
-                    challenge_attempt,
-                    challenge.debug_id or "<missing>",
-                    captcha_type,
-                    self.captcha_bypass_mode,
-                )
-                # Non-destructive: do not clear PayPal session cookies here.
-                self.session.purge_security_challenge_state(
-                    challenge.html,
-                    reason=f"signup_authchallenge_backend_attempt_{challenge_attempt}",
-                    clear_cookies=False,
-                    clear_files=False,
-                )
-                if self.state.euat_token:
-                    logger.warning(
-                        "Authchallenge response already yielded EUAT cookie; "
-                        "continuing to billing authorization."
-                    )
-                    return self._synthetic_signup_success_from_cookie(
-                        "authchallenge_html_with_euat_cookie"
-                    )
-
-                validated = self._validate_authchallenge_if_possible(challenge.html, signup_url)
-                last_validated = bool(validated)
-                if isinstance(validated, (dict, list)):
-                    return validated
-                if last_validated:
-                    logger.info(
-                        "authchallenge close/validation completed; "
-                        "retrying SignUpNewMemberMutation."
-                    )
-                    time.sleep(0.4)
-                    continue
-
-                logger.warning(
-                    "authchallenge validation did not complete in mode={}; "
-                    "stopping signup retry loop.",
-                    self.captcha_bypass_mode,
-                )
-                break
-
-        status_code = last_challenge.status_code if last_challenge else 200
-        debug_id = last_challenge.debug_id if last_challenge else ""
-        captcha_type = self._authchallenge_captcha_type(last_challenge.html) if last_challenge else ""
-        if self.captcha_bypass_mode == CAPTCHA_FRONTEND_DISABLE_MODE:
-            error_message = "AUTHCHALLENGE_FRONTEND_DISABLE_VALIDATE_FAILED"
-        else:
-            error_message = "AUTHCHALLENGE_MANUAL_VERIFICATION_REQUIRED"
-        return {
-            "errors": [
-                {
-                    "message": error_message,
-                    "statusCode": status_code,
-                    "checkpoints": ["authchallenge"],
-                    "data": {
-                        "paypalDebugId": debug_id,
-                        "captchaType": captcha_type or "unknown",
-                        "backendValidatecaptcha": last_validated,
-                        "captchaMode": self.captcha_bypass_mode,
-                        "manualVerificationRequired": self.captcha_bypass_mode
-                        == CAPTCHA_MANUAL_REQUIRED_MODE,
-                    },
-                }
-            ]
-        }
-
-    @staticmethod
-    def _iter_dicts(value):
-        if isinstance(value, dict):
-            yield value
-            for item in value.values():
-                yield from PayPalFlow._iter_dicts(item)
-        elif isinstance(value, list):
-            for item in value:
-                yield from PayPalFlow._iter_dicts(item)
-
-    @staticmethod
-    def _href_from_value(value) -> str:
-        if isinstance(value, dict):
-            href = value.get("href")
-            return href if isinstance(href, str) else ""
-        return value if isinstance(value, str) else ""
-
-    def _load_three_ds_url(self, url: str, referer: str, label: str) -> bool:
-        url = self._unescape_auth_url(url)
-        if not url:
-            return False
-        try:
-            resp = self.session.get(
-                url,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": referer or self.state.signup_url,
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Site": "cross-site",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Dest": "iframe",
-                },
-            )
-            logger.info(
-                "3DS {} URL loaded: status={} bytes={}",
-                label,
-                resp.status_code,
-                len(resp.content),
-            )
-            return 200 <= resp.status_code < 400
-        except Exception as e:
-            logger.warning(f"3DS {label} URL load failed: {e}")
-            return False
-
-    def _handle_three_ds_contingency(self, signup_result, signup_url: str) -> bool:
-        """Handle frictionless 3DS DDC and stop on interactive challenge."""
-        result_obj = signup_result[0] if isinstance(signup_result, list) else signup_result
-        onboard_data = (
-            result_obj.get("data", {}).get("onboardAccount", {})
-            if isinstance(result_obj, dict)
-            else {}
-        )
-        flags = onboard_data.get("flags", {}) if isinstance(onboard_data, dict) else {}
-        explicitly_required = bool(flags.get("is3DSecureRequired"))
-
-        tds_items: list[dict[str, Any]] = []
-        for item in self._iter_dicts(onboard_data):
-            if isinstance(item.get("threeDomainSecure"), dict):
-                tds_items.append(item["threeDomainSecure"])
-            if isinstance(item.get("threeDSContingencyData"), dict):
-                tds_items.append(item["threeDSContingencyData"])
-
-        if not explicitly_required and not tds_items:
-            return True
-
-        accepted_statuses = {
-            "",
-            "NO_CONTINGENCY",
-            "NOT_REQUIRED",
-            "NOT_APPLICABLE",
-            "SKIPPED",
-            "PASSED",
-            "PASS",
-            "SUCCESS",
-            "SUCCEEDED",
-            "RESOLVED",
-            "COMPLETED",
-        }
-        interactive_urls: list[str] = []
-        ddc_urls: list[str] = []
-        statuses: list[str] = []
-
-        for item in tds_items:
-            status = str(item.get("status") or item.get("name") or item.get("causeName") or "")
-            if status:
-                statuses.append(status)
-            redirect_url = self._href_from_value(item.get("redirectUrl"))
-            if redirect_url:
-                interactive_urls.append(redirect_url)
-
-            raw_resolution = item.get("resolution")
-            resolution = raw_resolution if isinstance(raw_resolution, dict) else {}
-            raw_context = resolution.get("contingencyContext")
-            context = (
-                raw_context
-                if isinstance(raw_context, dict)
-                else {}
-            )
-            ddc_url = self._href_from_value(context.get("deviceDataCollectionUrl"))
-            if ddc_url:
-                ddc_urls.append(ddc_url)
-
-        for ddc_url in dict.fromkeys(ddc_urls):
-            self._load_three_ds_url(ddc_url, signup_url, "device-data-collection")
-
-        unresolved_statuses = [
-            status for status in statuses if status.upper() not in accepted_statuses
-        ]
-        if interactive_urls or (explicitly_required and unresolved_statuses):
-            logger.warning(
-                "3DS interactive challenge required; statuses={} challenge_urls={}",
-                ",".join(statuses) or "-",
-                len(interactive_urls),
-            )
-            return False
-
-        if explicitly_required:
-            logger.info("3DS required flag present but no interactive challenge remained after DDC.")
-        return True
-
-    def _consume_signup_result(self, signup_result: dict[str, Any] | list[Any], signup_url: str = "") -> tuple[bool, list[dict[str, Any]]]:
+    def _consume_signup_result(self, signup_result) -> tuple[bool, list[dict]]:
         """Apply successful signup data to state. Return (success, errors)."""
         result_obj = signup_result[0] if isinstance(signup_result, list) else signup_result
-        onboard_data = result_obj.get("data", {}).get("onboardAccount", {})
+        if not isinstance(result_obj, dict):
+            logger.error(
+                "Signup returned an unexpected response type: {}",
+                type(result_obj).__name__,
+            )
+            return False, [{
+                "message": "UNEXPECTED_RESPONSE_TYPE",
+                "responseType": type(result_obj).__name__,
+            }]
+
+        data_obj = result_obj.get("data")
+        data_obj = data_obj if isinstance(data_obj, dict) else {}
+        onboard_data = data_obj.get("onboardAccount") or {}
         if onboard_data:
-            if not self._handle_three_ds_contingency(signup_result, signup_url):
-                return False, [
-                    {
-                        "message": "THREE_DS_CHALLENGE_REQUIRED",
-                        "checkpoints": ["threeDS"],
-                        "data": {"requiresOperatorBrowser": True},
-                    }
-                ]
+            if not isinstance(onboard_data, dict):
+                onboard_data = {}
             buyer = onboard_data.get("buyer", {})
+            buyer = buyer if isinstance(buyer, dict) else {}
             self.state.user_id = buyer.get("userId", "")
             auth = buyer.get("auth", {})
+            auth = auth if isinstance(auth, dict) else {}
             if auth:
-                self.state.euat_token = auth.get("accessToken", "")
-            if not self.state.euat_token:
-                self.state.euat_token = self._signup_access_token_candidate(signup_result)
-            if not self.state.euat_token:
-                logger.warning(
-                    "SignUpNewMember returned onboardAccount but no accessToken "
-                    "was found in auth payload, response body, or EUAT cookie."
-                )
-            instrument_id = self._find_funding_instrument_id(onboard_data)
-            if instrument_id:
-                self.state.instrument_id = instrument_id
-                logger.info(
-                    "Funding instrument id found after SignUpNewMember: {}",
-                    sanitize_for_log({"token": instrument_id})["token"],
-                )
-            else:
-                logger.warning("SignUpNewMember returned onboardAccount but no fundingInstrument.id was found.")
+                self.session.set_euat_token(auth.get("accessToken", ""))
             logger.success(f"Account created! User ID: {self.state.user_id}")
             return True, []
 
-        errors = result_obj.get("errors", []) or []
+        raw_errors = result_obj.get("errors", []) or []
+        errors = [err for err in raw_errors if isinstance(err, dict)]
+        if raw_errors and not errors:
+            errors = [{
+                "message": "UNEXPECTED_ERROR_SHAPE",
+                "responseType": type(raw_errors).__name__,
+            }]
+        partial_access_token = self._find_access_token(errors)
+        if partial_access_token:
+            logger.warning(
+                "Signup returned a recoverable funding-instrument contingency with an access token; "
+                "the member account exists and authorization will continue"
+            )
+            logger.debug(
+                "Recoverable signup response: {}",
+                json.dumps(sanitize_for_log(result_obj), ensure_ascii=False, indent=2)[:8000],
+            )
+            return False, errors
         if errors:
             for err in errors:
                 logger.error(
@@ -6634,7 +1207,7 @@ class PayPalFlow:
         return False
 
     @staticmethod
-    def _is_card_related_signup_error(errors: list[dict[str, Any]]) -> bool:
+    def _is_card_related_signup_error(errors: list[dict]) -> bool:
         card_messages = {
             "CARD_GENERIC_ERROR",
             "INSTRUMENT_SHARING_LIMIT_EXCEEDED",
@@ -6642,177 +1215,121 @@ class PayPalFlow:
             "CREATE_CARD_ACCOUNT_CANDIDATE_VALIDATION_ERROR",
         }
         for err in errors or []:
+            if not isinstance(err, dict):
+                continue
             checkpoints = set(err.get("checkpoints") or [])
             if checkpoints.intersection({"addCard", "validate.fi", "card", "fi"}):
                 return True
             message = str(err.get("message") or "")
             if message in card_messages:
                 return True
+            # Some country onboarding backends wrap a funding-instrument
+            # rejection with this generic JavaScript resolver failure instead
+            # of returning the underlying card error/checkpoint. No member
+            # access token is issued, so it is safe to keep the verified OTP
+            # session and retry with a fresh card.
+            if "Cannot destructure property 'index' of 'error' as it is undefined" in message:
+                return True
             if PayPalFlow._dict_contains_card_field(err.get("errorData")):
                 return True
         return False
 
     @staticmethod
-    def _has_signup_error_message(errors: list[dict[str, Any]], message: str) -> bool:
-        return any(str(err.get("message") or "") == message for err in errors or [])
+    def _is_pre_account_card_validation_error(errors: list[dict]) -> bool:
+        """Return true when PayPal rejected the card before member creation.
 
-    @staticmethod
-    def _is_create_member_account_retryable_signup_error(errors: list[dict[str, Any]]) -> bool:
-        for err in errors or []:
-            checkpoints = {str(item) for item in (err.get("checkpoints") or [])}
-            message = str(err.get("message") or err.get("_name") or "")
-            name = str(err.get("_name") or "")
-            if "createMemberAccount" in checkpoints and (
-                message == "OAS_ERROR"
-                or name == "OAS_ERROR"
-                or bool(err.get("contingency"))
-            ):
-                return True
-        return False
-
-    @staticmethod
-    def _is_address_related_signup_error(errors: list[dict[str, Any]]) -> bool:
-        address_messages = {
-            "RESIDENTIAL_ADDRESS_NOT_FOUND",
-            "ADDRESS_NOT_FOUND",
-            "INVALID_BILLING_ADDRESS",
-            "BILLING_ADDRESS_INVALID",
+        `validate.fi` runs before createMemberAccount/addCard.  At this point no
+        buyer account or access token exists, so replacing only the funding
+        instrument does not mutate an already-created account.
+        """
+        retryable_messages = {
+            "CC_LINKED_TO_FULL_ACCOUNT",
+            "CREATE_CARD_ACCOUNT_CANDIDATE_VALIDATION_ERROR",
+            "CARD_GENERIC_ERROR",
         }
         for err in errors or []:
+            if not isinstance(err, dict):
+                continue
+            checkpoints = set(err.get("checkpoints") or [])
             message = str(err.get("message") or err.get("_name") or "")
-            if message in address_messages:
-                return True
-            path = {str(item) for item in (err.get("path") or [])}
-            checkpoints = {str(item) for item in (err.get("checkpoints") or [])}
-            if "billingAddress" in path or "billingAddress" in checkpoints:
+            if "validate.fi" in checkpoints and message in retryable_messages:
                 return True
         return False
 
-    def _wait_and_rotate_card(self, reason: str) -> None:
-        logger.warning(
-            "{}. Waiting before generating a fresh local Visa/MasterCard...",
-            reason,
-        )
-        delay = self.card_retry_delay_seconds
-        if self.card_retry_jitter_seconds:
-            delay += random.uniform(0, self.card_retry_jitter_seconds)
-        if delay > 0:
-            logger.info("Waiting {:.1f}s before next card retry...", delay)
-            time.sleep(delay)
-
-        self.card = generate_card(proxy_url=self.proxy_config.url, country=self.address.country)
-        logger.info(
-            "New generated card for retry: {} exp={}",
-            self._masked_card_number(),
-            self.card.expiry,
+    @staticmethod
+    def _has_signup_error_message(errors: list[dict], message: str) -> bool:
+        return any(
+            isinstance(err, dict) and str(err.get("message") or "") == message
+            for err in errors or []
         )
 
-    def _wait_and_rotate_address(self, reason: str) -> None:
-        logger.warning(
-            "{}. Rotating billing address and re-running address autocomplete...",
-            reason,
-        )
-        delay = self.card_retry_delay_seconds
-        if self.card_retry_jitter_seconds:
-            delay += random.uniform(0, self.card_retry_jitter_seconds)
-        if delay > 0:
-            logger.info("Waiting {:.1f}s before address retry...", delay)
-            time.sleep(delay)
-
-        old_address = (
-            self.address.street,
-            self.address.city,
-            self.address.state,
-            self.address.postal_code,
-        )
-        for _ in range(8):
-            candidate = generate_address(proxy_url=self.proxy_config.url, country=self.address.country)
-            new_address = (
-                candidate.street,
-                candidate.city,
-                candidate.state,
-                candidate.postal_code,
-            )
-            if new_address != old_address:
-                self.address = candidate
-                break
-        else:
-            self.address = generate_address(proxy_url=self.proxy_config.url, country=self.address.country)
-        self._billing_address_autocomplete_succeeded = False
-        self._signup_billing_address_prepared = False
-        logger.info(
-            "New billing address for retry: {}, {}, {} {}",
-            self._billing_line1(),
-            self.address.city,
-            self.address.state,
-            self.address.postal_code,
-        )
-
-    def _wait_and_rotate_signup_identity(self, reason: str, signup_attempt: int) -> None:
-        logger.warning(
-            "{}. Retrying SignUpNewMember in-place with fresh account/card info "
-            "while preserving the confirmed phone and billing address...",
-            reason,
-        )
-        delay = self.card_retry_delay_seconds
-        if self.card_retry_jitter_seconds:
-            delay += random.uniform(0, self.card_retry_jitter_seconds)
-        if delay > 0:
-            logger.info("Waiting {:.1f}s before next signup-info retry...", delay)
-            time.sleep(delay)
-
-        current_phone = self.user.phone
-        self.user = generate_user(current_phone, country=self.address.country)
-        self.card = generate_card(proxy_url=self.proxy_config.url, country=self.address.country)
-        self.state.user_id = ""
-        self.state.euat_token = ""
-        self.state.signup_fallback_reason = ""
-        self._used_partial_signup_token = False
-        self._on_signup_retry_generated(signup_attempt, reason)
-        logger.info(
-            "New signup info for retry: email={}, phone={} (preserved), "
-            "card={} exp={}, address={}, {}-{} (preserved)",
-            sanitize_for_log({"email": self.user.email})["email"],
-            sanitize_for_log({"phone": self.user.phone})["phone"],
-            self._masked_card_number(),
-            self.card.expiry,
-            self.address.district,
-            self.address.city,
-            self.address.state,
-        )
+    @staticmethod
+    def _funding_confirmation_context(errors: list[dict]) -> dict:
+        for err in errors or []:
+            if not isinstance(err, dict):
+                continue
+            if str(err.get("message") or "") == "FI_CONFIRMATION_CONTINGENCY":
+                data = err.get("errorData") or {}
+                return data if isinstance(data, dict) else {}
+        return {}
 
     def _signup_with_card_retry(self, token: str, signup_url: str):
         """Retry SignUpNewMember with a fresh generated Visa/MasterCard on card errors."""
-        self.state.euat_token = ""
-        self.state.signup_fallback_reason = ""
-        self._signup_billing_address_prepared = False
-        last_errors: list[dict[str, Any]] = []
+        self.session.set_euat_token("")
+        last_errors: list[dict] = []
         last_access_token = ""
 
         for attempt in range(1, self.max_card_attempts + 1):
             logger.info(
-                "Step 3: Creating account (SignUpNewMember), card attempt {}/{}: {}",
+                "Step 3: Creating account, signup attempt {}/{}",
                 attempt,
                 self.max_card_attempts,
-                self._masked_card_number(),
             )
             signup_result = self._send_signup_attempt(token, signup_url)
-            success, errors = self._consume_signup_result(signup_result, signup_url)
+            success, errors = self._consume_signup_result(signup_result)
             if success:
-                self.state.signup_fallback_reason = ""
-                self._used_partial_signup_token = False
                 return
 
             last_errors = errors
-            access_token = self._signup_access_token_candidate(signup_result)
+            runtime_schema = getattr(self, "runtime_form_schema", None)
+            if runtime_schema:
+                added_kyc = augment_dynamic_kyc_from_errors(runtime_schema, errors)
+                if added_kyc:
+                    logger.warning(
+                        "Signup validation exposed additional KYC fields: {}",
+                        ",".join(added_kyc),
+                    )
+                    # Validate that the current profile contains values before
+                    # spending another signup attempt. The next loop rebuilds
+                    # mutation variables from the augmented runtime schema.
+                    self._apply_runtime_kyc_variables({})
+                    continue
+            access_token = self._find_access_token(errors)
             if access_token:
                 last_access_token = access_token
 
+            confirmation = self._funding_confirmation_context(errors)
+            if confirmation:
+                method = str(confirmation.get("confimationMethod") or confirmation.get("confirmationMethod") or "").strip()
+                provider = str(confirmation.get("authenticationProvider") or "PayPal").strip()
+                if access_token:
+                    self.session.set_euat_token(access_token)
+                    logger.warning(
+                        "Ignoring FI_CONFIRMATION_CONTINGENCY as in the original flow; "
+                        "member access token preserved and Hermes/authorize will continue "
+                        "(provider={}, method={})",
+                        provider,
+                        method or "STEP_UP",
+                    )
+                    return
+                raise RuntimeError(
+                    "FUNDING_INSTRUMENT_3DS_REQUIRED_WITHOUT_EUAT: "
+                    f"provider={provider}; method={method or 'STEP_UP'}"
+                )
+
             if self._has_signup_error_message(errors, "ACCOUNT_ALREADY_EXISTS"):
                 if last_access_token:
-                    self.state.euat_token = last_access_token
-                    self._used_partial_signup_token = True
-                    self.state.signup_fallback_reason = "ACCOUNT_ALREADY_EXISTS"
+                    self.session.set_euat_token(last_access_token)
                     logger.warning(
                         "Signup returned ACCOUNT_ALREADY_EXISTS after a previous "
                         "response already issued an access token. Reusing that "
@@ -6824,36 +1341,54 @@ class PayPalFlow:
                     "token is available for this session."
                 )
 
-            if self._has_signup_error_message(errors, "THREE_DS_CHALLENGE_REQUIRED"):
-                if attempt >= self.max_card_attempts:
-                    raise RuntimeError(
-                        "Signup failed: 3DS interactive challenge required after "
-                        f"{self.max_card_attempts} attempts"
-                    )
-                self._wait_and_rotate_card("3DS interactive challenge required")
-                continue
-
-            if self._is_address_related_signup_error(errors):
-                if attempt >= self.max_card_attempts:
-                    raise RuntimeError(
-                        "Signup failed: billing address was rejected after "
-                        f"{self.max_card_attempts} attempts"
-                    )
-                self._wait_and_rotate_address("Billing address rejected by signup")
-                continue
-
             if self._is_card_related_signup_error(errors):
                 if access_token:
-                    self.state.euat_token = access_token
-                    self._used_partial_signup_token = True
-                    self.state.signup_fallback_reason = "CARD_GENERIC_ERROR"
-                    raise RuntimeError(
-                        "Signup failed: card was rejected by addCard "
-                        "(CARD_GENERIC_ERROR) after PayPal returned a partial "
-                        "access token. The checkout has no buyer/card bound; "
-                        "restart the full flow with a fresh session/user/card."
+                    self.session.set_euat_token(access_token)
+                    logger.warning(
+                        "Card/addCard failed but PayPal returned an access token. "
+                        "The member account is already created at this point, so "
+                        "re-sending SignUpNewMember with a new card would produce "
+                        "ACCOUNT_ALREADY_EXISTS. Continuing with the returned token."
                     )
                     return
+
+                if self.country == "US" and self._is_pre_account_card_validation_error(errors):
+                    if attempt >= self.max_card_attempts:
+                        raise RuntimeError(
+                            "US PayPal funding instrument validation failed after "
+                            f"{self.max_card_attempts} card attempts"
+                        )
+                    message = next(
+                        (
+                            str(err.get("message") or err.get("_name") or "CARD_REJECTED")
+                            for err in errors
+                            if isinstance(err, dict)
+                        ),
+                        "CARD_REJECTED",
+                    )
+                    logger.warning(
+                        "US pre-account card validation returned {}; keeping the verified "
+                        "profile/address and retrying with a fresh funding instrument",
+                        message,
+                    )
+                    self.card = generate_card(proxy_url=self.proxy_config.url)
+                    self._profile_rotated()
+                    continue
+
+                if self.country == "US":
+                    message = next(
+                        (
+                            str(err.get("message") or err.get("_name") or "CARD_REJECTED")
+                            for err in errors
+                            if isinstance(err, dict)
+                        ),
+                        "CARD_REJECTED",
+                    )
+                    raise RuntimeError(
+                        "US PayPal signup stopped after funding-instrument validation: "
+                        f"{message}. Start a clean job/session instead of changing the "
+                        "funding instrument inside the verified OTP session."
+                    )
 
                 if attempt >= self.max_card_attempts:
                     raise RuntimeError(
@@ -6861,30 +1396,106 @@ class PayPalFlow:
                         f"{self.max_card_attempts} attempts"
                     )
 
-                self._wait_and_rotate_card("Card rejected by signup/addCard")
+                card_country = str(getattr(self.address, "country", "") or "").upper()
+                # AE/BH use the local unique-card generator only.
+                prefer_local_card = card_country in {"AE", "BH"}
+                prefer_remote_card = False
+                logger.warning(
+                    "Card rejected by signup/addCard. Fetching a fresh {} "
+                    "Visa/MasterCard and retrying...",
+                    "local unique" if prefer_local_card else "random",
+                )
+                self.card = generate_card(
+                    proxy_url=self.proxy_config.url,
+                    prefer_local=prefer_local_card,
+                    prefer_remote=prefer_remote_card,
+                )
+                logger.info(
+                    "New generated card for retry: {} exp={}",
+                    self._masked_card_number(),
+                    self.card.expiry,
+                )
+                continue
+
+            address_not_found = self._has_signup_error_message(
+                errors, "RESIDENTIAL_ADDRESS_NOT_FOUND"
+            )
+            if address_not_found and self.country == "US":
+                raise RuntimeError(
+                    "US PayPal residential address was not accepted. Start a clean job "
+                    "with a consistent US proxy, phone and verified address context."
+                )
+            if address_not_found and attempt < self.max_card_attempts:
+                previous_postcode = self.address.postal_code
+                for _ in range(3):
+                    candidate = generate_address(self.country)
+                    if candidate.postal_code != previous_postcode:
+                        self.address = candidate
+                        break
+                else:
+                    self.address = generate_address(self.country)
+                logger.warning(
+                    "PayPal did not recognize the residential address; resolving another online-map {} address and retrying in the same OTP session",
+                    self.country,
+                )
+                try:
+                    self._normalize_address_with_paypal(token)
+                except Exception as normalize_error:
+                    logger.warning("PayPal postcode normalization retry failed: {}", normalize_error)
+                self._profile_rotated()
                 continue
 
             if access_token:
-                self.state.euat_token = access_token
-                self._used_partial_signup_token = True
-                self.state.signup_fallback_reason = (
-                    str(errors[0].get("message") or "SIGNUP_CONTINGENCY")
-                    if errors
-                    else "SIGNUP_CONTINGENCY"
-                )
-                logger.info("Got access token from signup error response or EUAT cookie")
+                self.session.set_euat_token(access_token)
+                logger.info("Got access token from signup error response")
                 return
 
-            if self._is_create_member_account_retryable_signup_error(errors):
-                if attempt >= self.max_card_attempts:
-                    raise RuntimeError(
-                        "Signup failed: createMemberAccount/OAS_ERROR after "
-                        f"{self.max_card_attempts} in-place signup-info attempts"
-                    )
-                self._wait_and_rotate_signup_identity(
-                    "createMemberAccount/OAS_ERROR returned without access token",
-                    attempt + 1,
+            create_member_oas = any(
+                isinstance(err, dict)
+                and str(err.get("message") or err.get("_name") or "").upper() == "OAS_ERROR"
+                and "createMemberAccount" in (err.get("checkpoints") or [])
+                for err in errors or []
+            )
+            if create_member_oas:
+                diagnostic = self.session.diagnostic_snapshot()
+                logger.warning(
+                    "OAS diagnostic: engine={} ec={} ctx={} ssrt={} content_id={} cookies={} debug_id={}",
+                    diagnostic.get("engine"),
+                    bool(self.state.ec_token),
+                    bool(self.state.ctx_id),
+                    bool(self.state.ssrt),
+                    self.state.content_identifier or "<missing>",
+                    ",".join(diagnostic.get("cookie_names") or []) or "<none>",
+                    (diagnostic.get("last_graphql") or {}).get("paypal_debug_id") or "<missing>",
                 )
+
+            if create_member_oas and self.country == "US":
+                raise RuntimeError(
+                    "US PayPal createMemberAccount was rejected by onboarding risk "
+                    "control (OAS_ERROR). The verified OTP session is now terminal; "
+                    "start a new clean job rather than rotating profile data in place."
+                )
+
+            if create_member_oas and attempt < self.max_card_attempts:
+                logger.warning(
+                    "PayPal rejected the generated member profile at createMemberAccount; "
+                    "rotating profile/address and retrying in the same verified phone session"
+                )
+                verified_phone = self.user.phone
+                self.user = generate_user(verified_phone, country=self.country)
+                self.address = generate_address(self.country)
+                try:
+                    send_tealeaf_data(self.session, signup_url)
+                    send_device_fingerprint(
+                        self.session,
+                        token,
+                        app_id="CHECKOUTUINODEWEB_ONBOARDING_LITE",
+                        referer=signup_url,
+                        wrapped=True,
+                    )
+                except Exception as warmup_error:
+                    logger.debug("Profile retry warmup soft-failed: {}", warmup_error)
+                self._profile_rotated()
                 continue
 
             break
@@ -6894,17 +1505,9 @@ class PayPalFlow:
             f"Last errors: {json.dumps(sanitize_for_log(last_errors), ensure_ascii=False)[:1000]}"
         )
 
-    @staticmethod
-    def _modxo_action_redirect_url(resp) -> str:
-        redirect_url = resp.headers.get("Location") or resp.headers.get("x-action-redirect") or ""
-        if not redirect_url:
-            return ""
-        redirect_url = redirect_url.split(";", 1)[0]
-        if redirect_url.startswith("/?"):
-            redirect_url = f"https://www.paypal.com/pay{redirect_url}"
-        elif redirect_url.startswith("/"):
-            redirect_url = f"https://www.paypal.com{redirect_url}"
-        return redirect_url
+    def _profile_rotated(self) -> None:
+        """Hook for web adapters to refresh masked generated-profile details."""
+        return None
 
     def _follow_modxo_action_redirect(self, resp, referer: str):
         """Follow Next server-action redirects emitted by ModXO.
@@ -6913,148 +1516,99 @@ class PayPalFlow:
         x-action-redirect header such as "/?...;push". In the latter case the
         path is relative to the /pay app, not the site root.
         """
-        redirect_url = self._modxo_action_redirect_url(resp)
+        redirect_url = resp.headers.get("Location") or resp.headers.get("x-action-redirect") or ""
         if not redirect_url:
             return resp
+        redirect_url = redirect_url.split(";", 1)[0]
+        if redirect_url.startswith("/?"):
+            redirect_url = f"https://www.paypal.com/pay{redirect_url}"
+        elif redirect_url.startswith("/"):
+            redirect_url = f"https://www.paypal.com{redirect_url}"
         logger.info(f"Following ModXO action redirect: {redirect_url[:140]}...")
         return self.session.get(
             redirect_url,
             headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Referer": referer,
                 "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-User": "?1",
-                "Sec-Fetch-Dest": "document",
             },
         )
 
-    def _load_modxo_rsc(self, page_url: str, referer: str):
-        """Load the post-country-change RSC payload like the browser."""
-        if not page_url:
-            return None
-        rsc_token = "".join(random.choice(string.ascii_letters + string.digits + "_-") for _ in range(15))
-        rsc_url = self._url_append_params(page_url, {"_rsc": rsc_token})
-        try:
-            headers = {
-                **self._browser_headers(accept="*/*"),
-                "Referer": referer,
-                "RSC": "1",
-                "Next-Url": "/",
-                "Next-Router-State-Tree": self._modxo_router_state_tree_header(),
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Dest": "empty",
-            }
-            nsid = self._paypal_nsid_header_value()
-            if nsid:
-                headers["PayPal-NSID"] = nsid
-            if self.state.modxo_deployment_id:
-                headers["X-Deployment-Id"] = self.state.modxo_deployment_id
-            resp = self.session.get(
-                rsc_url,
-                headers=headers,
-            )
-            self._apply_modxo_public_credential_fields(resp.text)
-            return resp
-        except Exception as e:
-            logger.debug("ModXO RSC refresh failed: {}", e)
-            return None
+    def _phase1_risk_controls(self):
+        """Send device fingerprints, Tealeaf data, analytics."""
+        logger.info("--- Phase 1: Risk control signals ---")
+
+        # Device fingerprint (p1, p2, w endpoints)
+        send_device_fingerprint(self.session, self.ba_token)
+
+        # Tealeaf initial data
+        page_url = f"https://www.paypal.com/pay?ssrt={self.state.ssrt}&token={self.ba_token}&ul=1"
+        send_tealeaf_data(self.session, page_url)
+
+        # Analytics
+        send_analytics_ts(self.session, "main:xo:modxo:login", self.ba_token)
+        send_observability_emit(self.session, self.ba_token)
+
+        logger.info("Risk control signals sent")
 
     def _phase2_create_account(self):
         """Submit 'Create Account' action to get to the signup page."""
         logger.info("--- Phase 2: Create account flow ---")
 
-        if self._is_ec_token(self.state.ec_token):
-            self.state.signup_url = self.state.signup_url or self._build_signup_url()
-            logger.info(
-                "EC checkout token is already available; skipping ModXO create-account action: {}",
-                sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"],
-            )
-            try:
-                signup_resp = self.session.get(
-                    self.state.signup_url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                        "Referer": f"https://www.paypal.com/agreements/approve?ba_token={self.ba_token}",
-                        "Upgrade-Insecure-Requests": "1",
-                        "Sec-Fetch-Site": "same-origin",
-                        "Sec-Fetch-Mode": "navigate",
-                        "Sec-Fetch-User": "?1",
-                        "Sec-Fetch-Dest": "document",
-                    },
-                )
-                self._capture_datadome_clientid(signup_resp.text)
-                if getattr(signup_resp, "status_code", 0) == 200 and self._signup_context_seed_html_looks_usable(signup_resp.text):
-                    self._last_signup_html = signup_resp.text
-                    self._last_signup_url = str(getattr(signup_resp, "url", "") or self.state.signup_url)
-                    self._last_signup_status = int(getattr(signup_resp, "status_code", 200) or 200)
-                self._apply_signup_content_metadata(signup_resp.text)
-                if self._content_metadata_is_unresolved():
-                    self._ensure_live_signup_content_manifest(referer=self.state.signup_url)
-            except Exception as e:
-                logger.debug("Existing EC signup warm-up failed: {}", e)
-            return
-
-        resp = None
-        pay_resp = None
-        pay_with_card_url = ""
-        # Browser trace (2026-07-04): ModXO is a Next server-action flow.
-        # First click "Pay with Card", then submit an email/createAccount
-        # action, whose RSC payload returns onboardingRedirectUrl.
-        pay_base_url = (
-            f"https://www.paypal.com/pay?ssrt={self.state.ssrt}"
-            f"&token={self.ba_token}&ul=1"
-        )
+        resp = getattr(self, "_approve_response", None) if self.state.ec_token else None
+        compact_fallback_used = bool(resp is not None and self.state.ec_token)
+        if resp is not None and self.state.ec_token:
+            logger.info("Using EC Token from the pure-protocol Next.js/RSC bootstrap")
         pay_url = (
             f"https://www.paypal.com/pay/?ssrt={self.state.ssrt}"
             f"&token={self.ba_token}&ul=1&ctxId={self.state.ctx_id}"
-            f"&country.x={self._profile_country()}"
+            f"&country.x={self.address.country}"
         )
-        try:
-            submit_action_id = (
-                self.state.submit_public_credential_action_id
-                or self.state.create_user_action_id
-            )
-            if not submit_action_id:
-                raise RuntimeError("missing dynamic ModXO Next-Action ids")
 
-            pay_page_url = self.state.modxo_pay_page_url or pay_url
-            if self.state.modxo_country_selected and self.state.ctx_id:
-                logger.info(
-                    "ModXO country action was already accepted during captcha-solved "
-                    "frontend packets; continuing from {}...",
-                    pay_page_url[:140],
+        # Prefer the server-provided guest onboarding route. This matches the
+        # current PayPal flow and avoids depending on rotating Next-Action IDs.
+        try:
+            if self.state.onboarding_url:
+                logger.info("Following server-provided guest onboarding route...")
+                resp = self.session.get(
+                    self.state.onboarding_url,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Referer": pay_url,
+                        "Upgrade-Insecure-Requests": "1",
+                        "Sec-Fetch-Site": "same-origin",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Dest": "document",
+                    },
                 )
-                self._send_modxo_frontend_captcha_solved_packets(
-                    pay_page_url,
-                    include_base=False,
-                    include_country=True,
+                if resp.status_code == 403:
+                    manual_response = self._handle_datadome_challenge(resp, self.state.onboarding_url)
+                    if manual_response is not None:
+                        resp = manual_response
+                if resp.status_code not in {200, 301, 302, 303, 307, 308}:
+                    logger.warning("Guest onboarding route returned HTTP {}", resp.status_code)
+                    resp = None
+        except Exception as e:
+            logger.warning("Guest onboarding route failed: {}", e)
+            resp = None
+
+        # Only crawl Next.js chunks if the server-provided onboarding route
+        # failed. Normal tasks avoid those extra requests entirely.
+        if resp is None and not (self.state.show_create_account_action_id and self.state.create_user_action_id):
+            try:
+                self._extract_modxo_action_ids(
+                    getattr(self, "_approve_html", ""),
+                    getattr(self, "_approve_url", pay_url),
                 )
-                self._load_modxo_rsc(pay_page_url, referer=pay_page_url)
-            elif self.state.modxo_country_action_id and self.state.modxo_country_action_bound:
-                # Browser request 190: inline country handleChange action.  This
-                # is what actually activates ctxId/country for the ModXO email
-                # submit flow; using showCreateAccountAction here can return an
-                # authchallenge HTML document and never produces an EC token.
-                logger.info("Submitting browser-like ModXO country server action...")
-                cfci = (
-                    self._frontend_captcha_solved_cfci()
-                    if self.state.paypal_captcha_solved
-                    else self._modxo_cfci("Pay_With_Card")
-                )
-                pay_with_card_url = self._url_with_paypal_client_cfci(pay_base_url, cfci)
-                pay_resp = self._post_modxo_country_action(
-                    page_url=pay_base_url,
-                    country=self._profile_country(),
-                    cfci=cfci,
-                )
-                if pay_resp is None:
-                    raise RuntimeError("ModXO country action returned no response")
-            else:
+            except Exception as action_scan_error:
+                logger.debug("Deferred ModXO action scan failed: {}", action_scan_error)
+
+        # Fallback to browser-like Next server actions when the direct route is
+        # unavailable but fresh action IDs were discovered.
+        if resp is None and self.state.show_create_account_action_id and self.state.create_user_action_id:
+            try:
                 logger.info("Submitting browser-like Pay_With_Card server action...")
-                pay_with_card_url = self._modxo_url_with_cfci(pay_url, "Pay_With_Card")
+                pay_with_card_url = f"{pay_url}&paypal_client_cfci=modxo_vaulted_not_recurring-Pay_With_Card"
                 pay_resp = self.session.post(
                     pay_with_card_url,
                     files=[
@@ -7062,239 +1616,65 @@ class PayPalFlow:
                         ("_1_formName", (None, "createAccountAction")),
                         ("0", (None, '["$K1"]')),
                     ],
-                    headers=self._modxo_server_action_headers(
-                        referer=pay_url,
-                        action_id=self.state.show_create_account_action_id,
-                    ),
+                    headers={
+                        "Accept": "text/x-component",
+                        "Origin": "https://www.paypal.com",
+                        "Referer": pay_url,
+                        "Next-Action": self.state.show_create_account_action_id,
+                    },
                 )
+                if pay_resp.status_code in (301, 302, 303, 307, 308) or pay_resp.headers.get("x-action-redirect"):
+                    self._follow_modxo_action_redirect(pay_resp, pay_url)
 
-            pay_redirect_url = self._modxo_action_redirect_url(pay_resp) if pay_resp is not None else ""
-            if pay_redirect_url:
-                pay_page_url = urllib.parse.urljoin(pay_base_url, pay_redirect_url)
-                self.state.modxo_pay_page_url = pay_page_url
-                ctx_id = self._first_query_value(pay_page_url, "ctxId")
-                if ctx_id:
-                    self.state.ctx_id = ctx_id
-                self.state.modxo_country_selected = True
-                self._send_modxo_frontend_captcha_solved_packets(
-                    pay_page_url,
-                    include_base=False,
-                    include_country=True,
+                logger.info("Submitting browser-like Continue_To_Payment server action...")
+                continue_url = f"{pay_url}&paypal_client_cfci=modxo_vaulted_not_recurring-Continue_To_Payment"
+                rsc_resp = self.session.post(
+                    continue_url,
+                    files=[
+                        ("_1_ctxId", (None, self.state.ctx_id)),
+                        ("_1_token", (None, self.ba_token)),
+                        ("_1_login_email", (None, self.user.email)),
+                        ("_1_formName", (None, "createAccount")),
+                        ("0", (None, f'["$K1",{{"emailSubmitTime":{int(time.time() * 1000)}}}]')),
+                    ],
+                    headers={
+                        "Accept": "text/x-component",
+                        "Origin": "https://www.paypal.com",
+                        "Referer": pay_with_card_url,
+                        "Next-Action": self.state.create_user_action_id,
+                    },
                 )
-                self._load_modxo_rsc(pay_page_url, referer=pay_page_url)
-            elif pay_resp is not None and looks_like_paypal_authchallenge(pay_resp.text):
-                logger.warning("Pay_With_Card returned authchallenge HTML; manual verification is required.")
-                if not self._validate_authchallenge_if_possible(pay_resp.text, pay_base_url):
-                    raise PayPalAuthChallenge(
-                        "Pay_With_Card",
-                        pay_resp.status_code,
-                        pay_resp.headers.get("paypal-debug-id", ""),
-                        pay_resp.text,
-                    )
-                else:
-                    retry_cfci = (
-                        self._frontend_captcha_solved_cfci()
-                        if self.state.paypal_captcha_solved
-                        else self._modxo_cfci("Pay_With_Card")
-                    )
-                    pay_resp = self.session.post(
-                        pay_with_card_url,
-                        files=[
-                            ("1", (None, f'"{self.state.modxo_country_action_bound}"')),
-                            ("0", (None, f'["$@1","{self._profile_country()}"]')),
-                        ] if self.state.modxo_country_action_id and self.state.modxo_country_action_bound else [
-                            ("_1_ctxId", (None, self.state.ctx_id)),
-                            ("_1_formName", (None, "createAccountAction")),
-                            ("0", (None, '["$K1"]')),
-                        ],
+                onboarding_url = self._extract_onboarding_redirect(rsc_resp.text)
+                if onboarding_url:
+                    resp = self.session.get(
+                        onboarding_url,
                         headers={
-                            **self._modxo_server_action_headers(
-                                referer=pay_base_url if self.state.modxo_country_action_id else pay_url,
-                                action_id=(
-                                    self.state.modxo_country_action_id
-                                    or self.state.show_create_account_action_id
-                                ),
-                            ),
-                            "PayPal-Client-Cfci": retry_cfci,
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Referer": pay_url,
+                            "Upgrade-Insecure-Requests": "1",
                         },
                     )
-                    pay_redirect_url = self._modxo_action_redirect_url(pay_resp)
-                    if pay_redirect_url:
-                        pay_page_url = urllib.parse.urljoin(pay_base_url, pay_redirect_url)
-                        self.state.modxo_pay_page_url = pay_page_url
-                        ctx_id = self._first_query_value(pay_page_url, "ctxId")
-                        if ctx_id:
-                            self.state.ctx_id = ctx_id
-                        self.state.modxo_country_selected = True
-                        self._send_modxo_frontend_captcha_solved_packets(
-                            pay_page_url,
-                            include_base=False,
-                            include_country=True,
-                        )
-                        self._load_modxo_rsc(pay_page_url, referer=pay_page_url)
-
-            # The /pay reload after Pay_With_Card loads the ddbm2 bootstrap,
-            # then the INPUT_PASSWORD FraudNet/field events fire before the
-            # Continue_To_Payment server action.
-            send_da_bootstrap(self.session, referer=pay_page_url, include_ddbm=True)
-            send_fraudnet_rdt(
-                self.session,
-                self.ba_token,
-                app_id="IWC_NEXT_CHECKOUT_INPUT_PASSWORD",
-                referer=pay_page_url,
-            )
-            send_device_fingerprint(
-                self.session,
-                self.ba_token,
-                app_id="IWC_NEXT_CHECKOUT_INPUT_PASSWORD",
-                referer="https://www.paypal.com/",
-                wrapped=True,
-                page_url=pay_page_url,
-                page_referer="",
-                include_pa=True,
-            )
-            self._send_signup_field_events(
-                self.session,
-                self.ba_token,
-                ["password"],
-                app_id="IWC_NEXT_CHECKOUT_INPUT_PASSWORD",
-                referer=pay_page_url,
-            )
-            send_identity_di_log(self.session, self.ba_token, referer=pay_page_url, eligible=False)
-
-            send_fraudnet_rdt(
-                self.session,
-                self.ba_token,
-                app_id="IWC_NEXT_CHECKOUT",
-                referer=pay_page_url,
-            )
-            self._send_signup_field_events(
-                self.session,
-                self.ba_token,
-                ["login_email"],
-                app_id="IWC_NEXT_CHECKOUT",
-                referer=pay_page_url,
-            )
-
-            logger.info("Submitting browser-like Continue_To_Payment server action...")
-            continue_cfci = (
-                self._frontend_captcha_solved_cfci()
-                if self.state.paypal_captcha_solved
-                else self._modxo_cfci("Continue_To_Payment")
-            )
-            continue_url = self._url_with_paypal_client_cfci(pay_page_url, continue_cfci)
-            if self.state.submit_public_credential_action_id:
-                continue_files = [
-                    ("_1_fn_sync_data", (None, build_fn_sync_data(self.ba_token, session=self.session))),
-                    ("_1_ctxId", (None, self.state.ctx_id)),
-                    ("_1_passkeyChallenge", (None, self.state.passkey_challenge)),
-                    ("_1_rpId", (None, self.state.rp_id or "www.paypal.com")),
-                    ("_1_login_email", (None, self.user.email)),
-                    ("_1_login_password", (None, "")),
-                    (
-                        "_1_login_phone_country_code",
-                        (None, self.state.login_phone_country_code or self.user.phone_country_code or "+55"),
-                    ),
-                    ("_1_formName", (None, "email")),
-                    ("0", (None, '["$K1"]')),
-                ]
-            else:
-                continue_files = [
-                    ("_1_ctxId", (None, self.state.ctx_id)),
-                    ("_1_token", (None, self.ba_token)),
-                    ("_1_login_email", (None, self.user.email)),
-                    ("_1_formName", (None, "createAccount")),
-                    ("0", (None, f'["$K1",{{"emailSubmitTime":{int(time.time() * 1000)}}}]')),
-                ]
-            def post_continue_action(action_id: str):
-                return self.session.post(
-                    continue_url,
-                    files=continue_files,
-                    headers={
-                        **self._modxo_server_action_headers(
-                            referer=pay_page_url,
-                            action_id=action_id,
-                        ),
-                        "PayPal-Client-Cfci": continue_cfci,
-                    },
-                )
-
-            rsc_resp = post_continue_action(submit_action_id)
-            if looks_like_paypal_authchallenge(rsc_resp.text):
-                logger.warning("Continue_To_Payment returned authchallenge HTML; manual verification is required.")
-                if not self._validate_authchallenge_if_possible(rsc_resp.text, pay_page_url):
-                    raise PayPalAuthChallenge(
-                        "Continue_To_Payment",
-                        rsc_resp.status_code,
-                        rsc_resp.headers.get("paypal-debug-id", ""),
-                        rsc_resp.text,
-                    )
-                else:
-                    rsc_resp = post_continue_action(submit_action_id)
-
-            if (
-                not self._extract_onboarding_redirect(rsc_resp.text)
-                and not (rsc_resp.status_code in (301, 302, 303, 307, 308) or rsc_resp.headers.get("x-action-redirect"))
-                and self._modxo_static_action_ids_enabled()
-                and self._refresh_modxo_action_ids_from_chunks(reason="continue_to_payment_no_redirect")
-            ):
-                refreshed_submit_action_id = (
-                    self.state.submit_public_credential_action_id
-                    or self.state.create_user_action_id
-                    or submit_action_id
-                )
-                if refreshed_submit_action_id != submit_action_id:
-                    submit_action_id = refreshed_submit_action_id
-                    rsc_resp = post_continue_action(submit_action_id)
-            onboarding_url = self._extract_onboarding_redirect(rsc_resp.text)
-            if onboarding_url:
-                logger.info(f"Onboarding redirect URL: {onboarding_url[:140]}...")
-                onboarding_token = self._first_query_value(onboarding_url, "token")
-                if self._is_ec_token(onboarding_token):
-                    self.state.ec_token = onboarding_token
-                    logger.info(
-                        "EC Token (from onboarding redirect): {}",
-                        sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"],
-                    )
-                resp = self.session.get(
-                    onboarding_url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                        "Referer": pay_page_url,
-                        "Upgrade-Insecure-Requests": "1",
-                        "Sec-Fetch-Site": "same-origin",
-                        "Sec-Fetch-Mode": "navigate",
-                        "Sec-Fetch-User": "?1",
-                        "Sec-Fetch-Dest": "document",
-                    },
-                )
-            elif rsc_resp.status_code in (301, 302, 303, 307, 308) or rsc_resp.headers.get("x-action-redirect"):
-                resp = self._follow_modxo_action_redirect(rsc_resp, pay_page_url)
-        except Exception as e:
-            logger.warning(f"Browser-like ModXO server-action path failed: {e}")
+            except Exception as e:
+                logger.warning("Browser-like ModXO server-action path failed: {}", e)
+                resp = None
 
         if resp is None:
-            # Fallback for older deployments that still accept a compact form.
+            logger.warning("Using compact guest onboarding fallback")
+            compact_fallback_used = True
             base_url = (
                 f"https://www.paypal.com/pay?ssrt={self.state.ssrt}"
                 f"&token={self.ba_token}&ul=1"
+                f"&paypal_client_cfci=modxo_vaulted_not_recurring-Pay_With_Card"
             )
-            base_url = self._modxo_url_with_cfci(base_url, "Pay_With_Card")
-
             form_data = {
                 "ctxId": self.state.ctx_id,
                 "formName": "createAccountAction",
-                "fn_sync_data": build_fn_sync_data(self.ba_token, session=self.session),
+                "fn_sync_data": build_fn_sync_data(self.ba_token),
             }
-
             resp = self.session.post(base_url, data=form_data, headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Origin": "https://www.paypal.com",
                 "Referer": f"https://www.paypal.com/pay?ssrt={self.state.ssrt}&token={self.ba_token}&ul=1",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-User": "?1",
-                "Sec-Fetch-Dest": "document",
             })
 
         # Handle redirect chain
@@ -7303,28 +1683,74 @@ class PayPalFlow:
             if redirect_url.startswith("/"):
                 redirect_url = f"https://www.paypal.com{redirect_url}"
             logger.info(f"Following redirect: {redirect_url[:100]}...")
-            resp = self.session.get(redirect_url, headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-User": "?1",
-                "Sec-Fetch-Dest": "document",
-            })
+            resp = self.session.get(redirect_url)
 
         html = resp.text
-        self._capture_datadome_clientid(html)
 
-        # Extract EC token from the new URL or page content
-        ec_match = re.search(r"token=(EC-\w+)", str(resp.url))
+        # Extract EC token from the new URL or page content. PayPal currently
+        # emits tokens containing characters outside ``\w`` in some routes, so
+        # keep the parser aligned with the full token alphabet.
+        decoded_url = urllib.parse.unquote(str(resp.url))
+        decoded_html = urllib.parse.unquote(html)
+        ec_match = re.search(r"(?:token=|[?&]token%3D)(EC-[A-Za-z0-9_-]+)", decoded_url, re.I)
         if ec_match:
             self.state.ec_token = ec_match.group(1)
             logger.info("EC Token: {}", sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"])
         else:
-            ec_match = re.search(r"EC-\w+", html)
+            ec_match = re.search(
+                r'(?:\\?"ecToken\\?"\s*:\s*\\?"?)(EC-[A-Za-z0-9_-]+)',
+                decoded_html,
+                re.I,
+            ) or re.search(r"EC-[A-Za-z0-9_-]+", decoded_html)
             if ec_match:
-                self.state.ec_token = ec_match.group(0)
+                self.state.ec_token = ec_match.group(1) if ec_match.lastindex else ec_match.group(0)
                 logger.info("EC Token (from HTML): {}", sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"])
+
+        # A server-provided onboarding URL may return a valid HTTP 200 shell
+        # before the EC checkout is created. Previously that response prevented
+        # the compact form fallback from running at all. Retry the compact
+        # create-account route once, then re-check both redirects and content.
+        if not self.state.ec_token and not compact_fallback_used:
+            logger.warning("Guest onboarding page contained no EC token; retrying compact create-account route")
+            compact_url = (
+                f"https://www.paypal.com/pay?ssrt={self.state.ssrt}"
+                f"&token={self.ba_token}&ul=1"
+                f"&paypal_client_cfci=modxo_vaulted_not_recurring-Pay_With_Card"
+            )
+            compact_resp = self.session.post(
+                compact_url,
+                data={
+                    "ctxId": self.state.ctx_id,
+                    "formName": "createAccountAction",
+                    "fn_sync_data": build_fn_sync_data(self.ba_token),
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "https://www.paypal.com",
+                    "Referer": f"https://www.paypal.com/pay?ssrt={self.state.ssrt}&token={self.ba_token}&ul=1",
+                },
+            )
+            while compact_resp.status_code in (301, 302, 303, 307, 308):
+                redirect_url = compact_resp.headers.get("Location", "")
+                redirect_url = urllib.parse.urljoin(str(compact_resp.url), redirect_url)
+                if not redirect_url:
+                    break
+                logger.info("Following compact onboarding redirect: {}...", redirect_url[:100])
+                compact_resp = self.session.get(redirect_url)
+
+            resp = compact_resp
+            html = compact_resp.text
+            decoded_url = urllib.parse.unquote(str(compact_resp.url))
+            decoded_html = urllib.parse.unquote(html)
+            ec_match = re.search(r"(?:token=|[?&]token%3D)(EC-[A-Za-z0-9_-]+)", decoded_url, re.I)
+            if ec_match:
+                self.state.ec_token = ec_match.group(1)
+                logger.info("EC Token (compact retry): {}", sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"])
+            else:
+                ec_match = re.search(r"EC-[A-Za-z0-9_-]+", decoded_html)
+                if ec_match:
+                    self.state.ec_token = ec_match.group(0)
+                    logger.info("EC Token (compact retry HTML): {}", sanitize_for_log({"ec_token": self.state.ec_token})["ec_token"])
 
         # The real browser next loads checkoutweb/weasley.  This request is not
         # just cosmetic: it sets checkout cookies (for example l7_az/x-pp-s),
@@ -7337,13 +1763,9 @@ class PayPalFlow:
             signup_resp = self.session.get(
                 signup_url,
                 headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Referer": str(resp.url),
                     "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Site": "same-origin",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-User": "?1",
-                    "Sec-Fetch-Dest": "document",
                 },
             )
             logger.info(
@@ -7351,7 +1773,6 @@ class PayPalFlow:
                 signup_resp.status_code,
                 len(signup_resp.content),
             )
-            self._capture_datadome_clientid(signup_resp.text)
             if signup_resp.status_code in (301, 302, 303, 307, 308):
                 redirect_url = signup_resp.headers.get("Location", "")
                 if redirect_url:
@@ -7363,102 +1784,34 @@ class PayPalFlow:
                         redirect_url[:140],
                         self.state.signup_url[:140],
                     )
-                    signup_resp = self.session.get(
-                        redirect_url,
-                        headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                            "Referer": signup_url,
-                            "Upgrade-Insecure-Requests": "1",
-                            "Sec-Fetch-Site": "same-origin",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-User": "?1",
-                            "Sec-Fetch-Dest": "document",
-                        },
-                    )
-                    self._capture_datadome_clientid(signup_resp.text)
-            if looks_like_paypal_authchallenge(signup_resp.text):
-                logger.info(
-                    "Checkout signup app returned authchallenge HTML; "
-                    "manual verification is required before content manifest extraction."
-                )
-                if not self._validate_authchallenge_if_possible(signup_resp.text, signup_url):
-                    raise PayPalAuthChallenge(
-                        "checkoutweb_signup",
-                        signup_resp.status_code,
-                        signup_resp.headers.get("paypal-debug-id", ""),
-                        signup_resp.text,
-                    )
-                else:
-                    signup_resp = self.session.get(
-                        signup_url,
-                        headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                            "Referer": signup_url,
-                            "Upgrade-Insecure-Requests": "1",
-                            "Sec-Fetch-Site": "same-origin",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-User": "?1",
-                            "Sec-Fetch-Dest": "document",
-                        },
-                    )
-                    self._capture_datadome_clientid(signup_resp.text)
-            if getattr(signup_resp, "status_code", 0) == 200 and self._signup_context_seed_html_looks_usable(signup_resp.text):
-                self._last_signup_html = signup_resp.text
-                self._last_signup_url = str(getattr(signup_resp, "url", "") or signup_url)
-                self._last_signup_status = int(getattr(signup_resp, "status_code", 200) or 200)
-            self._apply_signup_content_metadata(signup_resp.text)
-            manifest_url = (
-                self._extract_content_manifest_url(
-                    signup_resp.text,
-                    self._extract_window_initial_data(signup_resp.text),
-                    str(signup_resp.url or signup_url),
-                )
-                or self.state.content_manifest_url
+            self._signup_html = signup_resp.text
+            self._signup_html = signup_resp.text
+            initial_data = self._extract_window_initial_data(signup_resp.text)
+            content_hash = initial_data.get("contentHash")
+            if content_hash:
+                self.state.content_hash = content_hash
+                logger.info(f"Content hash: {self.state.content_hash}")
+            content_identifier = self._extract_content_identifier(
+                signup_resp.text,
+                self.address.country,
+                self.lang,
             )
-            if manifest_url and (
-                self._content_metadata_is_unresolved()
-                or not self.state.content_manifest_key
-            ):
-                self._fetch_signup_content_manifest_metadata(
-                    manifest_url,
-                    referer=str(signup_resp.url or signup_url),
-                )
-            if self._content_metadata_is_unresolved():
-                self._scan_signup_assets_for_content_metadata(
-                    signup_resp.text,
-                    str(signup_resp.url or signup_url),
-                )
-
-        if not self._is_ec_token(self.state.ec_token):
-            raise RuntimeError(
-                "Create account flow did not produce an EC checkout token. "
-                "The original BA token cannot be used for checkoutweb signup "
-                "or InstallmentOptionsQuery; check whether the BA token is "
-                "expired/invalid or the ModXO server-action response changed."
-            )
-
-        if self._content_metadata_is_unresolved():
-            self._ensure_live_signup_content_manifest(
-                referer=self.state.signup_url or str(resp.url),
-            )
+            if content_hash and content_identifier.endswith(":compliance.signupTerms") and content_hash not in content_identifier:
+                content_identifier = f"{self.address.country}:{self.lang}:{content_hash}:compliance.signupTerms"
+            self.state.content_identifier = content_identifier
+            logger.info(f"Content identifier: {self.state.content_identifier}")
 
         # Send Tealeaf for new page
-        signup_page_url = self.state.signup_url or str(resp.url)
-        self._send_tealeaf_data(
+        send_tealeaf_data(
             self.session,
-            signup_page_url,
-        )
-        self._send_datadog_rum_view(
-            self.session,
-            signup_page_url,
-            self.ba_token,
-            dd_config=_DD_WEASLEY_CONFIG,
+            self.state.signup_url if self.state.signup_url else str(resp.url),
         )
         send_observability_emit(self.session, self.ba_token)
 
         if self.state.ec_token:
-            # Browser trace sends signup-page Weasley logs before the warm-up
-            # GraphQL queries.
+            # Browser trace sends signup-page Weasley logs and EC-token risk
+            # beacons before phone/card submission.  Missing these correlates
+            # with opaque OAS_ERROR/createMemberAccount buckets.
             send_weasley_log(
                 self.session,
                 self.state.ec_token,
@@ -7470,9 +1823,17 @@ class PayPalFlow:
                     "weasley_payment_request_api_available",
                 ],
                 country=self.address.country,
-                lang=get_country_profile(self.address.country).content_language,
+                lang=self.lang,
+            )
+            send_device_fingerprint(
+                self.session,
+                self.state.ec_token,
+                app_id="CHECKOUTUINODEWEB_ONBOARDING_LITE",
+                referer=self.state.signup_url,
+                wrapped=True,
             )
 
+        # Send the initial GraphQL queries
         logger.info("Sending checkout session GraphQL queries...")
         try:
             self.session.graphql(
@@ -7492,11 +1853,20 @@ class PayPalFlow:
 
         try:
             self.session.graphql(
+                "CheckoutSessionDataQuery",
+                CHECKOUT_SESSION_DATA_QUERY,
+                {"token": self.state.ec_token or self.ba_token},
+            )
+        except Exception as e:
+            logger.warning(f"CheckoutSessionDataQuery failed: {e}")
+
+        try:
+            self.session.graphql(
                 "GriffinMetadataQuery",
                 GRIFFIN_METADATA_QUERY,
                 {
                     "countryCode": self.address.country,
-                    "languageCode": get_country_profile(self.address.country).content_language,
+                    "languageCode": self.lang,
                     "shippingCountryCode": self.address.country,
                 },
             )
@@ -7505,48 +1875,20 @@ class PayPalFlow:
 
         try:
             self.session.graphql(
-                "CheckoutSessionDataQuery",
-                CHECKOUT_SESSION_DATA_QUERY,
-                {"token": self.state.ec_token or self.ba_token},
+                "SupportedFundingSourcesQuery",
+                SUPPORTED_FUNDING_SOURCES_QUERY,
+                {
+                    "token": self.state.ec_token or self.ba_token,
+                    "userCountry": self.address.country,
+                },
             )
         except Exception as e:
-            logger.warning(f"CheckoutSessionDataQuery failed: {e}")
+            logger.warning(f"SupportedFundingSourcesQuery failed: {e}")
 
-        if os.getenv("PAYPAL_SKIP_SUPPORTED_FUNDING_SOURCES", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            logger.debug("Skipping SupportedFundingSourcesQuery warm-up by environment")
-        else:
-            try:
-                self.session.graphql(
-                    "SupportedFundingSourcesQuery",
-                    SUPPORTED_FUNDING_SOURCES_QUERY,
-                    {
-                        "token": self.state.ec_token or self.ba_token,
-                        "userCountry": self.address.country,
-                    },
-                )
-            except Exception as e:
-                logger.warning(f"SupportedFundingSourcesQuery failed: {e}")
-
-        if self.state.ec_token:
-            send_analytics_ts(
-                self.session,
-                "main:billing:hagrid:billingwithoutpurchase:member:billing",
-                self.ba_token,
-                ec_token=self.state.ec_token,
-            )
-            self._send_tealeaf_data(self.session, signup_page_url)
-            send_device_fingerprint(
-                self.session,
-                self.state.ec_token,
-                app_id="CHECKOUTUINODEWEB_ONBOARDING_LITE",
-                referer=signup_page_url,
-                wrapped=True,
-            )
+        try:
+            self._normalize_address_with_paypal(self.state.ec_token or self.ba_token)
+        except Exception as e:
+            logger.warning(f"AddressAutocompleteFromPostalCodeQuery failed: {e}")
 
     def _phase3_signup_and_2fa(self):
         """Submit the signup form and trigger 2FA SMS.
@@ -7558,71 +1900,21 @@ class PayPalFlow:
         """
         logger.info("--- Phase 3: Signup form + 2FA ---")
 
-        # Send initial Tealeaf page activity before the user flow starts.
+        # Send Tealeaf to simulate form interaction
         signup_url = self.state.signup_url or "https://www.paypal.com/checkoutweb/signup"
-        self._send_tealeaf_data(self.session, signup_url)
+        send_tealeaf_data(self.session, signup_url)
 
-        if not self._is_ec_token(self.state.ec_token):
-            raise RuntimeError(
-                "Cannot start signup/2FA without an EC checkout token. "
-                "Run Phase 2 again with a valid BA token."
-            )
-        token = self.state.ec_token
-
-        # Browser emits idapps/graphql getOtpChallengeOperation around the OTP
-        # challenge context before the signup/2FA path proceeds.  Missing this
-        # packet leaves later authchallenge decisions with a thinner risk trace.
-        self._send_idapps_get_otp_challenge(token, signup_url)
+        token = self.state.ec_token or self.ba_token
 
         # Step 1/2: Send SMS and confirm OTP. If the OTP is wrong, the
         # operator can either retry a code for the same phone or enter a new
         # phone number to trigger a fresh challenge.
         self._confirm_phone_with_retry(token, signup_url)
 
-        signup_interaction_fields = [
-            "email", "phone", "cardNumber", "cardExpiry", "cardCvv",
-            "password", "firstName", "lastName",
-            "billingLine1", "billingCity", "billingPostalCode", "billingState",
-        ]
-        country_profile = get_country_profile(self.address.country)
-        if country_profile.card_dob_required or "DateOfBirth" in country_profile.kyc_fields:
-            signup_interaction_fields.append("dateOfBirth")
-        if "IdentityDocumentNumber" in country_profile.kyc_fields:
-            signup_interaction_fields.append("identityDocumentNumber")
-        self._send_tealeaf_form_interaction_batch(signup_url, signup_interaction_fields)
-        self._send_datadog_rum_action(
-            self.session,
-            "signup_form_fill",
-            signup_url,
-            dd_config=_DD_WEASLEY_CONFIG,
-            api="xhr",
-        )
-
-        # The compliance contentIdentifier is deployment/content-hash specific.
-        # Refresh it right before SignUpNewMember so a stale checkoutweb bundle
-        # hash does not turn into an opaque OAS/createMemberAccount rejection.
-        self._ensure_live_signup_content_manifest(referer=signup_url)
-        if self._content_metadata_is_unresolved():
-            self._refresh_signup_content_metadata(referer=signup_url)
-        if self._content_metadata_is_unresolved() and self.state.content_hash:
-            self.state.content_identifier = self._resolved_content_identifier()
-        if self._content_metadata_is_unresolved():
-            self._apply_configured_or_cached_signup_content_metadata()
-        if self._content_metadata_is_unresolved():
-            logger.warning(
-                "Proceeding with short signup contentIdentifier {}; no contentHash was found "
-                "in the latest checkoutweb HTML/assets.",
-                self.state.content_identifier or self._short_content_identifier(),
-            )
-
-        # Step 3: Default to the captured successful flow:
-        # SignUpNewMember + recoverable FI_CONFIRMATION_CONTINGENCY/accessToken
-        # followed by Phase 4 authorization.  The no-FI CreateMemberAccount path
-        # is retained only as an explicit diagnostic opt-in.
-        if self._create_member_no_fi_enabled():
-            self._phase3_create_member_no_fi(token, signup_url)
-        else:
-            self._signup_with_card_retry(token, signup_url)
+        # Step 3: Sign up new member with all user data. If PayPal rejects the
+        # card at addCard/validate.fi/cardNumber, fetch a new generated
+        # Visa/MasterCard and submit SignUpNewMember again.
+        self._signup_with_card_retry(token, signup_url)
 
         if not self.state.euat_token:
             raise RuntimeError(
@@ -7630,15 +1922,7 @@ class PayPalFlow:
                 "Cannot proceed to authorization without authentication."
             )
 
-        self._ensure_euat_cookie()
-
-        self._send_datadog_rum_action(
-            self.session,
-            "signup_complete",
-            signup_url,
-            dd_config=_DD_WEASLEY_CONFIG,
-            api="xhr",
-        )
+        self.session.set_euat_token(self.state.euat_token)
 
         # Send analytics for signup completion
         send_analytics_ts(
@@ -7649,729 +1933,165 @@ class PayPalFlow:
             user_id=self.state.user_id,
         )
 
-    def _ensure_euat_cookie(self) -> None:
-        """Write EUAT into both PayPal cookie scopes used by Hermes/Hagrid."""
+    def _sync_buyer_context(self, token: str, referer: str) -> bool:
+        """Refresh the checkout buyer context after signup and before authorize."""
         if not self.state.euat_token:
-            return
-        cookie_name = "AV894Kt2TSumQQrJwe-8mzmyREO"
-        for domain in (".paypal.com", "www.paypal.com"):
-            try:
-                self.session.client.cookies.set(
-                    cookie_name,
-                    self.state.euat_token,
-                    domain=domain,
-                    path="/",
-                )
-            except Exception as e:
-                logger.debug(f"Failed to set EUAT cookie for {domain}: {e}")
+            logger.warning("Buyer-context sync skipped because the signup access token is missing")
+            return False
 
-    def _load_checkoutweb_drop(self, signup_url: str) -> None:
-        """Mirror the checkoutweb/drop cleanup requests before Hermes fallback."""
-        if os.getenv("PAYPAL_SKIP_CHECKOUTWEB_DROP", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            return
-        headers = {
-            "Accept": "*/*",
-            "Referer": signup_url or self.state.signup_url,
-            "X-Requested-With": "fetch",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-        for attempt in range(2):
-            try:
-                resp = self.session.get(
-                    "https://www.paypal.com/checkoutweb/drop",
-                    headers=headers,
-                )
-                logger.info(
-                    "checkoutweb/drop warm-up {}/2 status={}",
-                    attempt + 1,
-                    resp.status_code,
-                )
-            except Exception as e:
-                logger.debug("checkoutweb/drop warm-up failed: {}", e)
+        self.session.set_euat_token(self.state.euat_token)
 
-    def _hermes_url(self, *, add_fi_contingency: bool = False, billing_lite: bool = False) -> str:
-        params: dict[str, str] = {
-            "ssrt": self.state.ssrt,
-            "ul": "1",
-            "modxo_redirect_reason": "guest_user",
-            "locale.x": self._profile_locale(),
-            "country.x": self._profile_country(),
-            "ba_token": self.ba_token,
-            "token": self.state.ec_token,
-            "rcache": "1",
-            "cookieBannerVariant": "hidden",
-            "fromSignupLite": "true",
-        }
-        fallback_reason = (self.state.signup_fallback_reason or "").strip()
-        if fallback_reason:
-            params["fallback"] = "1"
-            if fallback_reason == "CARD_GENERIC_ERROR":
-                params["reason"] = "Q0FSRF9HRU5FUklDX0VSUk9S"
-            else:
-                params["reason"] = fallback_reason
-        if add_fi_contingency:
-            params["addFIContingency"] = "noretry"
-            params["redirectToHermes"] = "true"
-            params.setdefault("fallback", "1")
-        if billing_lite:
-            params["billingLite"] = "1"
-        return "https://www.paypal.com/webapps/hermes?" + urllib.parse.urlencode(params)
-
-    @staticmethod
-    def _paypal_return_url_with_ba_token(return_url: str, ba_token: str) -> str:
-        """Stripe's PayPal bridge expects the BA token on the return URL.
-
-        PayPal's GraphQL `authorize.returnURL.href` can contain only
-        `status=success&token=EC-*`; the browser request observed in roxy adds
-        `ba_token=BA-*` before navigating to `pm-redirects.stripe.com`.
-        """
-        if not return_url or not ba_token:
-            return return_url
-        parts = urllib.parse.urlsplit(return_url)
-        query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-        if not any(key == "ba_token" for key, _ in query):
-            query.append(("ba_token", ba_token))
-        return urllib.parse.urlunsplit(
-            (
-                parts.scheme,
-                parts.netloc,
-                parts.path,
-                urllib.parse.urlencode(query),
-                parts.fragment,
-            )
-        )
-
-    @staticmethod
-    def _parse_redirect_status(url: str) -> dict[str, object]:
-        if not url:
-            return {}
-        parsed = urllib.parse.urlsplit(url)
-        query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-        session_id = ""
-        match = re.search(r"/c/pay/([^/?#]+)", parsed.path)
-        if match:
-            session_id = match.group(1)
-        return {
-            "host": parsed.netloc,
-            "checkout_session_id": session_id,
-            "redirect_status": query.get("redirect_status") or query.get("status"),
-            "redirect_pm_type": query.get("redirect_pm_type"),
-            "payment_intent": query.get("payment_intent"),
-            "has_payment_intent_client_secret": bool(query.get("payment_intent_client_secret")),
-        }
-
-    def _extract_user_id_from_review_html(self, text: str) -> str:
-        for pattern in (
-            r'(?:party_id|cust|userId)["\'=:]+([A-Z0-9]{8,24})',
-            r'"userId"\s*:\s*"([A-Z0-9]{8,24})"',
-            r'"partyId"\s*:\s*"([A-Z0-9]{8,24})"',
-        ):
-            match = re.search(pattern, text or "")
-            if match:
-                return match.group(1)
-        return ""
-
-    def _load_hagrid_review_context(
-        self,
-        hermes_base_url: str,
-        hermes_contingency_url: str,
-        review_referer: str,
-    ) -> bool:
-        """Load billingLite/Hermes pages to bind EUAT cookies to buyer context."""
-        self._ensure_euat_cookie()
-        base_headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Referer": self.state.signup_url,
-            "Upgrade-Insecure-Requests": "1",
-            "Cache-Control": "max-age=0",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        }
-        ok = False
-        last_resp = None
-        for url in (hermes_contingency_url, hermes_base_url, review_referer):
-            try:
-                referer = base_headers["Referer"]
-                resp = self.session.get(url, headers={**base_headers, "Referer": referer})
-                for _ in range(4):
-                    if resp.status_code not in (301, 302, 303, 307, 308):
-                        break
-                    location = resp.headers.get("Location", "")
-                    if not location:
-                        break
-                    location = urllib.parse.urljoin(str(resp.url), location)
-                    logger.info(f"Following Hermes/Hagrid redirect: {location[:140]}...")
-                    resp = self.session.get(
-                        location,
-                        headers={**base_headers, "Referer": str(resp.url)},
-                    )
-                last_resp = resp
-                ok = ok or (200 <= resp.status_code < 400)
-                if not self.state.user_id:
-                    user_id = self._extract_user_id_from_review_html(resp.text)
-                    if user_id:
-                        self.state.user_id = user_id
-                        logger.info(f"User ID from Hermes page: {self.state.user_id}")
-            except Exception as e:
-                logger.warning(f"Loading Hermes/Hagrid URL failed: {e}")
-
-        if last_resp is not None:
-            logger.info(
-                "Hermes/Hagrid review context loaded: status={} bytes={} user_id_present={} euat_present={}",
-                last_resp.status_code,
-                len(last_resp.content),
-                bool(self.state.user_id),
-                bool(self.state.euat_token),
-            )
-        return ok
-
-    def _authorize_metadata_candidates(self) -> list[str]:
-        candidates = [
-            self.state.ec_token,
-            self.ba_token,
-            self.state.paypal_client_metadata_id,
-        ]
-        result: list[str] = []
-        for value in candidates:
-            if value and value not in result:
-                result.append(value)
-        return result or [self.state.paypal_client_metadata_id]
-
-
-
-
-    def _build_onboard_guest_variables(self, token: str, *, include_card: bool = True) -> dict[str, object]:
-        """Build variables for Weasley onboardGuest probe path."""
-        card_payload = None
-        if include_card:
-            card_payload = {
-                "cardNumber": self.card.number,
-                "expirationDate": self._card_expiration_date(),
-                "securityCode": self.card.cvv,
-                "type": self._card_issuer_type(),
-            }
-        billing_address = {
-            "postalCode": self.address.postal_code,
-            "line1": self._billing_line1(),
-            "line2": self.address.district,
-            "city": self.address.city,
-            "state": self.address.state,
-            "accountQuality": {
-                "autoCompleteType": "MANUAL",
-                "isUserModified": True,
-            },
-            "country": self.address.country,
-            "familyName": self.user.last_name,
-            "givenName": self.user.first_name,
-        }
-        return {
-            "bank": None,
-            "billingAddress": billing_address,
-            "card": card_payload,
-            "country": self.address.country,
-            "currencyConversionType": None,
-            "dateOfBirth": None,
-            "email": self.user.email,
-            "firstName": self.user.first_name,
-            "lastName": self.user.last_name,
-            "phone": {
-                "countryCode": self.user.phone_country_code.lstrip("+"),
-                "number": self.user.phone_local,
-                "type": "MOBILE",
-            },
-            "shareAddressWithDonatee": False,
-            "shippingAddress": {
-                "postalCode": "",
-                "line1": "",
-                "city": "",
-                "state": "",
-                "accountQuality": {
-                    "autoCompleteType": "MANUAL",
-                    "isUserModified": False,
+        try:
+            result = self.session.graphql(
+                "BuyerContextQuery",
+                BUYER_CONTEXT_QUERY,
+                {"token": token},
+                extra_headers={
+                    "Referer": referer,
+                    "X-App-Name": "checkoutuinodeweb",
+                    "X-PayPal-Internal-EUAT": self.state.euat_token,
+                    "PayPal-Client-Context": token,
+                    "PayPal-Client-Metadata-Id": self.state.paypal_client_metadata_id,
+                    "X-Country": self.address.country,
+                    "X-Locale": self.locale,
                 },
-                "country": self.address.country,
-                "familyName": self.user.last_name,
-                "givenName": self.user.first_name,
-            },
-            "supportedThreeDsExperiences": ["IFRAME"],
-            "token": token,
-        }
+                endpoint="https://www.paypal.com/graphql/",
+            )
+        except Exception as sync_error:
+            logger.warning("Buyer-context GraphQL refresh failed: {}", sync_error)
+            return False
 
-    def _phase_onboard_guest_probe(self, *, include_card: bool = True) -> dict[str, object]:
-        """Explicit probe for onboardGuest; default flow still uses signup unless selected."""
-        token = self.state.ec_token or self.ba_token
-        result = self.session.graphql(
-            "OnboardGuestMutation",
-            ONBOARD_GUEST_MUTATION,
-            self._build_onboard_guest_variables(token, include_card=include_card),
-            extra_headers={"Referer": self.state.signup_url or f"https://www.paypal.com/pay?token={token}"},
-            graphql_error_level="WARNING",
-        )
-        logger.info(
-            "OnboardGuest result (sanitized): {}",
-            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
-        )
-        result_obj = result[0] if isinstance(result, list) else result
+        result_obj = result[0] if isinstance(result, list) and result else result
         if not isinstance(result_obj, dict):
-            return {"status": "error", "error": "onboardGuest returned non-object", "raw_response": result}
-        errors = result_obj.get("errors") or []
-        data = result_obj.get("data") if isinstance(result_obj.get("data"), dict) else {}
-        onboard_data = data.get("onboardAccount") if isinstance(data, dict) else None
-        if not isinstance(onboard_data, dict):
-            return {"status": "error", "error": "onboardGuest returned empty result", "errors": errors, "raw_response": result}
-        buyer = onboard_data.get("buyer") if isinstance(onboard_data.get("buyer"), dict) else {}
-        auth = buyer.get("auth") if isinstance(buyer.get("auth"), dict) else {}
-        if buyer.get("userId"):
-            self.state.user_id = buyer.get("userId")
-        if auth.get("accessToken"):
-            self.state.euat_token = auth.get("accessToken")
-        instrument_id = self._find_funding_instrument_id(onboard_data)
-        if instrument_id:
-            self.state.instrument_id = instrument_id
-        return {
-            "status": "success",
-            "buyer_user_id": self.state.user_id,
-            "access_token_present": bool(self.state.euat_token),
-            "funding_instrument_present": bool(self.state.instrument_id),
-            "raw_response": result,
+            logger.warning("Buyer-context refresh returned type {}", type(result_obj).__name__)
+            return False
+        data_obj = result_obj.get("data")
+        data_obj = data_obj if isinstance(data_obj, dict) else {}
+        checkout = data_obj.get("checkoutSession")
+        checkout = checkout if isinstance(checkout, dict) else {}
+        buyer = checkout.get("buyer")
+        buyer = buyer if isinstance(buyer, dict) else {}
+        auth = buyer.get("auth")
+        auth = auth if isinstance(auth, dict) else {}
+        refreshed_access_token = auth.get("accessToken")
+        if isinstance(refreshed_access_token, str) and refreshed_access_token:
+            self.session.set_euat_token(refreshed_access_token)
+        user_id = buyer.get("userId")
+        if isinstance(user_id, str) and user_id:
+            self.state.user_id = user_id
+            logger.info("Buyer context synchronized for user {}", user_id)
+            return True
+        logger.warning("Buyer-context refresh completed without a buyer userId")
+        return False
+
+    def _load_review_context(self, url: str, referer: str, max_redirects: int = 8):
+        """Load the full Hermes/Hagrid redirect chain and preserve the final session cookies."""
+        current = url
+        current_referer = referer
+        response = None
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Upgrade-Insecure-Requests": "1",
         }
+        for _ in range(max_redirects + 1):
+            response = self.session.get(current, headers={**headers, "Referer": current_referer})
+            if response.status_code not in (301, 302, 303, 307, 308):
+                return response
+            location = response.headers.get("Location", "")
+            if not location:
+                return response
+            next_url = urllib.parse.urljoin(current, location)
+            current_referer, current = current, next_url
+        return response
 
-    def _build_guest_card_approval_variables(self, token: str) -> dict[str, object]:
-        """Build variables for approveGuestPaymentWithCreditCard probe path.
-
-        This path is anonymous and intentionally separate from the default BA
-        approval flow because current checkoutweb/weasley uses onboarding first.
-        """
-        card_payload: dict[str, object] = {
-            "cardNumber": self.card.number,
-            "expirationDate": self._card_expiration_date(),
-            "securityCode": self.card.cvv,
-            "type": self._card_issuer_type(),
-        }
-        billing_address = {
-            "postalCode": self.address.postal_code,
-            "line1": self._billing_line1(),
-            "line2": self.address.district,
-            "city": self.address.city,
-            "state": self.address.state,
-            "accountQuality": {
-                "autoCompleteType": "MANUAL",
-                "isUserModified": True,
-            },
-            "country": self.address.country,
-            "familyName": self.user.last_name,
-            "givenName": self.user.first_name,
-        }
-        return {
-            "token": token,
-            "card": card_payload,
-            "billingAddress": billing_address,
-            "phoneNumber": self.user.phone,
-            "email": self.user.email,
-            "firstName": self.user.first_name,
-            "lastName": self.user.last_name,
-            "currencyConversionType": None,
-            "supportedThreeDsExperiences": ["IFRAME"],
-        }
-
-    def _phase_guest_card_direct_approve(self) -> dict[str, object]:
-        """Explicit probe for the anonymous approveGuestPaymentWithCreditCard resolver."""
-        token = self.state.ec_token or self.ba_token
-        result = self.session.graphql(
-            "ApproveGuestPaymentWithCreditCardMutation",
-            APPROVE_GUEST_PAYMENT_WITH_CREDIT_CARD_MUTATION,
-            self._build_guest_card_approval_variables(token),
-            extra_headers={"Referer": self.state.signup_url or f"https://www.paypal.com/pay?token={token}"},
-            graphql_error_level="WARNING",
-        )
-        logger.info(
-            "Guest card direct approve result (sanitized): {}",
-            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
-        )
-        result_obj = result[0] if isinstance(result, list) else result
-        if not isinstance(result_obj, dict):
-            return {"status": "error", "error": "approveGuestPaymentWithCreditCard returned non-object", "raw_response": result}
-        errors = result_obj.get("errors") or []
-        data = result_obj.get("data") if isinstance(result_obj.get("data"), dict) else {}
-        approve_data = data.get("approveGuestPaymentWithCreditCard") if isinstance(data, dict) else None
-        if not isinstance(approve_data, dict):
-            return {"status": "error", "error": "approveGuestPaymentWithCreditCard returned empty result", "errors": errors, "raw_response": result}
-        instrument_id = self._find_funding_instrument_id(approve_data)
-        if instrument_id:
-            self.state.instrument_id = instrument_id
-        buyer = approve_data.get("buyer") if isinstance(approve_data.get("buyer"), dict) else {}
-        if buyer.get("userId"):
-            self.state.user_id = buyer.get("userId")
-        cart = approve_data.get("cart") if isinstance(approve_data.get("cart"), dict) else {}
-        return_url = self._href_from_value(cart.get("returnUrl") if isinstance(cart, dict) else {})
-        final_redirect_url = ""
-        if return_url:
-            self.state.return_url = self._paypal_return_url_with_ba_token(return_url, self.ba_token)
-            try:
-                return_resp = self.session.get(
-                    self.state.return_url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": self.state.signup_url or f"https://www.paypal.com/pay?token={token}",
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                )
-                final_redirect_url = str(getattr(return_resp, "url", "") or "")
-            except Exception as exc:
-                logger.warning("Following guest-card direct return URL failed: {}", exc)
-                final_redirect_url = self.state.return_url
-        completed = approve_data.get("completedPaymentInfo") if isinstance(approve_data.get("completedPaymentInfo"), dict) else {}
-        return {
-            "status": "success",
-            "return_url": self.state.return_url,
-            "final_redirect_url": final_redirect_url,
-            "buyer_user_id": self.state.user_id,
-            "funding_instrument_present": bool(self.state.instrument_id),
-            "completed_payment_info_present": bool(completed),
-            "completed_payment_info": completed,
-            "raw_response": result,
-        }
-
-    def _phase4_member_approve_existing_buyer(self, primary_funding_option_id: str) -> dict[str, object]:
-        """Approve checkout for an already-authenticated PayPal buyer.
-
-        This is the non-signup path from PayPal's schema: approveMemberPayment
-        requires LOGGEDIN/REMEMBERED/IDENTIFIED auth state and a wallet funding
-        option id. It cannot turn an anonymous BA session into a payment by
-        itself; it is only useful when a browser/EUAT login state already exists.
-        """
-        token = self.state.ec_token or self.ba_token
-        funding_option_id = str(primary_funding_option_id or "").strip()
-        if not funding_option_id:
-            return {"status": "skipped", "reason": "missing_primary_funding_option_id"}
-        env_euat = os.getenv("PAYPAL_EUAT_TOKEN", "").strip()
-        if env_euat and not self.state.euat_token:
-            self.state.euat_token = env_euat
-            self._ensure_euat_cookie()
-        logger.info(
-            "Approving checkout via existing-buyer member path: token={} funding_option_present={} euat_present={}",
-            sanitize_for_log({"token": token})["token"],
-            bool(funding_option_id),
-            bool(self.state.euat_token),
-        )
-        result = self.session.graphql(
-            "ApproveMemberPaymentMutation",
-            APPROVE_MEMBER_PAYMENT_MUTATION,
-            {
-                "token": token,
-                "primaryFundingOptionId": funding_option_id,
-                "setStickyFiRequired": False,
-                "preAuthorizationRequired": False,
-                "supportedThreeDsExperiences": ["IFRAME"],
-            },
-            extra_headers={"Referer": self.state.signup_url or self._hermes_url(billing_lite=True)},
-            graphql_error_level="WARNING",
-        )
-        logger.info(
-            "Member approve result (sanitized): {}",
-            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
-        )
-        result_obj = result[0] if isinstance(result, list) else result
-        if not isinstance(result_obj, dict):
-            return {"status": "error", "error": "ApproveMemberPayment returned non-object", "raw_response": result}
-        errors = result_obj.get("errors") or []
-        data = result_obj.get("data") if isinstance(result_obj.get("data"), dict) else {}
-        approve_data = data.get("approveMemberPayment") if isinstance(data, dict) else None
-        if not isinstance(approve_data, dict):
-            return {"status": "error", "error": "approveMemberPayment returned empty result", "raw_response": result, "errors": errors}
-        buyer = approve_data.get("buyer") if isinstance(approve_data.get("buyer"), dict) else {}
-        if buyer.get("userId"):
-            self.state.user_id = buyer.get("userId")
-        instrument_id = self._find_funding_instrument_id(approve_data)
-        if instrument_id:
-            self.state.instrument_id = instrument_id
-        cart = approve_data.get("cart") if isinstance(approve_data.get("cart"), dict) else {}
-        return_url_obj = cart.get("returnUrl") if isinstance(cart, dict) else {}
-        return_url = self._href_from_value(return_url_obj)
-        final_redirect_url = ""
-        if return_url:
-            self.state.return_url = self._paypal_return_url_with_ba_token(return_url, self.ba_token)
-            try:
-                return_resp = self.session.get(
-                    self.state.return_url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": self.state.signup_url or self._hermes_url(billing_lite=True),
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                )
-                final_redirect_url = str(getattr(return_resp, "url", "") or "")
-            except Exception as exc:
-                logger.warning("Following member approve return URL failed: {}", exc)
-                final_redirect_url = self.state.return_url
-        completed = approve_data.get("completedPaymentInfo") if isinstance(approve_data.get("completedPaymentInfo"), dict) else {}
-        return {
-            "status": "success" if (return_url or completed or str(approve_data.get("state") or "").upper() == "APPROVED") else "pending",
-            "return_url": self.state.return_url,
-            "final_redirect_url": final_redirect_url,
-            "buyer_user_id": self.state.user_id,
-            "funding_instrument_present": bool(self.state.instrument_id or funding_option_id),
-            "completed_payment_info_present": bool(completed),
-            "completed_payment_info": completed,
-            "raw_response": result,
-        }
+    def _before_final_authorize(self, review_url: str) -> None:
+        """Optional web-adapter hook before the final authorization mutation."""
+        return None
 
 
-
-    def _phase4_member_approve_no_primary_fi(self) -> dict[str, object]:
-        """Approve a verified no-backup-FI member checkout via approveMemberPayment."""
-        token = self.state.ec_token or self.ba_token
-        logger.info(
-            "Approving checkout via member no-primary-FI path: token={} euat_present={}",
-            sanitize_for_log({"token": token})["token"],
-            bool(self.state.euat_token),
-        )
-        result = self.session.graphql(
-            "ApproveMemberPaymentMutation",
-            APPROVE_MEMBER_PAYMENT_MUTATION,
-            {
-                "token": token,
-                "primaryFundingOptionId": None,
-                "setStickyFiRequired": False,
-                "preAuthorizationRequired": False,
-                "supportedThreeDsExperiences": ["IFRAME"],
-            },
-            extra_headers={"Referer": self.state.signup_url or self._hermes_url(billing_lite=True)},
-            graphql_error_level="WARNING",
-        )
-        logger.info(
-            "Member no-primary-FI approve result (sanitized): {}",
-            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
-        )
-        result_obj = result[0] if isinstance(result, list) else result
-        if not isinstance(result_obj, dict):
-            return {"status": "error", "error": "ApproveMemberPayment returned non-object", "raw_response": result}
-        errors = result_obj.get("errors") or []
-        data = result_obj.get("data") if isinstance(result_obj.get("data"), dict) else {}
-        approve_data = data.get("approveMemberPayment") if isinstance(data, dict) else None
-        if not isinstance(approve_data, dict):
-            return {"status": "error", "error": "approveMemberPayment returned empty result", "raw_response": result, "errors": errors}
-        buyer = approve_data.get("buyer") if isinstance(approve_data.get("buyer"), dict) else {}
-        if buyer.get("userId"):
-            self.state.user_id = buyer.get("userId")
-        cart = approve_data.get("cart") if isinstance(approve_data.get("cart"), dict) else {}
-        return_url_obj = cart.get("returnUrl") if isinstance(cart, dict) else {}
-        paypal_return_url = self._href_from_value(return_url_obj)
-        final_redirect_url = ""
-        if paypal_return_url:
-            self.state.return_url = self._paypal_return_url_with_ba_token(paypal_return_url, self.ba_token)
-            try:
-                return_resp = self.session.get(
-                    self.state.return_url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": self.state.signup_url or self._hermes_url(billing_lite=True),
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                )
-                for _ in range(8):
-                    if return_resp.status_code not in (301, 302, 303, 307, 308):
-                        break
-                    location = return_resp.headers.get("Location", "")
-                    if not location:
-                        break
-                    final_redirect_url = urllib.parse.urljoin(str(return_resp.url), location)
-                    return_resp = self.session.get(
-                        final_redirect_url,
-                        headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                            "Referer": str(return_resp.url),
-                            "Upgrade-Insecure-Requests": "1",
-                        },
-                    )
-                if not final_redirect_url:
-                    final_redirect_url = str(return_resp.url)
-            except Exception as exc:
-                logger.warning("Following member no-primary-FI return URL failed: {}", exc)
-                final_redirect_url = self.state.return_url
-        completed = approve_data.get("completedPaymentInfo") if isinstance(approve_data.get("completedPaymentInfo"), dict) else {}
-        state = str(approve_data.get("state") or "").upper()
-        return {
-            "status": "success" if (state == "APPROVED" or paypal_return_url or completed) else "pending",
-            "state": state,
-            "return_url": self.state.return_url,
-            "final_redirect_url": final_redirect_url,
-            "stripe_redirect": self._parse_redirect_status(final_redirect_url),
-            "buyer_user_id": self.state.user_id,
-            "completed_payment_info_present": bool(completed),
-            "completed_payment_info": completed,
-            "raw_response": result,
-        }
-
-    def _phase4_weasley_approve(self) -> dict[str, object]:
-        """Approve the onboarded checkout via current checkoutweb/weasley mutation."""
-        token = self.state.ec_token or self.ba_token
-        is_billing_agreement = bool(self.state.instrument_id)
-        logger.info(
-            "Approving onboarded checkout via Weasley: token={} instrument_present={} billing_agreement={}",
-            sanitize_for_log({"token": token})["token"],
-            bool(self.state.instrument_id),
-            is_billing_agreement,
-        )
-        result = self.session.graphql(
-            "ApproveOnboardPaymentMutation",
-            APPROVE_ONBOARD_PAYMENT_MUTATION,
-            {
-                "token": token,
-                "instrumentId": self.state.instrument_id or None,
-                "isBillingAgreement": is_billing_agreement,
-                "supportedThreeDsExperiences": ["IFRAME"],
-            },
-            extra_headers={"Referer": self.state.signup_url or self._hermes_url(billing_lite=True)},
-            graphql_error_level="WARNING",
-        )
-        logger.info(
-            "Weasley approve result (sanitized): {}",
-            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
-        )
-        result_obj = result[0] if isinstance(result, list) else result
-        if not isinstance(result_obj, dict):
-            return {"status": "error", "error": "ApproveOnboardPayment returned non-object", "raw_response": result}
-        errors = result_obj.get("errors") or []
-        data = result_obj.get("data") if isinstance(result_obj.get("data"), dict) else {}
-        approve_data = data.get("approveGuestSignUpPayment") if isinstance(data, dict) else None
-        if not isinstance(approve_data, dict):
-            return {"status": "error", "error": "approveGuestSignUpPayment returned empty result", "raw_response": result, "errors": errors}
-        instrument_id = self._find_funding_instrument_id(approve_data)
-        if instrument_id:
-            self.state.instrument_id = instrument_id
-        buyer = approve_data.get("buyer") if isinstance(approve_data.get("buyer"), dict) else {}
-        if buyer.get("userId"):
-            self.state.user_id = buyer.get("userId")
-        cart = approve_data.get("cart") if isinstance(approve_data.get("cart"), dict) else {}
-        return_url_obj = cart.get("returnUrl") if isinstance(cart, dict) else {}
-        return_url = self._href_from_value(return_url_obj)
-        if return_url:
-            self.state.return_url = self._paypal_return_url_with_ba_token(return_url, self.ba_token)
-            try:
-                return_resp = self.session.get(
-                    self.state.return_url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": self.state.signup_url or self._hermes_url(billing_lite=True),
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                )
-                final_redirect_url = str(getattr(return_resp, "url", "") or "")
-            except Exception as exc:
-                logger.warning("Following Weasley approve return URL failed: {}", exc)
-                final_redirect_url = self.state.return_url
-        else:
-            final_redirect_url = ""
-        completed = approve_data.get("completedPaymentInfo") if isinstance(approve_data.get("completedPaymentInfo"), dict) else {}
-        return {
-            "status": "success",
-            "return_url": self.state.return_url,
-            "final_redirect_url": final_redirect_url,
-            "buyer_user_id": self.state.user_id,
-            "funding_instrument_present": bool(self.state.instrument_id),
-            "completed_payment_info_present": bool(completed),
-            "completed_payment_info": completed,
-            "raw_response": result,
-        }
-
-    def _phase4_authorize(self) -> dict[str, object]:
+    def _phase4_authorize(self) -> dict:
         """Send the final authorize mutation to approve the billing agreement."""
         logger.info("--- Phase 4: Final authorization ---")
 
-        member_funding_option_id = os.getenv("PAYPAL_MEMBER_FUNDING_OPTION_ID", "").strip()
-        if member_funding_option_id:
-            member_result = self._phase4_member_approve_existing_buyer(member_funding_option_id)
-            if member_result.get("status") == "success":
-                return member_result
-            logger.warning(
-                "Existing-buyer member approve did not complete; continuing with onboarding approve/fallback: {}",
-                member_result.get("error") or member_result.get("reason") or member_result.get("status") or "unknown",
-            )
-
-        if self._create_member_no_fi_enabled() and self.state.euat_token and not self.state.instrument_id:
-            no_fi_result = self._phase4_member_approve_no_primary_fi()
-            if no_fi_result.get("status") == "success":
-                return no_fi_result
-            logger.warning(
-                "Member no-primary-FI approve did not complete; stopping US no-FI path without legacy fallback: {}",
-                no_fi_result.get("error") or no_fi_result.get("reason") or no_fi_result.get("status") or "unknown",
-            )
-            no_fi_result = dict(no_fi_result)
-            no_fi_result["status"] = "error"
-            no_fi_result.setdefault("reason", "MEMBER_NO_FI_APPROVE_FAILED")
-            return no_fi_result
-
-        # Current checkoutweb/weasley source calls ApproveOnboardPaymentMutation
-        # after SignUpNewMember. Prefer it when signup produced authenticated state;
-        # keep legacy Hagrid billing.authorize as fallback for older captures.
-        partial_fi_contingency = (
-            self._used_partial_signup_token
-            and str(self.state.signup_fallback_reason or "").upper()
-            == "FI_CONFIRMATION_CONTINGENCY"
+        hermes_base_url = (
+            f"https://www.paypal.com/webapps/hermes?"
+            f"ssrt={self.state.ssrt}&ul=1&modxo_redirect_reason=guest_user"
+            f"&locale.x={self.locale}&country.x={self.address.country}"
+            f"&ba_token={self.ba_token}&token={self.state.ec_token}"
+            f"&rcache=1&cookieBannerVariant=hidden&fromSignupLite=true"
+            f"&fallback=1&reason=Q0FSRF9HRU5FUklDX0VSUk9S"
         )
-        if (self.state.euat_token or self.state.instrument_id) and not partial_fi_contingency:
-            weasley_result = self._phase4_weasley_approve()
-            if weasley_result.get("status") == "success":
-                return weasley_result
-            logger.warning(
-                "Weasley approve did not complete; falling back to legacy Hagrid authorize: {}",
-                weasley_result.get("error") or weasley_result.get("reason") or "unknown",
-            )
-        elif partial_fi_contingency:
-            logger.info(
-                "Skipping Weasley approve after recoverable FI_CONFIRMATION_CONTINGENCY; "
-                "continuing with legacy billing.authorize."
-            )
-
-        if self.state.signup_fallback_reason:
-            self._load_checkoutweb_drop(self.state.signup_url)
-
-        hermes_base_url = self._hermes_url()
-        hermes_contingency_url = self._hermes_url(add_fi_contingency=True)
-        review_referer = self._hermes_url(billing_lite=True)
+        hermes_contingency_url = (
+            f"https://www.paypal.com/webapps/hermes?"
+            f"ssrt={self.state.ssrt}&ul=1&modxo_redirect_reason=guest_user"
+            f"&locale.x={self.locale}&country.x={self.address.country}"
+            f"&ba_token={self.ba_token}&token={self.state.ec_token}"
+            f"&rcache=1&cookieBannerVariant=hidden&fromSignupLite=true"
+            f"&addFIContingency=noretry&redirectToHermes=true"
+            f"&fallback=1&reason=Q0FSRF9HRU5FUklDX0VSUk9S"
+        )
+        review_referer = f"{hermes_base_url}&billingLite=1"
         review_url = f"{review_referer}#/billingweb/review"
 
-        # Browser trace shows that Hagrid/Hermes is actually loaded before the
-        # authorize mutation. This binds EUAT/cookies to a buyer context; without
-        # it GraphQL authorize can return BUYER_NOT_SET.
-        self._load_hagrid_review_context(
-            hermes_base_url,
-            hermes_contingency_url,
-            review_referer,
-        )
+        # Load the exact billingLite review context and follow the complete
+        # redirect chain so EUAT, buyer and checkout cookies belong to one session.
+        try:
+            logger.info("Loading Hermes/Hagrid review context...")
+            self._load_review_context(hermes_contingency_url, self.state.signup_url)
+            review_resp = self._load_review_context(review_referer, hermes_contingency_url)
+            logger.info(
+                "Hermes/Hagrid review loaded: {} bytes={}",
+                review_resp.status_code,
+                len(review_resp.content),
+            )
+            if not self.state.user_id:
+                user_match = re.search(r'(?:party_id|cust|userId)["=:]+([A-Z0-9]{8,20})', review_resp.text)
+                if user_match:
+                    self.state.user_id = user_match.group(1)
+                    logger.info(f"User ID from Hermes page: {self.state.user_id}")
+        except Exception as e:
+            logger.warning(f"Loading Hermes/Hagrid review context failed: {e}")
+
+        self._before_final_authorize(review_url)
+        self.session.set_euat_token(self.state.euat_token)
+        try:
+            self._load_review_context(review_referer, hermes_base_url)
+        except Exception as e:
+            logger.warning(f"Reloading review context after browser synchronization failed: {e}")
 
         # Send Tealeaf for the review page
-        self._send_tealeaf_data(self.session, review_url)
-        self._send_datadog_rum_view(
-            self.session,
-            review_url,
-            self.ba_token,
-            dd_config=_DD_HAGRID_CONFIG,
-        )
-        self._send_datadog_rum_action(
-            self.session,
-            "review_page_loaded",
-            review_url,
-            dd_config=_DD_HAGRID_CONFIG,
-            api="xhr",
-        )
+        send_tealeaf_data(self.session, review_url)
+
         # The critical authorize mutation
         billing_agreement_id = self.state.ec_token or self.ba_token
+        buyer_synced = self._sync_buyer_context(billing_agreement_id, review_referer)
+        if getattr(self, "_strict_buyer_context", False) and not buyer_synced:
+            raise RuntimeError(
+                "BUYER_CONTEXT_SYNC_FAILED: member identity is not attached to the billing checkout"
+            )
         logger.info(
             "Authorizing billing agreement: {}",
             sanitize_for_log({"billingAgreementId": billing_agreement_id})["billingAgreementId"],
         )
 
-        def send_authorize(metadata_id: str):
+        def send_authorize(*, include_client_context: bool = False):
+            extra_headers = {
+                "Referer": review_referer,
+                "X-App-Name": "checkoutuinodeweb",
+                "PayPal-Client-Metadata-Id": self.state.paypal_client_metadata_id,
+            }
+            if include_client_context:
+                extra_headers.update({
+                    "PayPal-Client-Context": billing_agreement_id,
+                    "X-Country": self.address.country,
+                    "X-Locale": self.locale,
+                })
+            else:
+                extra_headers.update({
+                    "PayPal-Client-Context": None,
+                    "X-Country": None,
+                    "X-Locale": None,
+                })
             return self.session.graphql(
                 "authorize",
                 AUTHORIZE_BILLING_MUTATION,
@@ -8382,57 +2102,29 @@ class PayPalFlow:
                     },
                     "legalAgreements": {},
                 },
-                extra_headers={
-                    "Referer": review_referer,
-                    "X-App-Name": "checkoutuinodeweb",
-                    "PayPal-Client-Context": None,
-                    "PayPal-Client-Metadata-Id": metadata_id,
-                    "X-Country": None,
-                    "X-Locale": None,
-                },
+                extra_headers=extra_headers,
                 batched=True,
                 endpoint="https://www.paypal.com/graphql/",
             )
 
-        result: object = None
-        last_authorize_attempt = 0
-        metadata_candidates = self._authorize_metadata_candidates()
-        for authorize_attempt in range(1, self.max_authorize_attempts + 1):
-            last_authorize_attempt = authorize_attempt
-            if authorize_attempt > 1:
-                logger.warning(
-                    "authorize returned BUYER_NOT_SET; reloading Hagrid/Hermes "
-                    "review context and retrying authorize attempt {}/{}...",
-                    authorize_attempt,
-                    self.max_authorize_attempts,
-                )
-                self._load_hagrid_review_context(
-                    hermes_base_url,
-                    hermes_contingency_url,
-                    review_referer,
-                )
-                self._send_tealeaf_data(self.session, review_url)
-                time.sleep(min(2, authorize_attempt))
-
-            metadata_id = metadata_candidates[(authorize_attempt - 1) % len(metadata_candidates)]
-            logger.info(
-                "authorize attempt {}/{} using metadata candidate {}",
-                authorize_attempt,
-                self.max_authorize_attempts,
-                sanitize_for_log({"token": metadata_id})["token"],
-            )
-            result = send_authorize(metadata_id)
+        result = send_authorize()
+        for buyer_retry in range(1, 3):
             if not self._has_buyer_not_set(result):
                 break
-
-        if result is None:
-            result = {
-                "errors": [
-                    {
-                        "message": "authorize was not attempted",
-                    }
-                ]
-            }
+            logger.warning(
+                "authorize returned BUYER_NOT_SET; rebuilding buyer/review context (attempt {}/2)...",
+                buyer_retry,
+            )
+            try:
+                self._load_review_context(review_referer, hermes_base_url)
+                self.session.set_euat_token(self.state.euat_token)
+                buyer_synced = self._sync_buyer_context(billing_agreement_id, review_referer)
+                if getattr(self, "_strict_buyer_context", False) and not buyer_synced:
+                    raise RuntimeError("BUYER_CONTEXT_SYNC_FAILED during BUYER_NOT_SET recovery")
+                time.sleep(float(buyer_retry))
+            except Exception as e:
+                logger.warning(f"Reloading billingLite review context failed: {e}")
+            result = send_authorize(include_client_context=True)
 
         logger.info(
             "Authorization result (sanitized): {}",
@@ -8441,53 +2133,29 @@ class PayPalFlow:
 
         # Extract return URL and user ID from response
         try:
-            if isinstance(result, list):
-                result_list = list(result)
-                first_result = result_list[0] if result_list else {}
-                result_obj = first_result if isinstance(first_result, dict) else {}
-            elif isinstance(result, dict):
-                result_obj = result
-            else:
-                result_obj = {}
-            data = result_obj.get("data") if isinstance(result_obj, dict) else {}
-            billing_data = data.get("billing", {}) if isinstance(data, dict) else {}
+            result_obj = result[0] if isinstance(result, list) else result
+            data_obj = result_obj.get("data") if isinstance(result_obj, dict) else None
+            data_obj = data_obj if isinstance(data_obj, dict) else {}
+            billing_data = data_obj.get("billing", {})
             auth_data = billing_data.get("authorize") if isinstance(billing_data, dict) else None
             if not isinstance(auth_data, dict):
                 errors = result_obj.get("errors") if isinstance(result_obj, dict) else None
-                buyer_not_set = self._has_buyer_not_set(result)
-                if buyer_not_set:
-                    logger.error(
-                        "Authorization failed: BUYER_NOT_SET after {}/{} authorize "
-                        "attempts. partial_signup_token={}. The current EC session "
-                        "has no buyer bound; outer flow retry will restart from Phase 0.",
-                        last_authorize_attempt,
-                        self.max_authorize_attempts,
-                        self._used_partial_signup_token,
-                    )
-                else:
-                    logger.error(
-                        "Authorization failed: authorize is empty. Errors: {}",
-                        json.dumps(sanitize_for_log(errors or []), ensure_ascii=False, indent=2),
-                    )
+                error_code = "BUYER_NOT_SET" if self._has_buyer_not_set(result) else "AUTHORIZE_EMPTY"
+                logger.error(
+                    "Authorization failed: authorize is empty. Errors: {}",
+                    json.dumps(sanitize_for_log(errors or []), ensure_ascii=False, indent=2),
+                )
                 return {
                     "status": "error",
-                    "error": (
-                        "authorize returned BUYER_NOT_SET"
-                        if buyer_not_set
-                        else "authorize returned empty result"
-                    ),
-                    "reason": "BUYER_NOT_SET" if buyer_not_set else "AUTHORIZE_EMPTY",
-                    "retryable": bool(buyer_not_set),
-                    "partial_signup_token": self._used_partial_signup_token,
+                    "error_code": error_code,
+                    "error": "authorize returned empty result",
+                    "stage": "final_authorization",
+                    "retryable": error_code == "BUYER_NOT_SET",
                     "raw_response": result,
                 }
+            self.state.return_url = auth_data["returnURL"]["href"]
             self.state.user_id = auth_data["buyer"]["userId"]
             ba_token_resp = auth_data["billingAgreementToken"]
-            paypal_return_url = auth_data["returnURL"]["href"]
-            self.state.return_url = self._paypal_return_url_with_ba_token(
-                paypal_return_url,
-                ba_token_resp,
-            )
 
             logger.success(
                 "Billing Agreement Token: {}",
@@ -8529,7 +2197,47 @@ class PayPalFlow:
             except Exception as e:
                 logger.warning(f"Following merchant return URL failed: {e}")
 
-            stripe_redirect = self._parse_redirect_status(final_redirect_url)
+            redirect_status = ""
+            verification_url = ""
+            pending_url = ""
+            settlement_status = "authorization_only"
+            if final_redirect_url:
+                try:
+                    final_parsed = urllib.parse.urlparse(final_redirect_url)
+                    final_query = urllib.parse.parse_qs(final_parsed.query)
+                    redirect_status = str((final_query.get("redirect_status") or [""])[0]).lower()
+                    verification_url = str((final_query.get("success_return_url") or [""])[0])
+                    if (
+                        not verification_url
+                        and (final_parsed.hostname or "").lower() == "chatgpt.com"
+                        and final_parsed.path.startswith("/checkout/verify")
+                    ):
+                        verification_url = final_redirect_url
+                    if redirect_status in {"success", "succeeded"}:
+                        settlement_status = "confirmed"
+                    elif redirect_status in {"pending", "processing", "requires_action"}:
+                        settlement_status = "pending_verification"
+                    elif verification_url:
+                        settlement_status = "pending_verification"
+                except Exception as status_error:
+                    logger.warning("Parsing merchant completion status failed: {}", status_error)
+            for candidate_url in (verification_url, final_redirect_url):
+                try:
+                    candidate = urllib.parse.urlparse(str(candidate_url or ""))
+                    candidate_host = (candidate.hostname or "").lower()
+                    if candidate.scheme == "https" and candidate_host in {
+                        "chatgpt.com",
+                        "chat.openai.com",
+                        "pay.openai.com",
+                    }:
+                        pending_url = str(candidate_url)
+                        break
+                except Exception:
+                    continue
+            if settlement_status == "pending_verification":
+                logger.warning(
+                    "PayPal agreement is authorized, but OpenAI/Stripe still requires checkout verification"
+                )
 
             # Send final analytics
             send_analytics_ts(
@@ -8547,9 +2255,11 @@ class PayPalFlow:
                 "ec_token": self.state.ec_token,
                 "user_id": self.state.user_id,
                 "return_url": self.state.return_url,
-                "paypal_return_url": paypal_return_url,
                 "final_redirect_url": final_redirect_url,
-                "stripe_redirect": stripe_redirect,
+                "verification_url": verification_url,
+                "pending_url": pending_url,
+                "redirect_status": redirect_status,
+                "settlement_status": settlement_status,
                 "payment_action": auth_data["paymentAction"],
             }
         except (KeyError, IndexError, TypeError) as e:
