@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import http.cookiejar
+import os
 import re
 import threading
 import time
@@ -43,8 +44,10 @@ sanitize_protocol_log_text = paypal_protocol_service.sanitize_log_text
 LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
 PAY153_REMOTE_TASKS_FILE = PROJECT_ROOT / "data" / "us_paypal_pay153_remote_tasks.json"
+GROK_BRAINTREE_CONTEXTS_FILE = PROJECT_ROOT / "data" / "grok_braintree_contexts.json"
 MAX_BATCH_CONCURRENCY = 30
-MAX_PROTOCOL_BATCH_CONCURRENCY = 10
+MAX_PROTOCOL_BATCH_CONCURRENCY = 20
+MAX_PAY153_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PROXY_PREFLIGHT_MAX_ATTEMPTS = 10
@@ -59,6 +62,36 @@ PAYPAL_STATUS_FAILED = "failed"
 PAYPAL_STATUS_NO_PROMO = "no_promo"
 PAYPAL_STATUS_NON_OAICS = "non_oaics"
 PAYPAL_STATUS_PAID = "paid"
+PAYPAL_PROTOCOL_LOG_KEEP_MARKERS = (
+    "PayPal协议任务已创建",
+    "已从接码通道获取验证码并提交",
+    "手机接码平台 OTP 等待超时",
+    "PayPal 要求换号",
+    "验证码",
+    "OTP",
+    "captcha",
+    "CAPTCHA",
+    "challenge",
+    "授权成功",
+    "授权失败",
+    "Braintree",
+    "BRAINTREE",
+    "PAYER_ACCOUNT_RESTRICTED",
+    "INVALID_RESOURCE_ID",
+    "PAYPAL_GRAPHQL_AUTH_CHALLENGE",
+    "协议支付代理预检",
+    "代理预检失败",
+    "代理预检通过",
+    "payment success",
+    "payment failed",
+)
+PAYPAL_PROTOCOL_LOG_DROP_MARKERS = (
+    "HTTP Request:",
+    "GET https://",
+    "POST https://",
+    "INFO HTTP",
+    "DEBUG",
+)
 PAYPAL_STATUS_TEXT = {
     "pending": "未提链",
     "running": "提链中",
@@ -313,7 +346,7 @@ class UsPaypal153BatchStartRequest(BaseModel):
             concurrency = int(value or 1)
         except Exception:
             concurrency = 1
-        return max(1, min(MAX_PROTOCOL_BATCH_CONCURRENCY, concurrency))
+        return max(1, min(MAX_PAY153_BATCH_CONCURRENCY, concurrency))
 
     @field_validator("sms_record_wait_seconds", mode="before")
     @classmethod
@@ -337,6 +370,22 @@ class UsPaypal153BatchStartRequest(BaseModel):
 class UsPaypal153InteractiveRequest(BaseModel):
     remote_job_id: str = Field("", alias="remoteJobId")
     value: str = ""
+    model_config = {"populate_by_name": True}
+
+
+class GrokBraintreeContextRequest(BaseModel):
+    billing_token: str = Field("", alias="billingToken")
+    model_config = {"populate_by_name": True}
+
+
+class GrokBraintreeCompleteRequest(BaseModel):
+    account_id: str = Field("", alias="accountId")
+    region: str = ""
+    billing_token: str = Field("", alias="billingToken")
+    payer_id: str = Field("", alias="payerId")
+    plan_id: str = Field("supergrok_monthly", alias="planId")
+    campaign_id: str = Field("", alias="campaignId")
+    proxy: str = ""
     model_config = {"populate_by_name": True}
 
 
@@ -662,6 +711,17 @@ def _append_log(job_id: str, message: str) -> None:
             return
         job["logs"].append(line)
         job["logs"] = job["logs"][-500:]
+
+
+def _append_protocol_key_log(job_id: str, index: int, total: int, message: str) -> None:
+    text = sanitize_protocol_log_text(str(message or "").strip())
+    if not text:
+        return
+    if any(marker in text for marker in PAYPAL_PROTOCOL_LOG_DROP_MARKERS):
+        return
+    if not any(marker in text for marker in PAYPAL_PROTOCOL_LOG_KEEP_MARKERS):
+        return
+    _append_log(job_id, f"[{index}/{total}] {text}")
 
 
 def _is_job_cancel_requested(job_id: str) -> bool:
@@ -1300,7 +1360,7 @@ def _run_protocol_batch_account(
     _append_log(job_id, f"[{index}/{total}] PayPal 协议支付开始：{email} country={task.get('country')}{proxy_slot}")
 
     def account_log(message: str) -> None:
-        _append_log(job_id, f"[{index}/{total}] {message}")
+        _append_protocol_key_log(job_id, index, total, message)
 
     try:
         if sms_provider == "sms_record" and sms_record_pool is not None and sms_record_pool_lock is not None:
@@ -1583,6 +1643,88 @@ def _pay153_request(
         raise RuntimeError(str(message)) from exc
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"153 API 请求失败: {exc}") from exc
+
+
+def _normalize_billing_token(value: str) -> str:
+    return extract_protocol_ba_token(str(value or "")) or str(value or "").strip()
+
+
+def _load_grok_braintree_contexts() -> dict[str, Any]:
+    contexts: dict[str, Any] = {}
+    raw_env = str(os.getenv("PAYPAL_GROK_BRAINTREE_CONTEXTS_JSON") or "").strip()
+    if raw_env:
+        try:
+            parsed = json.loads(raw_env)
+            if isinstance(parsed, dict):
+                contexts.update(parsed)
+        except Exception:
+            pass
+    try:
+        parsed = json.loads(GROK_BRAINTREE_CONTEXTS_FILE.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            contexts.update(parsed)
+    except Exception:
+        pass
+    return contexts
+
+
+def _grok_braintree_context_for_billing_token(billing_token: str) -> dict[str, Any]:
+    token = _normalize_billing_token(billing_token)
+    if not token:
+        return {}
+    contexts = _load_grok_braintree_contexts()
+    for key in (token, token.upper(), str(billing_token or "").strip()):
+        item = contexts.get(key)
+        if isinstance(item, dict):
+            return dict(item)
+    default_account_id = str(os.getenv("PAYPAL_GROK_BRAINTREE_ACCOUNT_ID") or "").strip()
+    if default_account_id:
+        return {
+            "account_id": default_account_id,
+            "region": str(os.getenv("PAYPAL_GROK_BRAINTREE_REGION") or "US").strip().upper() or "US",
+            "plan_id": str(os.getenv("PAYPAL_GROK_BRAINTREE_PLAN_ID") or "supergrok_monthly").strip() or "supergrok_monthly",
+            "campaign_id": str(os.getenv("PAYPAL_GROK_BRAINTREE_CAMPAIGN_ID") or "").strip(),
+        }
+    return {}
+
+
+def _grok_braintree_complete(req: GrokBraintreeCompleteRequest) -> dict[str, Any]:
+    bridge_base = str(os.getenv("PAYPAL_GROK_BRAINTREE_COMPLETE_BASE") or "").strip().rstrip("/")
+    if not bridge_base:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "ok": False,
+                "code": "braintree_bridge_not_configured",
+                "message": "本机未配置 Braintree complete bridge；请设置 PAYPAL_GROK_BRAINTREE_COMPLETE_BASE，或不要为该 BA 配置 grok_braintree_contexts",
+            },
+        )
+    payload = {
+        "account_id": req.account_id,
+        "region": req.region,
+        "billing_token": req.billing_token,
+        "payer_id": req.payer_id,
+        "plan_id": req.plan_id,
+        "campaign_id": req.campaign_id,
+        "proxy": req.proxy,
+    }
+    request = urllib.request.Request(
+        f"{bridge_base}/api/grok-trial/braintree-complete",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            data = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=exc.code, detail={"ok": False, "code": "braintree_bridge_http_error", "message": body[:500]}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={"ok": False, "code": "braintree_bridge_error", "message": str(exc)}) from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail={"ok": False, "code": "braintree_bridge_bad_response", "message": "bridge response must be JSON object"})
+    return data
 
 
 def _pay153_create_job(paypal_url: str, phone: str, country: str, proxies: list[str], buyer_mode: str, client: Pay153Client | None = None) -> dict[str, Any]:
@@ -1888,7 +2030,7 @@ def _pay153_batch_concurrency(req: UsPaypal153BatchStartRequest, total: int) -> 
         requested = int(req.concurrency or 1)
     except Exception:
         requested = 1
-    return max(1, min(MAX_PROTOCOL_BATCH_CONCURRENCY, total, requested))
+    return max(1, min(MAX_PAY153_BATCH_CONCURRENCY, total, requested))
 
 
 def _pay153_remote_job_from_response(data: dict[str, Any]) -> dict[str, Any]:
@@ -2014,7 +2156,7 @@ def _new_pay153_batch_job(account_emails: list[str], concurrency: int = 1) -> st
             "account_email": clean_emails[0] if len(clean_emails) == 1 else "",
             "total": len(clean_emails) or 1,
             "completed": 0,
-            "concurrency": max(1, min(MAX_PROTOCOL_BATCH_CONCURRENCY, int(concurrency or 1))),
+            "concurrency": max(1, min(MAX_PAY153_BATCH_CONCURRENCY, int(concurrency or 1))),
             "cancel_requested": False,
             "running_count": 0,
             "skipped": [],
@@ -2445,6 +2587,18 @@ def _run_pay153_batch_payment_job(job_id: str, req: UsPaypal153BatchStartRequest
 
 def create_us_paypal_router() -> APIRouter:
     router = APIRouter()
+
+    @router.post("/api/grok-trial/braintree-context")
+    def get_grok_braintree_context(req: GrokBraintreeContextRequest) -> dict[str, Any]:
+        context = _grok_braintree_context_for_billing_token(req.billing_token)
+        return {"ok": True, "result": context}
+
+    @router.post("/api/grok-trial/braintree-complete")
+    def complete_grok_braintree(req: GrokBraintreeCompleteRequest) -> dict[str, Any]:
+        data = _grok_braintree_complete(req)
+        if "ok" in data:
+            return data
+        return {"ok": True, "result": data}
 
     @router.get("/api/us-paypal/accounts")
     def get_us_paypal_accounts() -> dict[str, Any]:

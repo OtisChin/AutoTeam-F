@@ -27,6 +27,7 @@ def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(us_paypal, "LINKS_FILE", tmp_path / "us_paypal_links.json")
     monkeypatch.setattr(us_paypal, "ACCOUNT_STATUS_FILE", tmp_path / "us_paypal_account_status.json")
     monkeypatch.setattr(us_paypal, "PAY153_REMOTE_TASKS_FILE", tmp_path / "us_paypal_pay153_remote_tasks.json")
+    monkeypatch.setattr(us_paypal, "GROK_BRAINTREE_CONTEXTS_FILE", tmp_path / "grok_braintree_contexts.json")
     monkeypatch.setattr(us_paypal.account_store, "ACCOUNTS_FILE", tmp_path / "accounts.json")
     monkeypatch.setattr(us_paypal.pix_routes, "AUTH_SESSION_DIR", tmp_path / "auth_session")
     monkeypatch.setattr("autotoken.storage.auth_session_store.AUTH_SESSION_DIR", tmp_path / "auth_session")
@@ -131,10 +132,68 @@ def test_paypal_proxy_preflight_attempts_cap_at_one_hundred():
     assert protocol_req.proxy_preflight_attempts == 100
 
 
-def test_paypal_protocol_batch_concurrency_stays_capped_at_ten():
+def test_paypal_protocol_batch_concurrency_stays_capped_at_twenty():
     req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
 
-    assert us_paypal._protocol_batch_concurrency(req, total=30) == 10
+    assert us_paypal._protocol_batch_concurrency(req, total=30) == 20
+
+
+def test_pay153_batch_concurrency_stays_capped_at_ten():
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
+
+    assert us_paypal._pay153_batch_concurrency(req, total=30) == 10
+
+
+def test_grok_braintree_context_reads_file_by_ba_token():
+    us_paypal.GROK_BRAINTREE_CONTEXTS_FILE.write_text(
+        json.dumps(
+            {
+                "BA-CTX12345": {
+                    "account_id": "acct-file",
+                    "region": "TH",
+                    "plan_id": "supergrok_monthly",
+                    "campaign_id": "campaign-file",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = us_paypal._grok_braintree_context_for_billing_token(
+        "https://www.paypal.com/agreements/approve?ba_token=BA-CTX12345"
+    )
+
+    assert result["account_id"] == "acct-file"
+    assert result["region"] == "TH"
+
+
+def test_grok_braintree_context_endpoint_defaults_to_empty_result():
+    app = _app()
+    endpoint = _endpoint(app, "/api/grok-trial/braintree-context", "POST")
+
+    result = endpoint(us_paypal.GrokBraintreeContextRequest.model_validate({"billingToken": "BA-MISSING12345"}))
+
+    assert result == {"ok": True, "result": {}}
+
+
+def test_grok_braintree_complete_requires_configured_bridge(monkeypatch):
+    monkeypatch.delenv("PAYPAL_GROK_BRAINTREE_COMPLETE_BASE", raising=False)
+    app = _app()
+    endpoint = _endpoint(app, "/api/grok-trial/braintree-complete", "POST")
+
+    with pytest.raises(HTTPException) as exc:
+        endpoint(
+            us_paypal.GrokBraintreeCompleteRequest.model_validate(
+                {
+                    "accountId": "acct-local",
+                    "billingToken": "BA-COMPLETE12345",
+                    "payerId": "payer-1",
+                }
+            )
+        )
+
+    assert exc.value.status_code == 501
+    assert exc.value.detail["code"] == "braintree_bridge_not_configured"
 
 
 def test_batch_account_preflights_proxy_before_paypal_generation(monkeypatch):
