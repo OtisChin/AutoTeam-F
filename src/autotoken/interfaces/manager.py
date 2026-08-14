@@ -2600,6 +2600,72 @@ _DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
 )
 
 
+def _direct_humanize_enabled() -> bool:
+    return _env_flag("REGISTER_HUMANIZE_BROWSER_ACTIONS", True)
+
+
+def _direct_humanize_delay(kind: str = "action") -> None:
+    if not _direct_humanize_enabled():
+        return
+    ranges = {
+        "click": (0.15, 0.85),
+        "focus": (0.08, 0.35),
+        "input": (0.12, 0.55),
+        "action": (0.2, 0.8),
+    }
+    low, high = ranges.get(kind, ranges["action"])
+    try:
+        factor = max(0.0, float(os.environ.get("REGISTER_HUMANIZE_DELAY_FACTOR", "1.0") or 1.0))
+    except Exception:
+        factor = 1.0
+    seconds = random.uniform(low, high) * factor
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def _humanized_fill(page, locator, value: str, *, field_name: str = "") -> None:
+    text = str(value or "")
+    if not _direct_humanize_enabled():
+        locator.fill(text)
+        return
+    try:
+        try:
+            locator.click(timeout=3000)
+        except Exception:
+            pass
+        _direct_humanize_delay("focus")
+        try:
+            locator.press("Control+A")
+        except Exception:
+            try:
+                locator.press("Meta+A")
+            except Exception:
+                pass
+        _direct_humanize_delay("input")
+        page.keyboard.type(text, delay=random.randint(35, 140))
+        return
+    except Exception as exc:
+        logger.debug("[直接注册] humanized fill fallback: field=%s error=%s", field_name, exc)
+        locator.fill(text)
+
+
+def _humanized_click_locator(page, locator, *, label: str = "") -> None:
+    if not _direct_humanize_enabled():
+        locator.click()
+        return
+    _direct_humanize_delay("click")
+    try:
+        locator.click(timeout=3000)
+    except Exception as exc:
+        logger.debug("[直接注册] humanized click fallback: label=%s error=%s", label, exc)
+        locator.click()
+
+
+def _humanized_auth_click(page, anchor_locator, labels) -> None:
+    _direct_humanize_delay("click")
+    _click_primary_auth_button(page, anchor_locator, labels)
+
+
 def _safe_invite_screenshot(page, name):
     from autotoken.auth.invite import screenshot
 
@@ -3060,7 +3126,7 @@ def _complete_direct_about_you(page):
             if name_input.is_visible(timeout=2000):
                 try:
                     if name_input.is_editable(timeout=500):
-                        name_input.fill(identity_name)
+                        _humanized_fill(page, name_input, identity_name, field_name="about_you_name")
                         logger.info("[直接注册] 填入姓名: %s", identity_name)
                         time.sleep(0.3)
                 except Exception:
@@ -3105,7 +3171,7 @@ def _complete_direct_about_you(page):
                     'input[name="age"], input[placeholder*="年龄"], input[placeholder*="Age"], input[placeholder*="연령"], input[aria-label*="연령"], input[placeholder*="나이"], input[aria-label*="나이"]'
                 ).first
                 if age_input.is_visible(timeout=2000) and age_input.is_editable(timeout=500):
-                    age_input.fill(identity_age)
+                    _humanized_fill(page, age_input, identity_age, field_name="about_you_age")
                     logger.info("[直接注册] 填入年龄: %s", identity_age)
             except Exception:
                 pass
@@ -3120,7 +3186,7 @@ def _complete_direct_about_you(page):
                 btn = page.locator(btn_selector).first
                 if btn.is_visible(timeout=1000):
                     try:
-                        btn.click()
+                        _humanized_click_locator(page, btn, label="about_you_submit")
                     except Exception:
                         handle = btn.element_handle(timeout=1000)
                         if handle:
@@ -3244,7 +3310,7 @@ def _register_direct_once(
                 window_name=f"autotoken-register-{random.randint(100000, 999999)}",
                 proxy_url=proxy_url,
                 clear_profile_data=True,
-                force_new_profile=_env_flag("REGISTER_ROXYBROWSER_FORCE_NEW_PROFILE", False),
+                force_new_profile=_env_flag("REGISTER_ROXYBROWSER_FORCE_NEW_PROFILE", True),
             )
             stack.callback(_cleanup_roxybrowser)
             p = sync_playwright().start()
@@ -3402,11 +3468,11 @@ def _register_direct_once(
                     logger.warning("[直接注册] 邮箱输入框仍不可编辑，继续重试 | URL: %s", page.url)
                     continue
 
-                email_input.fill(email)
+                _humanized_fill(page, email_input, email, field_name="email")
                 time.sleep(0.5)
                 logger.info("[直接注册] 邮箱已填入，点击 Continue... (attempt %d)", attempt + 1)
                 _safe_invite_screenshot(page, f"direct_02b_email_filled_{attempt}.png")
-                _click_primary_auth_button(page, email_input, _DIRECT_CONTINUE_LABELS)
+                _humanized_auth_click(page, email_input, _DIRECT_CONTINUE_LABELS)
 
                 next_step = _wait_for_direct_step_change(page, "email", timeout=15)
                 logger.info("[直接注册] 点击 Continue 后状态: %s | URL: %s", next_step, page.url)
@@ -3482,9 +3548,9 @@ def _register_direct_once(
                     continue
 
                 logger.info("[直接注册] 设置密码")
-                pwd_input.fill(password)
+                _humanized_fill(page, pwd_input, password, field_name="password")
                 time.sleep(0.5)
-                _click_primary_auth_button(page, pwd_input, _DIRECT_PASSWORD_CONTINUE_LABELS)
+                _humanized_auth_click(page, pwd_input, _DIRECT_PASSWORD_CONTINUE_LABELS)
                 next_step = _wait_for_direct_step_change(page, "password", timeout=15)
                 logger.info("[直接注册] 提交密码后状态: %s | URL: %s", next_step, page.url)
 

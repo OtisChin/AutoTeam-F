@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +36,20 @@ PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {
     "PH": "4",
     "TH": "52",
 }
+_ACTIVATION_STORE_LOCKS_LOCK = threading.Lock()
+_ACTIVATION_STORE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _activation_store_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _ACTIVATION_STORE_LOCKS_LOCK:
+        lock = _ACTIVATION_STORE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _ACTIVATION_STORE_LOCKS[key] = lock
+        return lock
+
+
 PAYPAL_SMS_COUNTRY_DIAL_CODES = {
     "12": "1",
     "187": "1",
@@ -309,10 +324,11 @@ class SMSBowerActivationStore:
         return self._empty()
 
     def save(self, data: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(self.path)
+        with _activation_store_lock(self.path):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp")
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(self.path)
 
     def reusable_activation(
         self,

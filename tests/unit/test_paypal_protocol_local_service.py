@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
+import threading
 
 import pytest
 
@@ -291,6 +293,49 @@ def test_sms_activate_provider_reuses_number_without_finishing(tmp_path):
     statuses = [item[1]["status"] for item in client.actions if item[0] == "setStatus"]
     assert 6 not in statuses
     assert statuses.count(3) >= 2
+
+
+def test_smsbower_activation_store_serializes_concurrent_saves(tmp_path, monkeypatch):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    store = smsbower.SMSBowerActivationStore(tmp_path / "sms-cache.json")
+    active_writes = 0
+    max_active_writes = 0
+    write_lock = threading.Lock()
+    original_write_text = smsbower.Path.write_text
+
+    def tracked_write_text(path, *args, **kwargs):
+        nonlocal active_writes, max_active_writes
+        with write_lock:
+            active_writes += 1
+            max_active_writes = max(max_active_writes, active_writes)
+        try:
+            return original_write_text(path, *args, **kwargs)
+        finally:
+            with write_lock:
+                active_writes -= 1
+
+    monkeypatch.setattr(smsbower.Path, "write_text", tracked_write_text)
+
+    threads = [
+        threading.Thread(target=store.save, args=({"activations": [{"activation_id": f"act-{index}"}], "provider_failures": {}},))
+        for index in range(12)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert max_active_writes == 1
+    assert json.loads((tmp_path / "sms-cache.json").read_text(encoding="utf-8"))["activations"]
 
 
 def test_sms_activate_provider_timeout_switches_number(tmp_path):

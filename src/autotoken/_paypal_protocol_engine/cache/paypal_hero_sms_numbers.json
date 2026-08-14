@@ -1,16 +1,16 @@
 {
   "activations": [],
   "provider_failures": {
-    "truemove": 154,
+    "truemove": 205,
     "orange": 6,
     "hero_sms": 14,
     "ee": 131,
     "three": 1,
     "my": 1,
-    "algartelecom": 41,
+    "algartelecom": 43,
     "links_field": 17,
     "tim": 222,
     "any": 1,
-    "surf": 23
+    "surf": 24
   }
 }

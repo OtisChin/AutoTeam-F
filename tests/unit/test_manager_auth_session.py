@@ -517,7 +517,7 @@ def test_direct_about_you_accepts_korean_required_consents():
     assert "계정 생성 끝내기" in manager._DIRECT_ABOUT_YOU_BUTTON_TEXTS
 
 
-def test_browser_register_uses_roxybrowser_cdp_and_reuses_idle_profiles(monkeypatch):
+def test_browser_register_uses_roxybrowser_cdp_and_fresh_profile_by_default(monkeypatch):
     calls = {"launches": [], "cdp": [], "closed": [], "deleted": [], "released": []}
 
     class FakePage:
@@ -599,7 +599,7 @@ def test_browser_register_uses_roxybrowser_cdp_and_reuses_idle_profiles(monkeypa
     assert calls["client"] == ("http://roxy", "token")
     assert calls["launches"][0]["proxy_url"] == "http://proxy"
     assert calls["launches"][0]["clear_profile_data"] is True
-    assert calls["launches"][0]["force_new_profile"] is False
+    assert calls["launches"][0]["force_new_profile"] is True
     assert calls["cdp"] == ["http://127.0.0.1:9222"]
     assert "dir-1" in calls["closed"]
     assert calls["deleted"] == [("workspace-1", ["dir-1"])]

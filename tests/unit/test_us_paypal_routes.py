@@ -1482,13 +1482,7 @@ def test_pay153_already_processing_error_is_not_retried(monkeypatch):
         raise RuntimeError("This PayPal link is already being processed by another task")
 
     monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
-    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {
-        "jobs": [
-            {"id": "remote-match", "status": "running", "paypal_url": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345"},
-            {"id": "remote-done", "status": "completed", "ba_token": "BA-A12345"},
-            {"id": "remote-other", "status": "running", "paypal_url": "https://www.paypal.com/agreements/approve?ba_token=BA-OTHER"},
-        ]
-    })
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {"jobs": []})
     monkeypatch.setattr(us_paypal, "_pay153_cancel_job", lambda remote_job_id, client=None: cancelled.append(remote_job_id) or {"job": {"id": remote_job_id, "status": "cancelled"}})
 
     job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
@@ -1519,11 +1513,93 @@ def test_pay153_already_processing_error_is_not_retried(monkeypatch):
     )
 
     assert calls == ["+447700900001"]
-    assert cancelled == ["remote-match"]
+    assert cancelled == []
     assert result["ok"] is False
     assert result["status"]["status"] == us_paypal.PAYPAL_STATUS_FAILED
     assert "already being processed" in result["error"]["error"]
-    assert result["error"]["remote_cancelled"] == ["remote-match"]
+    assert result["error"]["remote_cancelled"] == []
+
+
+def test_pay153_cancel_existing_jobs_for_ba_uses_local_child_session(monkeypatch):
+    client = object()
+    us_paypal.JOBS["old-job"] = {
+        "id": "old-job",
+        "kind": "paypal_153_payment",
+        "status": "running",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1.0,
+        "finished_at": None,
+        "children": {
+            "remote-local": {
+                "remote_job_id": "remote-local",
+                "status": "running",
+                "ba_token": "BA-4PL91052NS685551N",
+            }
+        },
+        "pay153_clients": {"remote-local": client},
+    }
+    cancelled = []
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {"jobs": []})
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_job", lambda remote_job_id, client=None: cancelled.append((remote_job_id, client)) or {"job": {"id": remote_job_id, "status": "cancelled"}})
+
+    result = us_paypal._pay153_cancel_existing_jobs_for_ba("BA-4PL91052NS685551N")
+
+    assert result == ["remote-local"]
+    assert cancelled == [("remote-local", client)]
+    assert us_paypal.JOBS["old-job"]["children"]["remote-local"]["status"] == "cancelled"
+
+
+def test_pay153_already_processing_retries_after_cancelled_stale_remote(monkeypatch):
+    calls = []
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_existing_jobs_for_ba", lambda paypal_link, client=None: ["remote-stale"])
+
+    class FakeActivation:
+        phone_number = ""
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+    monkeypatch.setattr(us_paypal, "_build_pay153_otp_provider", lambda sms_provider, phone, country, req: FakeOtpProvider())
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        calls.append(phone)
+        if len(calls) == 1:
+            raise RuntimeError("This PayPal link is already being processed by another task")
+        return {"job": {"id": "remote-ok", "status": "completed", "stage": "done", "logs": [], "result": {"status": "success"}}}
+
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "accountEmails": ["gb@example.com"],
+        "phonePool": "+447700900001----https://api.sms8.net/api/record?token=one\n+447700900002----https://api.sms8.net/api/record?token=two",
+        "proxies": "proxy-one",
+    })
+    pool = us_paypal._pay153_sms_record_pool(req)
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-91G197898H813770D",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-91G197898H813770D",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+        [],
+        pool,
+        us_paypal.threading.Lock(),
+    )
+
+    assert result["ok"] is True
+    assert calls == ["+447700900001", "+447700900002"]
 
 
 def test_pay153_cancel_remote_by_ba_route(monkeypatch):
@@ -1545,6 +1621,29 @@ def test_pay153_cancel_remote_by_ba_route(monkeypatch):
 
     assert result == {"ok": True, "ba_token": "BA-91G197898H813770D", "remote_cancelled": ["remote-match"]}
     assert cancelled == ["remote-match"]
+
+
+def test_pay153_batch_job_records_worker_exception_without_failing_whole_batch(monkeypatch):
+    monkeypatch.setattr(us_paypal, "_validate_pay153_batch_start", lambda req: [
+        {"email": "a@example.com", "ba_token": "BA-91G197898H813770D", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-91G197898H813770D", "country": "TH"},
+    ])
+    monkeypatch.setattr(us_paypal, "_run_pay153_batch_account", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("[WinError 32] cache busy")))
+
+    job_id = us_paypal._new_pay153_batch_job(["a@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "accountEmails": ["a@example.com"],
+        "smsProvider": "hero_sms",
+        "proxies": "proxy-one",
+    })
+
+    us_paypal._run_pay153_batch_payment_job(job_id, req)
+
+    job = us_paypal.JOBS[job_id]
+    assert job["status"] == "error"
+    assert job["error"] == "全部账号153支付失败"
+    assert job["result"]["errors"][0]["email"] == "a@example.com"
+    assert "[WinError 32] cache busy" in job["result"]["errors"][0]["error"]
+    assert job["completed"] == 1
 
 
 def test_pay153_batch_start_route_returns_local_job_id(monkeypatch):

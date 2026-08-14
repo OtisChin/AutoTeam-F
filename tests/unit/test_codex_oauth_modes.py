@@ -2714,6 +2714,67 @@ def test_direct_register_continue_labels_include_japanese_locale():
     assert "続行" in manager._DIRECT_ABOUT_YOU_BUTTON_TEXTS
 
 
+def test_humanized_fill_clicks_and_types_when_enabled(monkeypatch):
+    events = []
+
+    class FakeKeyboard:
+        def type(self, value, delay=0):
+            events.append(("type", value, delay))
+
+    class FakePage:
+        keyboard = FakeKeyboard()
+
+    class FakeLocator:
+        def click(self, timeout=0):
+            events.append(("click", timeout))
+
+        def press(self, key):
+            events.append(("press", key))
+
+        def fill(self, value):
+            events.append(("fill", value))
+
+    monkeypatch.setenv("REGISTER_HUMANIZE_BROWSER_ACTIONS", "true")
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(manager.random, "uniform", lambda low, high: low)
+    monkeypatch.setattr(manager.random, "randint", lambda low, high: low)
+
+    manager._humanized_fill(FakePage(), FakeLocator(), "user@example.com", field_name="email")
+
+    assert ("click", 3000) in events
+    assert ("press", "Control+A") in events
+    assert not any(event[0] == "fill" for event in events)
+    assert any(event[0] == "type" and event[1] == "user@example.com" for event in events)
+
+
+def test_humanized_fill_falls_back_to_fill(monkeypatch):
+    events = []
+
+    class FakeKeyboard:
+        def type(self, value, delay=0):
+            raise RuntimeError("keyboard failed")
+
+    class FakePage:
+        keyboard = FakeKeyboard()
+
+    class FakeLocator:
+        def click(self, timeout=0):
+            events.append(("click", timeout))
+
+        def press(self, key):
+            events.append(("press", key))
+
+        def fill(self, value):
+            events.append(("fill", value))
+
+    monkeypatch.setenv("REGISTER_HUMANIZE_BROWSER_ACTIONS", "true")
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+
+    manager._humanized_fill(FakePage(), FakeLocator(), "pw", field_name="password")
+
+    assert ("fill", "pw") in events
+
+
 def test_roxybrowser_register_dynamic_proxy_skips_http_csrf_probe(monkeypatch):
     captured = {}
     progress_events = []

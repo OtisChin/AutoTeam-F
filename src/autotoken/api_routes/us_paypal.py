@@ -1588,9 +1588,39 @@ def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Clie
     target = _pay153_normalize_ba_token(ba_token_or_url)
     if not target:
         return []
+    cancelled: list[str] = []
+    local_candidates: list[tuple[str, str, Any]] = []
+    with JOBS_LOCK:
+        for local_job_id, local_job in JOBS.items():
+            if not isinstance(local_job, dict) or local_job.get("kind") != "paypal_153_payment":
+                continue
+            clients = local_job.get("pay153_clients") if isinstance(local_job.get("pay153_clients"), dict) else {}
+            children = local_job.get("children") if isinstance(local_job.get("children"), dict) else {}
+            for remote_job_id, child in children.items():
+                if not isinstance(child, dict):
+                    continue
+                status = str(child.get("status") or "").strip().lower()
+                if status in {"completed", "failed", "cancelled"}:
+                    continue
+                if not _pay153_job_matches_ba(child, target):
+                    continue
+                clean_remote = str(child.get("remote_job_id") or remote_job_id or "").strip()
+                if clean_remote:
+                    local_candidates.append((str(local_job_id), clean_remote, clients.get(clean_remote)))
+    for local_job_id, remote_job_id, local_client in local_candidates:
+        _pay153_cancel_job(remote_job_id, client=local_client)
+        cancelled.append(remote_job_id)
+        with JOBS_LOCK:
+            local_job = JOBS.get(local_job_id)
+            child = ((local_job or {}).get("children") or {}).get(remote_job_id) if isinstance(local_job, dict) else None
+            if isinstance(child, dict):
+                child["status"] = "cancelled"
+                child["error"] = "已按 BA 清理远端卡住任务"
+                child["awaiting_otp"] = False
+                child["awaiting_captcha"] = False
+
     data = _pay153_list_jobs(client=client)
     jobs = data.get("jobs") if isinstance(data, dict) else []
-    cancelled: list[str] = []
     for remote_job in jobs if isinstance(jobs, list) else []:
         if not isinstance(remote_job, dict):
             continue
@@ -1600,7 +1630,7 @@ def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Clie
         if not _pay153_job_matches_ba(remote_job, target):
             continue
         remote_job_id = str(remote_job.get("id") or remote_job.get("job_id") or "").strip()
-        if not remote_job_id:
+        if not remote_job_id or remote_job_id in cancelled:
             continue
         _pay153_cancel_job(remote_job_id, client=client)
         cancelled.append(remote_job_id)
@@ -1951,6 +1981,8 @@ def _run_pay153_batch_account(
 def _pay153_account_failure_retryable(item: dict[str, Any]) -> bool:
     error = item.get("error") if isinstance(item, dict) else {}
     message = str(error.get("error") if isinstance(error, dict) else error or "")
+    if _pay153_is_already_processing_error(message) and isinstance(error, dict) and error.get("remote_cancelled"):
+        return True
     non_retryable_markers = (
         "验证码等待 60s 超时",
         "SMS record 号池已领完",
@@ -2133,12 +2165,24 @@ def _run_pay153_batch_payment_job(job_id: str, req: UsPaypal153BatchStartRequest
         _append_log(job_id, f"153支付批量任务开始：{len(tasks)} 个账号，并发 {concurrency}，代理={len(proxies)} 条")
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [
-                executor.submit(_run_pay153_batch_account, job_id, req, task, index, len(tasks), phones, proxies, record_urls, sms_record_pool, sms_record_pool_lock)
+            futures = {
+                executor.submit(_run_pay153_batch_account, job_id, req, task, index, len(tasks), phones, proxies, record_urls, sms_record_pool, sms_record_pool_lock): task
                 for index, task in enumerate(tasks, start=1)
-            ]
+            }
             for future in as_completed(futures):
-                item = future.result()
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    task = futures.get(future) or {}
+                    email = str(task.get("email") or "")
+                    error = sanitize_protocol_log_text(str(exc))
+                    _append_log(job_id, f"153支付账号任务异常：{email} {error}")
+                    item = {
+                        "ok": False,
+                        "email": email,
+                        "error": {"email": email, "error": error},
+                        "status": _set_account_status(email, PAYPAL_STATUS_FAILED, error=error, job_id=job_id) if email else {},
+                    }
                 email = str(item.get("email") or "")
                 if item.get("skipped"):
                     skipped.append({"email": email, "reason": item.get("reason") or "任务已取消"})
