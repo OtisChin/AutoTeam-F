@@ -328,7 +328,14 @@ class SMSBowerActivationStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp")
             tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp_path.replace(self.path)
+            for attempt in range(6):
+                try:
+                    tmp_path.replace(self.path)
+                    return
+                except PermissionError:
+                    if attempt >= 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
 
     def reusable_activation(
         self,

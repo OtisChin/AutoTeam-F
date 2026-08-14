@@ -42,6 +42,7 @@ sanitize_protocol_log_text = paypal_protocol_service.sanitize_log_text
 
 LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
+PAY153_REMOTE_TASKS_FILE = PROJECT_ROOT / "data" / "us_paypal_pay153_remote_tasks.json"
 MAX_BATCH_CONCURRENCY = 30
 MAX_PROTOCOL_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
@@ -74,7 +75,9 @@ JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.RLock()
 LINKS_LOCK = threading.RLock()
 ACCOUNT_STATUS_LOCK = threading.RLock()
+PAY153_REMOTE_TASKS_LOCK = threading.RLock()
 TERMINAL_STATUSES = {"success", "error", "failed", "cancelled"}
+PAY153_REMOTE_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 
 class UsPaypalStartRequest(BaseModel):
@@ -1465,6 +1468,62 @@ class Pay153Client:
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookie_jar))
         self._lock = threading.RLock()
 
+    def cookie_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    "version": cookie.version,
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "port": cookie.port,
+                    "port_specified": cookie.port_specified,
+                    "domain": cookie.domain,
+                    "domain_specified": cookie.domain_specified,
+                    "domain_initial_dot": cookie.domain_initial_dot,
+                    "path": cookie.path,
+                    "path_specified": cookie.path_specified,
+                    "secure": cookie.secure,
+                    "expires": cookie.expires,
+                    "discard": cookie.discard,
+                    "comment": cookie.comment,
+                    "comment_url": cookie.comment_url,
+                    "rest": dict(getattr(cookie, "_rest", {}) or {}),
+                    "rfc2109": cookie.rfc2109,
+                }
+                for cookie in self.cookie_jar
+            ]
+
+    @classmethod
+    def from_cookie_snapshot(cls, cookies: list[dict[str, Any]] | None, base_url: str = PAY153_API_BASE) -> "Pay153Client":
+        client = cls(base_url=base_url)
+        for item in cookies or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            cookie = http.cookiejar.Cookie(
+                version=int(item.get("version") or 0),
+                name=name,
+                value=str(item.get("value") or ""),
+                port=item.get("port"),
+                port_specified=bool(item.get("port_specified")),
+                domain=str(item.get("domain") or ""),
+                domain_specified=bool(item.get("domain_specified")),
+                domain_initial_dot=bool(item.get("domain_initial_dot")),
+                path=str(item.get("path") or "/"),
+                path_specified=bool(item.get("path_specified", True)),
+                secure=bool(item.get("secure")),
+                expires=item.get("expires"),
+                discard=bool(item.get("discard", True)),
+                comment=item.get("comment"),
+                comment_url=item.get("comment_url"),
+                rest=dict(item.get("rest") or {}),
+                rfc2109=bool(item.get("rfc2109")),
+            )
+            client.cookie_jar.set_cookie(cookie)
+        return client
+
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
         clean_path = "/" + str(path or "").lstrip("/")
         body = None
@@ -1584,6 +1643,142 @@ def _pay153_job_matches_ba(remote_job: dict[str, Any], ba_token: str) -> bool:
     return any(_pay153_normalize_ba_token(str(value or "")) == target for value in candidates)
 
 
+def _load_pay153_remote_tasks() -> dict[str, dict[str, Any]]:
+    with PAY153_REMOTE_TASKS_LOCK:
+        data = _read_json(PAY153_REMOTE_TASKS_FILE, {})
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = list(data.values())
+    else:
+        items = []
+    tasks: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        remote_job_id = str(item.get("remote_job_id") or item.get("id") or "").strip()
+        if not remote_job_id:
+            continue
+        tasks[remote_job_id] = {**item, "remote_job_id": remote_job_id}
+    return tasks
+
+
+def _save_pay153_remote_tasks(tasks: dict[str, dict[str, Any]]) -> None:
+    clean: dict[str, dict[str, Any]] = {}
+    for remote_job_id, item in (tasks or {}).items():
+        if not isinstance(item, dict):
+            continue
+        clean_remote = str(item.get("remote_job_id") or remote_job_id or "").strip()
+        if not clean_remote:
+            continue
+        clean[clean_remote] = {**item, "remote_job_id": clean_remote}
+    with PAY153_REMOTE_TASKS_LOCK:
+        _write_json(PAY153_REMOTE_TASKS_FILE, clean)
+
+
+def _persist_pay153_remote_task(job_id: str, child: dict[str, Any], client: Pay153Client | None = None) -> None:
+    if not isinstance(child, dict):
+        return
+    remote_job_id = str(child.get("remote_job_id") or "").strip()
+    if not remote_job_id:
+        return
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with PAY153_REMOTE_TASKS_LOCK:
+        tasks = _read_json(PAY153_REMOTE_TASKS_FILE, {})
+        tasks = tasks if isinstance(tasks, dict) else {}
+        previous = tasks.get(remote_job_id) if isinstance(tasks.get(remote_job_id), dict) else {}
+        cookies = client.cookie_snapshot() if isinstance(client, Pay153Client) else previous.get("cookies", [])
+        base_url = client.base_url if isinstance(client, Pay153Client) else previous.get("base_url", PAY153_API_BASE)
+        tasks[remote_job_id] = {
+            **previous,
+            "remote_job_id": remote_job_id,
+            "local_job_id": str(job_id or previous.get("local_job_id") or ""),
+            "email": str(child.get("email") or previous.get("email") or ""),
+            "country": str(child.get("country") or previous.get("country") or ""),
+            "ba_token": _pay153_normalize_ba_token(str(child.get("ba_token") or previous.get("ba_token") or "")),
+            "paypal_link": str(child.get("paypal_link") or previous.get("paypal_link") or ""),
+            "status": str(child.get("status") or previous.get("status") or "").strip().lower(),
+            "stage": str(child.get("stage") or previous.get("stage") or ""),
+            "error": str(child.get("error") or previous.get("error") or ""),
+            "base_url": str(base_url or PAY153_API_BASE),
+            "cookies": cookies,
+            "created_at": previous.get("created_at") or now,
+            "updated_at": now,
+        }
+        _write_json(PAY153_REMOTE_TASKS_FILE, tasks)
+
+
+def _mark_pay153_remote_task_status(remote_job_id: str, status: str, error: str = "") -> None:
+    clean_remote = str(remote_job_id or "").strip()
+    if not clean_remote:
+        return
+    with PAY153_REMOTE_TASKS_LOCK:
+        tasks = _read_json(PAY153_REMOTE_TASKS_FILE, {})
+        if not isinstance(tasks, dict):
+            return
+        item = tasks.get(clean_remote)
+        if not isinstance(item, dict):
+            return
+        item["status"] = str(status or "").strip().lower()
+        if error:
+            item["error"] = str(error)
+        item["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        tasks[clean_remote] = item
+        _write_json(PAY153_REMOTE_TASKS_FILE, tasks)
+
+
+def _mark_pay153_remote_task_error(remote_job_id: str, error: str) -> None:
+    clean_remote = str(remote_job_id or "").strip()
+    if not clean_remote:
+        return
+    with PAY153_REMOTE_TASKS_LOCK:
+        tasks = _read_json(PAY153_REMOTE_TASKS_FILE, {})
+        if not isinstance(tasks, dict):
+            return
+        item = tasks.get(clean_remote)
+        if not isinstance(item, dict):
+            return
+        item["error"] = str(error or "")
+        item["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        tasks[clean_remote] = item
+        _write_json(PAY153_REMOTE_TASKS_FILE, tasks)
+
+
+def _pay153_client_from_persisted_task(item: dict[str, Any]) -> Pay153Client:
+    return Pay153Client.from_cookie_snapshot(
+        item.get("cookies") if isinstance(item.get("cookies"), list) else [],
+        base_url=str(item.get("base_url") or PAY153_API_BASE),
+    )
+
+
+def _pay153_cancel_persisted_jobs_for_ba(ba_token_or_url: str, *, skip: set[str] | None = None) -> list[str]:
+    target = _pay153_normalize_ba_token(ba_token_or_url)
+    if not target:
+        return []
+    cancelled: list[str] = []
+    seen = set(skip or set())
+    persisted_candidates = [
+        item
+        for item in _load_pay153_remote_tasks().values()
+        if str(item.get("status") or "").strip().lower() not in PAY153_REMOTE_TERMINAL_STATUSES
+        and _pay153_job_matches_ba(item, target)
+    ]
+    for item in persisted_candidates:
+        remote_job_id = str(item.get("remote_job_id") or "").strip()
+        if not remote_job_id or remote_job_id in seen:
+            continue
+        persisted_client = _pay153_client_from_persisted_task(item)
+        try:
+            _pay153_cancel_job(remote_job_id, client=persisted_client)
+        except Exception as exc:
+            _mark_pay153_remote_task_error(remote_job_id, sanitize_protocol_log_text(str(exc)))
+            continue
+        cancelled.append(remote_job_id)
+        seen.add(remote_job_id)
+        _mark_pay153_remote_task_status(remote_job_id, "cancelled", "已按 BA 清理重启前远端卡住任务")
+    return cancelled
+
+
 def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Client | None = None) -> list[str]:
     target = _pay153_normalize_ba_token(ba_token_or_url)
     if not target:
@@ -1610,6 +1805,7 @@ def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Clie
     for local_job_id, remote_job_id, local_client in local_candidates:
         _pay153_cancel_job(remote_job_id, client=local_client)
         cancelled.append(remote_job_id)
+        _mark_pay153_remote_task_status(remote_job_id, "cancelled", "已按 BA 清理远端卡住任务")
         with JOBS_LOCK:
             local_job = JOBS.get(local_job_id)
             child = ((local_job or {}).get("children") or {}).get(remote_job_id) if isinstance(local_job, dict) else None
@@ -1619,7 +1815,14 @@ def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Clie
                 child["awaiting_otp"] = False
                 child["awaiting_captcha"] = False
 
-    data = _pay153_list_jobs(client=client)
+    cancelled.extend(_pay153_cancel_persisted_jobs_for_ba(target, skip=set(cancelled)))
+
+    try:
+        data = _pay153_list_jobs(client=client)
+    except Exception:
+        if cancelled:
+            return cancelled
+        raise
     jobs = data.get("jobs") if isinstance(data, dict) else []
     for remote_job in jobs if isinstance(jobs, list) else []:
         if not isinstance(remote_job, dict):
@@ -1634,6 +1837,7 @@ def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Clie
             continue
         _pay153_cancel_job(remote_job_id, client=client)
         cancelled.append(remote_job_id)
+        _mark_pay153_remote_task_status(remote_job_id, "cancelled", "已按 BA 清理远端卡住任务")
     return cancelled
 
 
@@ -1888,12 +2092,16 @@ def _pay153_child_snapshot(remote_job: dict[str, Any], *, email: str, country: s
 
 
 def _set_pay153_child(job_id: str, child: dict[str, Any]) -> None:
+    client = None
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
             return
         children = job.setdefault("children", {})
         children[child["remote_job_id"]] = child
+        clients = job.get("pay153_clients") if isinstance(job.get("pay153_clients"), dict) else {}
+        client = clients.get(str(child.get("remote_job_id") or ""))
+    _persist_pay153_remote_task(job_id, child, client if isinstance(client, Pay153Client) else None)
 
 
 def _set_pay153_child_client(job_id: str, remote_job_id: str, client: Pay153Client) -> None:
@@ -2021,6 +2229,12 @@ def _run_pay153_batch_account_once(
     running_status = _set_account_status(email, PAYPAL_STATUS_RUNNING, job_id=job_id)
     _set_job_account_status(job_id, email, running_status)
     _append_log(job_id, f"[{index}/{total}] 153支付开始：{email} country={country}")
+    try:
+        stale_cancelled = _pay153_cancel_persisted_jobs_for_ba(paypal_link)
+        if stale_cancelled:
+            _append_log(job_id, f"[{index}/{total}] 已预清理153重启前卡住任务：{email} remote={','.join(stale_cancelled)}")
+    except Exception as stale_cancel_exc:
+        _append_log(job_id, f"[{index}/{total}] 预清理153卡住任务失败：{email} {sanitize_protocol_log_text(str(stale_cancel_exc))}")
     otp_provider = None
     activation = None
     otp_marked_sent = False

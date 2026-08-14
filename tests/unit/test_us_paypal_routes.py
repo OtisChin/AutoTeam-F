@@ -26,6 +26,10 @@ def _endpoint(app, path, method):
 def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(us_paypal, "LINKS_FILE", tmp_path / "us_paypal_links.json")
     monkeypatch.setattr(us_paypal, "ACCOUNT_STATUS_FILE", tmp_path / "us_paypal_account_status.json")
+    monkeypatch.setattr(us_paypal, "PAY153_REMOTE_TASKS_FILE", tmp_path / "us_paypal_pay153_remote_tasks.json")
+    monkeypatch.setattr(us_paypal.account_store, "ACCOUNTS_FILE", tmp_path / "accounts.json")
+    monkeypatch.setattr(us_paypal.pix_routes, "AUTH_SESSION_DIR", tmp_path / "auth_session")
+    monkeypatch.setattr("autotoken.storage.auth_session_store.AUTH_SESSION_DIR", tmp_path / "auth_session")
     monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
     monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
     us_paypal.JOBS.clear()
@@ -1341,6 +1345,36 @@ def test_pay153_client_serializes_cookie_jar_access():
     assert lock_owned_during_open == [True]
 
 
+def test_pay153_client_cookie_snapshot_roundtrip():
+    client = us_paypal.Pay153Client(base_url="https://pay153.test/api")
+    cookie = us_paypal.http.cookiejar.Cookie(
+        version=0,
+        name="pay153_session",
+        value="session-abc",
+        port=None,
+        port_specified=False,
+        domain="pay.153.ink",
+        domain_specified=True,
+        domain_initial_dot=False,
+        path="/",
+        path_specified=True,
+        secure=True,
+        expires=None,
+        discard=True,
+        comment=None,
+        comment_url=None,
+        rest={"HttpOnly": None},
+        rfc2109=False,
+    )
+    client.cookie_jar.set_cookie(cookie)
+
+    restored = us_paypal.Pay153Client.from_cookie_snapshot(client.cookie_snapshot(), base_url=client.base_url)
+
+    assert [(item.name, item.value, item.domain, item.path, item.secure) for item in restored.cookie_jar] == [
+        ("pay153_session", "session-abc", "pay.153.ink", "/", True)
+    ]
+
+
 def test_pay153_snapshot_hides_client_and_remote_sensitive_fields():
     job_id = "p153-sensitive"
     us_paypal.JOBS[job_id] = {
@@ -1549,6 +1583,150 @@ def test_pay153_cancel_existing_jobs_for_ba_uses_local_child_session(monkeypatch
     assert result == ["remote-local"]
     assert cancelled == [("remote-local", client)]
     assert us_paypal.JOBS["old-job"]["children"]["remote-local"]["status"] == "cancelled"
+
+
+def test_pay153_cancel_existing_jobs_for_ba_returns_local_cancel_when_remote_list_fails(monkeypatch):
+    client = object()
+    us_paypal.JOBS["old-job"] = {
+        "id": "old-job",
+        "kind": "paypal_153_payment",
+        "status": "running",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1.0,
+        "finished_at": None,
+        "children": {
+            "remote-local": {"remote_job_id": "remote-local", "status": "running", "ba_token": "BA-4PL91052NS685551N"}
+        },
+        "pay153_clients": {"remote-local": client},
+    }
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_job", lambda remote_job_id, client=None: {"job": {"id": remote_job_id, "status": "cancelled"}})
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: (_ for _ in ()).throw(RuntimeError("list unavailable")))
+
+    assert us_paypal._pay153_cancel_existing_jobs_for_ba("BA-4PL91052NS685551N") == ["remote-local"]
+
+
+def test_pay153_child_persists_remote_task_index_with_session():
+    client = us_paypal.Pay153Client(base_url="https://pay153.test/api")
+    client.cookie_jar.set_cookie(us_paypal.http.cookiejar.Cookie(
+        version=0,
+        name="pay153_session",
+        value="session-abc",
+        port=None,
+        port_specified=False,
+        domain="pay.153.ink",
+        domain_specified=True,
+        domain_initial_dot=False,
+        path="/",
+        path_specified=True,
+        secure=True,
+        expires=None,
+        discard=True,
+        comment=None,
+        comment_url=None,
+        rest={},
+        rfc2109=False,
+    ))
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    us_paypal._set_pay153_child_client(job_id, "remote-persist", client)
+
+    us_paypal._set_pay153_child(job_id, {
+        "email": "gb@example.com",
+        "remote_job_id": "remote-persist",
+        "country": "GB",
+        "ba_token": "BA-PERSIST",
+        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-PERSIST",
+        "status": "running",
+    })
+
+    tasks = json.loads(us_paypal.PAY153_REMOTE_TASKS_FILE.read_text(encoding="utf-8"))
+    assert tasks["remote-persist"]["ba_token"] == "BA-PERSIST"
+    assert tasks["remote-persist"]["local_job_id"] == job_id
+    assert tasks["remote-persist"]["cookies"][0]["name"] == "pay153_session"
+    assert tasks["remote-persist"]["cookies"][0]["value"] == "session-abc"
+
+
+def test_pay153_cancel_existing_jobs_for_ba_uses_persisted_remote_task_after_restart(monkeypatch):
+    us_paypal._save_pay153_remote_tasks({
+        "remote-old": {
+            "remote_job_id": "remote-old",
+            "local_job_id": "p153-before-restart",
+            "email": "gb@example.com",
+            "country": "GB",
+            "ba_token": "BA-4PL91052NS685551N",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-4PL91052NS685551N",
+            "status": "running",
+            "base_url": "https://pay153.test/api",
+            "cookies": [
+                {
+                    "version": 0,
+                    "name": "pay153_session",
+                    "value": "session-abc",
+                    "port": None,
+                    "port_specified": False,
+                    "domain": "pay.153.ink",
+                    "domain_specified": True,
+                    "domain_initial_dot": False,
+                    "path": "/",
+                    "path_specified": True,
+                    "secure": True,
+                    "expires": None,
+                    "discard": True,
+                    "comment": None,
+                    "comment_url": None,
+                    "rest": {},
+                    "rfc2109": False,
+                }
+            ],
+        }
+    })
+    us_paypal.JOBS.clear()
+    cancelled = []
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {"jobs": []})
+
+    def fake_cancel(remote_job_id, client=None):
+        cancelled.append((remote_job_id, [cookie.value for cookie in client.cookie_jar]))
+        return {"job": {"id": remote_job_id, "status": "cancelled"}}
+
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_job", fake_cancel)
+
+    assert us_paypal._pay153_cancel_existing_jobs_for_ba("BA-4PL91052NS685551N") == ["remote-old"]
+    assert cancelled == [("remote-old", ["session-abc"])]
+    assert us_paypal._load_pay153_remote_tasks()["remote-old"]["status"] == "cancelled"
+
+
+def test_pay153_cancel_existing_jobs_for_ba_skips_failed_persisted_cancel_and_continues(monkeypatch):
+    us_paypal._save_pay153_remote_tasks({
+        "remote-bad": {
+            "remote_job_id": "remote-bad",
+            "ba_token": "BA-4PL91052NS685551N",
+            "status": "running",
+            "base_url": "https://pay153.test/api",
+            "cookies": [],
+        },
+        "remote-good": {
+            "remote_job_id": "remote-good",
+            "ba_token": "BA-4PL91052NS685551N",
+            "status": "running",
+            "base_url": "https://pay153.test/api",
+            "cookies": [],
+        },
+    })
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {"jobs": []})
+
+    def fake_cancel(remote_job_id, client=None):
+        if remote_job_id == "remote-bad":
+            raise RuntimeError("session expired")
+        return {"job": {"id": remote_job_id, "status": "cancelled"}}
+
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_job", fake_cancel)
+
+    assert us_paypal._pay153_cancel_existing_jobs_for_ba("BA-4PL91052NS685551N") == ["remote-good"]
+    tasks = us_paypal._load_pay153_remote_tasks()
+    assert tasks["remote-bad"]["status"] == "running"
+    assert tasks["remote-bad"]["error"] == "session expired"
+    assert tasks["remote-good"]["status"] == "cancelled"
 
 
 def test_pay153_already_processing_retries_after_cancelled_stale_remote(monkeypatch):

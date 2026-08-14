@@ -338,6 +338,36 @@ def test_smsbower_activation_store_serializes_concurrent_saves(tmp_path, monkeyp
     assert json.loads((tmp_path / "sms-cache.json").read_text(encoding="utf-8"))["activations"]
 
 
+def test_smsbower_activation_store_retries_transient_replace_permission_error(tmp_path, monkeypatch):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    store = smsbower.SMSBowerActivationStore(tmp_path / "sms-cache.json")
+    original_replace = smsbower.Path.replace
+    attempts = 0
+
+    def flaky_replace(path, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("[WinError 5] 拒绝访问")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(smsbower.Path, "replace", flaky_replace)
+
+    store.save({"activations": [{"activation_id": "act-retry"}], "provider_failures": {}})
+
+    assert attempts == 2
+    assert json.loads((tmp_path / "sms-cache.json").read_text(encoding="utf-8"))["activations"][0]["activation_id"] == "act-retry"
+
+
 def test_sms_activate_provider_timeout_switches_number(tmp_path):
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
