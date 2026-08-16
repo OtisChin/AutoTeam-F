@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 from autotoken.services import paypal_protocol_local as service
 
 
 def test_protocol_internal_base_defaults_to_autoteam_api_port(monkeypatch):
     monkeypatch.delenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", raising=False)
+    monkeypatch.delenv("AUTOTOKEN_LOCAL_BASE_URL", raising=False)
     monkeypatch.delenv("AUTOTEAM_API_BASE_URL", raising=False)
     monkeypatch.delenv("AUTOTOKEN_API_BASE_URL", raising=False)
     monkeypatch.delenv("AUTOTEAM_API_PORT", raising=False)
@@ -14,10 +18,41 @@ def test_protocol_internal_base_defaults_to_autoteam_api_port(monkeypatch):
     assert service._protocol_internal_base_url() == "http://127.0.0.1:8799"
 
 
+def test_protocol_internal_base_uses_started_api_base(monkeypatch):
+    monkeypatch.delenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", raising=False)
+    monkeypatch.delenv("AUTOTEAM_API_BASE_URL", raising=False)
+    monkeypatch.delenv("AUTOTOKEN_API_BASE_URL", raising=False)
+    monkeypatch.setenv("AUTOTOKEN_LOCAL_BASE_URL", "http://127.0.0.1:8787/")
+
+    assert service._protocol_internal_base_url() == "http://127.0.0.1:8787"
+
+
 def test_protocol_internal_base_respects_explicit_env(monkeypatch):
     monkeypatch.setenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", "http://127.0.0.1:18096/")
 
     assert service._protocol_internal_base_url() == "http://127.0.0.1:18096"
+
+
+def test_load_engine_web_module_ignores_foreign_top_level_config(monkeypatch, tmp_path):
+    wrong_config = ModuleType("config")
+    wrong_config.__file__ = str(tmp_path / "foreign" / "config.py")
+    wrong_config.Config = object
+    monkeypatch.setitem(sys.modules, "config", wrong_config)
+    monkeypatch.setattr(service, "_WEB_MODULE", None)
+    monkeypatch.setattr(service, "_WEB_MODULE_ROOT", None)
+
+    (tmp_path / "config.py").write_text('USER_AGENT = "paypal-engine-ua"\n', encoding="utf-8")
+    (tmp_path / "web.py").write_text(
+        "from config import USER_AGENT\n"
+        "def create_job(**kwargs):\n"
+        "    return {'ua': USER_AGENT, 'kwargs': kwargs}\n",
+        encoding="utf-8",
+    )
+
+    module = service._load_engine_web_module(tmp_path)
+
+    assert module.create_job()["ua"] == "paypal-engine-ua"
+    assert sys.modules["config"] is wrong_config
 
 
 def test_protocol_runner_drives_vendored_web_job_and_submits_sms_record_otp(monkeypatch, tmp_path):
@@ -229,6 +264,75 @@ def test_protocol_runner_submits_new_provider_phone_when_paypal_requests_phone_r
     assert result["status"] == "success"
     assert reserved == ["+66800000001", "+66800000002"]
     assert submitted == ["+66800000002", "654321"]
+
+
+def test_protocol_runner_cancels_job_when_new_phone_reserve_fails(monkeypatch, tmp_path):
+    cancelled: list[bool] = []
+    reserved: list[str] = []
+
+    class FakeActivation:
+        phone_number = "+66800000001"
+        activation_id = "act-1"
+
+    class FakeProvider:
+        def reserve_number(self):
+            if not reserved:
+                reserved.append("+66800000001")
+                return FakeActivation()
+            raise RuntimeError("hero_sms could not reserve PayPal number: NO_NUMBERS")
+
+        def abandon(self, activation, reason):
+            return None
+
+        def register_confirmation_result(self, activation, confirmed):
+            return None
+
+    class FakeJob:
+        id = "new-phone-no-numbers-job"
+        status = "awaiting_otp"
+        stage = "Waiting for SMS code / new phone"
+        result = None
+
+        def to_dict(self, *, include_logs=True, log_offset=0):
+            return {
+                "id": self.id,
+                "status": self.status,
+                "stage": self.stage,
+                "awaiting_otp": True,
+                "awaiting_prompt": "发送验证码失败。请输入新的手机号重新发送（如 +66812345678）；输入 q 退出。",
+                "awaiting_captcha": False,
+                "logs": [],
+                "result": self.result,
+                "error": "",
+            }
+
+        def submit_input(self, value: str) -> None:
+            raise AssertionError("new phone reserve failed; no input should be submitted")
+
+        def cancel(self) -> None:
+            cancelled.append(True)
+            self.status = "cancelled"
+
+    class FakeWeb:
+        def create_job(self, **kwargs):
+            return FakeJob()
+
+    monkeypatch.setattr(service, "_engine_root", lambda: tmp_path)
+    monkeypatch.setattr(service, "_load_engine_web_module", lambda root: FakeWeb(), raising=False)
+    monkeypatch.setattr(service, "_build_protocol_sms_provider", lambda cfg, engine_root: FakeProvider())
+
+    cfg = service.PaypalProtocolRunConfig(
+        ba_token="BA-91G197898H813770D",
+        sms_provider="hero_sms",
+        country="TH",
+        timeout_seconds=60,
+    )
+
+    result = service.run_paypal_protocol_payment(cfg, log=lambda _line: None)
+
+    assert result["status"] == "failed"
+    assert "NO_NUMBERS" in result["message"]
+    assert cancelled == [True]
 
 
 def test_protocol_runner_fails_sms_record_when_paypal_requests_phone_retry(monkeypatch, tmp_path):

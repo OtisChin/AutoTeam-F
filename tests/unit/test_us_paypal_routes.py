@@ -905,6 +905,34 @@ def test_protocol_batch_start_rejects_rent_payment_when_phone_count_is_short():
     assert "每个账号" in exc.value.detail["message"]
 
 
+def test_protocol_batch_job_records_worker_exception_without_failing_whole_batch(monkeypatch):
+    monkeypatch.setattr(us_paypal, "_validate_protocol_batch_start", lambda req: [
+        {
+            "email": "a@example.com",
+            "ba_token": "BA-91G197898H813770D",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-91G197898H813770D",
+            "country": "TH",
+        },
+    ])
+    monkeypatch.setattr(us_paypal, "_run_protocol_batch_account", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("[WinError 32] cache busy")))
+
+    job_id = us_paypal._new_protocol_batch_job(["a@example.com"], concurrency=1)
+    req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "accountEmails": ["a@example.com"],
+        "smsProvider": "hero_sms",
+        "proxies": "proxy-one",
+    })
+
+    us_paypal._run_protocol_batch_payment_job(job_id, req)
+
+    job = us_paypal.JOBS[job_id]
+    assert job["status"] == "error"
+    assert job["error"] == "全部账号支付失败"
+    assert job["result"]["errors"][0]["email"] == "a@example.com"
+    assert "[WinError 32] cache busy" in job["result"]["errors"][0]["error"]
+    assert job["completed"] == 1
+
+
 def test_pay153_batch_job_assigns_account_link_phone_country_and_proxy(monkeypatch):
     us_paypal.LINKS_FILE.write_text(
         json.dumps(

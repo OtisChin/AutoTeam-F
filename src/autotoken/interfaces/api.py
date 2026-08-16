@@ -7982,9 +7982,13 @@ def start_server(host: str = "0.0.0.0", port: int = 8787, build: bool = False):
             raise RuntimeError("前端编译失败")
         logger.info("[API] 前端编译完成")
 
+    local_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    local_server_base = f"http://{local_host}:{port}"
     if not os.environ.get("AUTOTOKEN_LOCAL_BASE_URL"):
-        local_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-        os.environ["AUTOTOKEN_LOCAL_BASE_URL"] = f"http://{local_host}:{port}"
+        os.environ["AUTOTOKEN_LOCAL_BASE_URL"] = local_server_base
+    os.environ.setdefault("AUTOTEAM_API_BASE_URL", local_server_base)
+    os.environ.setdefault("AUTOTOKEN_API_BASE_URL", local_server_base)
+    os.environ.setdefault("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", local_server_base)
 
     # 过滤轮询日志，避免刷屏
     logging.getLogger("uvicorn.access").addFilter(_QuietAccessLog())

@@ -89,7 +89,8 @@ def test_post_add_batch_deduplicates_and_validates_domains(monkeypatch):
     assert exc_info.value.detail == "域名 @missing.com 不在可选列表中"
 
 
-def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch):
+@pytest.mark.parametrize("country", ["BR", "TH", "TR", "KR"])
+def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch, country):
     started = []
     proxy_selector_calls = []
     monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
@@ -99,13 +100,13 @@ def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch):
 
     routes = _routes(started, proxy_selector_calls=proxy_selector_calls)
     result = routes["post_add"](
-        ManualRegisterParams(proxy_api_provider="cliproxy", proxy_api_country="us")
+        ManualRegisterParams(proxy_api_provider="cliproxy", proxy_api_country=country.lower())
     )
 
     assert result["params"]["proxy_api_provider"] == "cliproxy"
-    assert result["params"]["proxy_api_country"] == "US"
+    assert result["params"]["proxy_api_country"] == country
     assert proxy_selector_calls[0]["proxy_api_provider"] == "cliproxy"
-    assert proxy_selector_calls[0]["proxy_api_country"] == "US"
+    assert proxy_selector_calls[0]["proxy_api_country"] == country
 
 
 def test_post_add_passes_use_roxybrowser_to_register_worker(monkeypatch):

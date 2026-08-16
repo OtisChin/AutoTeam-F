@@ -1549,12 +1549,24 @@ def _run_protocol_batch_payment_job(job_id: str, req: UsPaypalProtocolBatchStart
 
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [
-                executor.submit(_run_protocol_batch_account, job_id, req, task, index, len(tasks), proxies, phones, record_urls, sms_record_pool, sms_record_pool_lock)
+            futures = {
+                executor.submit(_run_protocol_batch_account, job_id, req, task, index, len(tasks), proxies, phones, record_urls, sms_record_pool, sms_record_pool_lock): task
                 for index, task in enumerate(tasks, start=1)
-            ]
+            }
             for future in as_completed(futures):
-                item = future.result()
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    task = futures.get(future) or {}
+                    email = str(task.get("email") or "")
+                    error = sanitize_protocol_log_text(str(exc))
+                    _append_log(job_id, f"协议支付账号任务异常：{email} {error}")
+                    item = {
+                        "ok": False,
+                        "email": email,
+                        "error": {"email": email, "error": error},
+                        "status": _set_account_status(email, PAYPAL_STATUS_FAILED, error=error, job_id=job_id) if email else {},
+                    }
                 email = str(item.get("email") or "")
                 if item.get("skipped"):
                     skipped.append({"email": email, "reason": item.get("reason") or "任务已取消"})

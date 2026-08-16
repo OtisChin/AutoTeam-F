@@ -26,6 +26,10 @@ assert.match(page, /if\s*\(newId\)\s*\{[\s\S]*?loadRegisterLogs\(\)[\s\S]*?loadR
 assert.doesNotMatch(page, /mailProviderWatchReady\s*=\s*true[\s\S]{0,120}loadOutlookPoolStatus\(\)/, 'register page does not automatically load account pool on entry')
 assert.match(page, /api\.getRoxyBrowserWorkspaces\(\)/, 'register page preflights RoxyBrowser before submitting RoxyBrowser registration')
 assert.match(page, /RoxyBrowser 未连接/, 'register page shows a friendly RoxyBrowser unavailable message')
+assert.match(page, /country:\s*'BR'[\s\S]*?label:\s*'巴西（BRL）'/, 'register proxy country list includes Brazil')
+assert.match(page, /country:\s*'TH'[\s\S]*?label:\s*'泰国（THB）'/, 'register proxy country list includes Thailand')
+assert.match(page, /country:\s*'TR'[\s\S]*?label:\s*'土耳其（TRY）'/, 'register proxy country list includes Turkey')
+assert.match(page, /country:\s*'KR'[\s\S]*?label:\s*'韩国（KRW）'/, 'register proxy country list includes Korea')
 assert.match(
   page,
   /watch\(\s*\(\)\s*=>\s*registerForm\.value\.mailProvider[\s\S]*?loadOutlookPoolStatus\(\)/,

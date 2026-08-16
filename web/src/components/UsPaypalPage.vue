@@ -525,8 +525,8 @@
               <div class="grid gap-4 md:grid-cols-2">
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发支付数</span>
-                  <input v-model.number="protocolForm.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
-                  <span class="mt-1 block text-xs text-gray-500">多选账号时生效，默认 1，最高 10。</span>
+                  <input v-model.number="protocolForm.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">多选账号时生效，默认 1，最高 20。</span>
                 </label>
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">代理预检次数</span>
@@ -888,6 +888,7 @@ const paypalCountryOptions = [
   { value: 'ID', label: 'ID · 印度尼西亚' },
   { value: 'VN', label: 'VN · 越南' },
   { value: 'TH', label: 'TH · 泰国' },
+  { value: 'TR', label: 'TR · 土耳其' },
   { value: 'DE', label: 'DE · 德国' },
   { value: 'FR', label: 'FR · 法国' },
   { value: 'IT', label: 'IT · 意大利' },
@@ -2149,7 +2150,7 @@ function validateProtocolPayment(targetEmails = protocolSelectedEmails.value) {
     if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写 HeroSMS 长效号码。', true); return false }
     if (batchCount > 1 && phoneCount < batchCount) { setProtocolStatus('HeroSMS 长效号批量支付时，每个账号都需要一行长效号码。', true); return false }
   }
-  protocolForm.value.concurrency = Math.max(1, Math.min(10, Number(protocolForm.value.concurrency || 1)))
+  protocolForm.value.concurrency = Math.max(1, Math.min(20, Number(protocolForm.value.concurrency || 1)))
   protocolForm.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(protocolForm.value.proxyPreflightAttempts || 5)))
   protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
   protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
@@ -2564,7 +2565,7 @@ onMounted(async () => {
       const urls = splitProtocolLines(protocolForm.value.smsRecordUrl)
       protocolForm.value.phonePool = phones.map((phone, index) => urls[index] ? `${phone}----${urls[index]}` : '').filter(Boolean).join('\n')
     }
-    protocolForm.value.concurrency = Math.max(1, Math.min(10, Number(protocolForm.value.concurrency || 1)))
+    protocolForm.value.concurrency = Math.max(1, Math.min(20, Number(protocolForm.value.concurrency || 1)))
     protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
     protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
     protocolForm.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(protocolForm.value.proxyPreflightAttempts || 5)))

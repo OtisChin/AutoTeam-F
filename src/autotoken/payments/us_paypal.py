@@ -154,6 +154,7 @@ PAYPAL_COUNTRY_CURRENCIES = {
     "VN": "VND",
     "TH": "THB",
     "PH": "PHP",
+    "TR": "TRY",
     "DE": "EUR",
     "FR": "EUR",
     "IT": "EUR",
@@ -182,6 +183,7 @@ PAYPAL_COUNTRY_BILLING_PRESETS = {
     "VN": ("Minh Nguyen", "1 Dong Khoi", "Ho Chi Minh City", "", "700000"),
     "TH": ("Niran Chai", "1 Sukhumvit Road", "Bangkok", "", "10110"),
     "PH": ("Miguel Santos", "120 Makati Avenue", "Makati", "Metro Manila", "1210"),
+    "TR": ("Ahmet Yilmaz", "Istiklal Caddesi 1", "Istanbul", "", "34433"),
     "DE": ("Lukas Weber", "Unter den Linden 1", "Berlin", "", "10117"),
     "FR": ("Emma Martin", "10 Rue de Rivoli", "Paris", "", "75004"),
     "IT": ("Marco Rossi", "Via del Corso 1", "Rome", "", "00186"),
@@ -199,7 +201,18 @@ PAYPAL_COUNTRY_BILLING_ALIASES = {
     "BA": "DE",
     "BR": "DE",
     "ID": "DE",
+    "JP": "DE",
     "TH": "DE",
+    "TR": "DE",
+}
+
+PAYPAL_CHECKOUT_BILLING_ALIASES = {
+    "BA": "DE",
+    "BR": "DE",
+    "ID": "DE",
+    "JP": "DE",
+    "TH": "DE",
+    "TR": "DE",
 }
 
 
@@ -452,6 +465,15 @@ def paypal_currency_for_country(country: str) -> str:
     country_code = normalize_paypal_country(country)
     billing_country = PAYPAL_COUNTRY_BILLING_ALIASES.get(country_code, country_code)
     return PAYPAL_COUNTRY_CURRENCIES.get(billing_country, "USD")
+
+
+def paypal_checkout_billing_details_for_country(country: str) -> dict[str, str]:
+    country_code = normalize_paypal_country(country)
+    checkout_country = PAYPAL_CHECKOUT_BILLING_ALIASES.get(country_code, country_code)
+    return {
+        "country": checkout_country,
+        "currency": PAYPAL_COUNTRY_CURRENCIES.get(checkout_country, "USD"),
+    }
 
 
 def paypal_billing(account_email: str = "", country: str = "US") -> dict[str, str]:
@@ -1603,7 +1625,9 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
     promo_region = normalize_paypal_country(cfg.promo_region, "JP")
     billing = paypal_billing(country=checkout_region)
     checkout_billing_country = billing.get("country") or checkout_region
-    checkout_currency = paypal_currency_for_country(checkout_region)
+    checkout_billing_details = paypal_checkout_billing_details_for_country(checkout_region)
+    checkout_create_country = checkout_billing_details["country"]
+    checkout_currency = checkout_billing_details["currency"]
     state_text = f"-{billing.get('state')}" if billing.get("state") else ""
     log(f"账单: {billing['name']} / {billing['city']}{state_text} / {billing['postal_code']} / {billing['country']}")
 
@@ -1613,11 +1637,11 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         p1 = chain1.url
         cg = build_chatgpt_session(token, p1, device_id)
-        warm_chatgpt_checkout_context(cg, checkout_region, log)
+        warm_chatgpt_checkout_context(cg, checkout_create_country, log)
         checkout_body: dict[str, Any] = {
             "entry_point": "all_plans_pricing_modal",
             "plan_name": "chatgptplusplan",
-            "billing_details": {"country": checkout_billing_country, "currency": checkout_currency},
+            "billing_details": {"country": checkout_create_country, "currency": checkout_currency},
             "checkout_ui_mode": "custom",
         }
         if front_promo_for_oaics:

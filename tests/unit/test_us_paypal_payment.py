@@ -92,10 +92,11 @@ def test_create_express_billing_agreement_returns_ba_url():
         ("CA", "CAD", "CA"),
         ("GB", "GBP", "GB"),
         ("ID", "EUR", "DE"),
-        ("JP", "JPY", "JP"),
+        ("JP", "EUR", "DE"),
         ("MX", "MXN", "MX"),
         ("PH", "PHP", "PH"),
         ("TH", "EUR", "DE"),
+        ("TR", "EUR", "DE"),
         ("NL", "EUR", "NL"),
     ],
 )
@@ -702,6 +703,68 @@ def test_thailand_checkout_country_uses_germany_billing_profile():
     assert billing["country"] == "DE"
     assert billing["city"] == "Berlin"
     assert billing["postal_code"] == "10117"
+
+
+def test_japan_checkout_country_uses_germany_billing_profile():
+    billing = us_paypal.paypal_billing(country="JP")
+
+    assert us_paypal.paypal_currency_for_country("JP") == "EUR"
+    assert billing["country"] == "DE"
+    assert billing["city"] == "Berlin"
+    assert billing["postal_code"] == "10117"
+
+
+def test_turkey_checkout_country_uses_germany_billing_profile():
+    billing = us_paypal.paypal_billing(country="TR")
+
+    assert us_paypal.paypal_currency_for_country("TR") == "EUR"
+    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "DE", "currency": "EUR"}
+    assert billing["country"] == "DE"
+    assert billing["city"] == "Berlin"
+    assert billing["postal_code"] == "10117"
+
+
+def test_japan_create_checkout_uses_germany_context_and_billing_to_keep_paypal_available(monkeypatch):
+    calls = []
+    warmup_countries = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            calls.append(("chatgpt_post", url, kwargs.get("json")))
+            return _JsonResponse({
+                "checkout_session_id": "cs_jp_test",
+                "processor_entity": "openai_llc",
+                "public_key": "pk_test",
+            })
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda session, country, log=None: warmup_countries.append(country))
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: {
+        "total_summary": {"due": 0},
+        "payment_method_types": ["card", "paypal"],
+    })
+    monkeypatch.setattr(us_paypal, "stripe_update_tax_region", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-JPDE",
+    })
+
+    result = us_paypal.generate_paypal_trial(
+        us_paypal.PaypalJobConfig(
+            access_token="token",
+            direct_proxies=["proxy"],
+            region="JP",
+            promo_region="JP",
+            apply_promo=False,
+        )
+    )
+
+    checkout_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout"))
+    assert warmup_countries == ["DE"]
+    assert checkout_payload["billing_details"] == {"country": "DE", "currency": "EUR"}
+    assert result["fields"]["billing"]["country"] == "DE"
+    assert result["fields"]["billing"]["city"] == "Berlin"
 
 
 def test_build_paypal_dynamic_proxy_aligns_711_region_to_us():

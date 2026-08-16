@@ -451,6 +451,9 @@ def test_start_server_sets_local_base_url_from_requested_port(monkeypatch):
     captured = {}
 
     monkeypatch.delenv("AUTOTOKEN_LOCAL_BASE_URL", raising=False)
+    monkeypatch.delenv("AUTOTEAM_API_BASE_URL", raising=False)
+    monkeypatch.delenv("AUTOTOKEN_API_BASE_URL", raising=False)
+    monkeypatch.delenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", raising=False)
     monkeypatch.setattr("autotoken.setup_wizard.check_and_setup", lambda interactive: None)
     monkeypatch.setattr(
         "uvicorn.run",
@@ -462,18 +465,27 @@ def test_start_server_sets_local_base_url_from_requested_port(monkeypatch):
     api.start_server(host="0.0.0.0", port=8899)
 
     assert os.environ["AUTOTOKEN_LOCAL_BASE_URL"] == "http://127.0.0.1:8899"
+    assert os.environ["AUTOTEAM_API_BASE_URL"] == "http://127.0.0.1:8899"
+    assert os.environ["AUTOTOKEN_API_BASE_URL"] == "http://127.0.0.1:8899"
+    assert os.environ["PAYPAL_PROTOCOL_INTERNAL_BASE_URL"] == "http://127.0.0.1:8899"
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 8899
 
 
 def test_start_server_keeps_explicit_local_base_url(monkeypatch):
     monkeypatch.setenv("AUTOTOKEN_LOCAL_BASE_URL", "https://public.example.com")
+    monkeypatch.setenv("AUTOTEAM_API_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("AUTOTOKEN_API_BASE_URL", "https://legacy-api.example.com")
+    monkeypatch.setenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL", "http://127.0.0.1:18096")
     monkeypatch.setattr("autotoken.setup_wizard.check_and_setup", lambda interactive: None)
     monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
 
     api.start_server(host="127.0.0.1", port=8899)
 
     assert os.environ["AUTOTOKEN_LOCAL_BASE_URL"] == "https://public.example.com"
+    assert os.environ["AUTOTEAM_API_BASE_URL"] == "https://api.example.com"
+    assert os.environ["AUTOTOKEN_API_BASE_URL"] == "https://legacy-api.example.com"
+    assert os.environ["PAYPAL_PROTOCOL_INTERNAL_BASE_URL"] == "http://127.0.0.1:18096"
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT"])

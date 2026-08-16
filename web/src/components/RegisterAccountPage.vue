@@ -1359,11 +1359,21 @@ const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.val
 function normalizeRegisterProxyCountry(value) {
   return String(value || 'JP').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2) || 'JP'
 }
+const registerProxyExtraCountryOptions = [
+  { country: 'BR', currency: 'BRL', label: '巴西（BRL）' },
+  { country: 'TH', currency: 'THB', label: '泰国（THB）' },
+  { country: 'TR', currency: 'TRY', label: '土耳其（TRY）' },
+  { country: 'KR', currency: 'KRW', label: '韩国（KRW）' },
+]
 const registerProxyCountryOptions = computed(() => {
-  const options = [
-    ...bindCountryOptions,
-    { country: 'BR', currency: 'BRL', label: '巴西（BRL）' },
-  ]
+  const options = []
+  const seen = new Set()
+  for (const option of [...bindCountryOptions, ...registerProxyExtraCountryOptions]) {
+    const country = normalizeRegisterProxyCountry(option.country)
+    if (!country || seen.has(country)) continue
+    seen.add(country)
+    options.push({ ...option, country })
+  }
   const selected = normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)
   if (!options.some(option => option.country === selected)) {
     options.push({ country: selected, currency: '', label: `${selected}` })

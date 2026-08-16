@@ -517,7 +517,12 @@ def _protocol_internal_base_url() -> str:
     ).strip()
     if explicit:
         return explicit.rstrip("/")
-    api_base = str(os.getenv("AUTOTEAM_API_BASE_URL") or os.getenv("AUTOTOKEN_API_BASE_URL") or "").strip()
+    api_base = str(
+        os.getenv("AUTOTEAM_API_BASE_URL")
+        or os.getenv("AUTOTOKEN_API_BASE_URL")
+        or os.getenv("AUTOTOKEN_LOCAL_BASE_URL")
+        or ""
+    ).strip()
     if api_base:
         return api_base.rstrip("/")
     port = str(os.getenv("AUTOTEAM_API_PORT") or os.getenv("AUTOTOKEN_API_PORT") or os.getenv("API_PORT") or "8799").strip()
@@ -549,8 +554,22 @@ def _load_engine_web_module(root: Path) -> ModuleType:
         if spec is None or spec.loader is None:
             raise RuntimeError(f"无法加载本地 PayPal 协议引擎: {web_py}")
         module = importlib.util.module_from_spec(spec)
-        sys.modules[WEB_MODULE_NAME] = module
-        spec.loader.exec_module(module)
+        previous_config_module = sys.modules.get("config")
+        try:
+            # The vendored PayPal engine uses legacy top-level imports such as
+            # `from config import USER_AGENT`.  The main application also has
+            # another protocol component with a top-level `config.py`; when
+            # that component has already been imported, Python may otherwise
+            # reuse the wrong sys.modules["config"] and fail before the PayPal
+            # engine starts.
+            sys.modules.pop("config", None)
+            sys.modules[WEB_MODULE_NAME] = module
+            spec.loader.exec_module(module)
+        finally:
+            if previous_config_module is not None:
+                sys.modules["config"] = previous_config_module
+            else:
+                sys.modules.pop("config", None)
         try:
             setattr(module, "PAYPAL_PROTOCOL_INTERNAL_BASE", str(os.getenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL") or internal_base).rstrip("/"))
         except Exception:
@@ -832,7 +851,24 @@ def _run_paypal_protocol_web_payment(
                             "message": "PayPal 要求换号，但 sms_record 固定号码无法自动换号",
                         }
                     _abandon_otp_activation(otp_provider, activation, "paypal_requested_new_phone")
-                    activation = otp_provider.reserve_number() if otp_provider is not None and hasattr(otp_provider, "reserve_number") else None
+                    try:
+                        activation = otp_provider.reserve_number() if otp_provider is not None and hasattr(otp_provider, "reserve_number") else None
+                    except Exception as exc:
+                        try:
+                            job.cancel()
+                        except Exception:
+                            pass
+                        return {
+                            "status": "failed",
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "ba_token": sanitize_log_text(ba_token),
+                            "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
+                            "country": country,
+                            "engine": "paypal-protocol",
+                            "engine_root": str(root),
+                            "protocol_result": sanitize_result(last_snapshot.get("result") or {}),
+                            "message": sanitize_log_text(str(exc)),
+                        }
                     phone = str(getattr(activation, "phone_number", None) or "").strip()
                     if not phone:
                         try:
