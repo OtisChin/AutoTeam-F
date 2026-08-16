@@ -9,6 +9,8 @@ const page = readFileSync(resolve(webRoot, 'src/components/UsPaypalPage.vue'), '
 
 assert.match(page, /\{\s*value:\s*'BA',\s*label:\s*'BA · 波黑'\s*\}/, 'PayPal 提链目标国家下拉支持 BA 波黑')
 assert.match(page, /const promoRegionOptions = \[[\s\S]*\{\s*value:\s*'TH',\s*label:\s*'TH · 泰国'\s*\}/, 'PayPal 提链优惠区支持 TH 泰国')
+assert.match(page, /const promoRegionOptions = \[[\s\S]*\{\s*value:\s*'GB',\s*label:\s*'GB · 英国'\s*\}/, 'PayPal 提链优惠区支持 GB 英国')
+assert.match(page, /const promoRegionOptions = \[[\s\S]*\{\s*value:\s*'US',\s*label:\s*'US · 美国'\s*\}/, 'PayPal 提链优惠区支持 US 美国')
 assert.match(page, /persistLinkJobState/, '提链页会持久化任务状态、日志和结果快照')
 assert.match(page, /restoreLinkJobState/, '提链页刷新页面后会恢复任务状态、日志和结果快照')
 assert.match(page, /resumeLinkJobStateFromStorage/, '切回提链页会从本地快照恢复任务状态和日志')

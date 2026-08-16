@@ -211,6 +211,81 @@ def test_wait_for_direct_step_change_dismisses_passkey_then_returns_next_step(mo
     assert sleeps == [0.5]
 
 
+def test_submit_direct_code_waits_and_retries_until_step_advances(monkeypatch):
+    class FakeAnchor:
+        def __init__(self):
+            self.enter_presses = 0
+
+        def press(self, key):
+            assert key == "Enter"
+            self.enter_presses += 1
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+    page = FakePage()
+    anchor = FakeAnchor()
+    clicks = []
+    waited_steps = iter(["code", "password"])
+
+    monkeypatch.setattr(manager, "_wait_for_direct_step_change", lambda _page, _current, timeout=15: next(waited_steps))
+    monkeypatch.setattr(manager, "_click_primary_auth_button", lambda _page, _anchor, _labels: clicks.append(_labels) or False)
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+
+    assert manager._submit_direct_code_and_wait(page, anchor, timeout=1, max_attempts=2) == "password"
+    assert len(clicks) == 2
+    assert anchor.enter_presses == 2
+
+
+def test_detect_direct_register_step_prefers_password_dom_over_sticky_email_verification_url(monkeypatch):
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def locator(self, *_args, **_kwargs):
+            raise AssertionError("profile/email locators should not be needed")
+
+    page = FakePage()
+
+    def fake_first_visible(_page, selectors, timeout=300):
+        if selectors == manager._DIRECT_PASSWORD_SELECTORS:
+            return object()
+        return None
+
+    monkeypatch.setattr(manager, "_first_visible_editable_locator", fake_first_visible)
+    monkeypatch.setattr(manager, "_is_google_redirect", lambda _page: False)
+
+    assert manager._detect_direct_register_step(page) == "password"
+
+
+def test_detect_direct_register_step_prefers_profile_dom_over_sticky_email_verification_url(monkeypatch):
+    class VisibleProfileLocator:
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=300):
+            return True
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def locator(self, selector):
+            assert 'input[name="name"]' in selector
+            return VisibleProfileLocator()
+
+    page = FakePage()
+
+    def fake_first_visible(_page, selectors, timeout=300):
+        if selectors == manager._DIRECT_CODE_SELECTORS:
+            return object()
+        return None
+
+    monkeypatch.setattr(manager, "_first_visible_editable_locator", fake_first_visible)
+    monkeypatch.setattr(manager, "_is_google_redirect", lambda _page: False)
+
+    assert manager._detect_direct_register_step(page) == "profile"
+
+
 def test_fetch_auth_session_retries_after_403_and_keeps_context():
     page = FakeAuthSessionPage(
         [

@@ -154,7 +154,7 @@ PAYPAL_COUNTRY_CURRENCIES = {
     "VN": "VND",
     "TH": "THB",
     "PH": "PHP",
-    "TR": "TRY",
+    "TR": "USD",
     "DE": "EUR",
     "FR": "EUR",
     "IT": "EUR",
@@ -203,7 +203,7 @@ PAYPAL_COUNTRY_BILLING_ALIASES = {
     "ID": "DE",
     "JP": "DE",
     "TH": "DE",
-    "TR": "DE",
+    "TR": "US",
 }
 
 PAYPAL_CHECKOUT_BILLING_ALIASES = {
@@ -212,7 +212,7 @@ PAYPAL_CHECKOUT_BILLING_ALIASES = {
     "ID": "DE",
     "JP": "DE",
     "TH": "DE",
-    "TR": "DE",
+    "TR": "US",
 }
 
 
@@ -495,7 +495,7 @@ def paypal_billing(account_email: str = "", country: str = "US") -> dict[str, st
     return {
         "name": f"{first} {last}",
         "email": account_email or f"{first.lower()}.{last.lower()}{suffix}@example.com",
-        "country": country_code,
+        "country": billing_country,
         "line1": line1,
         "city": city,
         "state": state,
@@ -543,7 +543,7 @@ def is_openai_custom_checkout_session_id(value: Any) -> bool:
 
 
 def promo_currency_for_region(region: str) -> str:
-    return {"JP": "JPY", "BR": "BRL", "VN": "VND", "TH": "THB", "PH": "PHP", "TR": "TRY"}.get(str(region or "").strip().upper(), "USD")
+    return {"JP": "JPY", "GB": "GBP", "BR": "BRL", "VN": "VND", "TH": "THB", "PH": "PHP", "TR": "USD"}.get(str(region or "").strip().upper(), "USD")
 
 
 def _ctx() -> dict[str, str]:

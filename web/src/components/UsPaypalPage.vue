@@ -903,6 +903,8 @@ const paypalCountryOptions = [
 ]
 const promoRegionOptions = [
   { value: 'JP', label: 'JP · 日本' },
+  { value: 'GB', label: 'GB · 英国' },
+  { value: 'US', label: 'US · 美国' },
   { value: 'BR', label: 'BR · 巴西' },
   { value: 'ID', label: 'ID · 印度尼西亚' },
   { value: 'VN', label: 'VN · 越南' },

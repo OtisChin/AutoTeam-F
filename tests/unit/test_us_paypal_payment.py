@@ -96,7 +96,7 @@ def test_create_express_billing_agreement_returns_ba_url():
         ("MX", "MXN", "MX"),
         ("PH", "PHP", "PH"),
         ("TH", "EUR", "DE"),
-        ("TR", "EUR", "DE"),
+        ("TR", "USD", "US"),
         ("NL", "EUR", "NL"),
     ],
 )
@@ -688,11 +688,12 @@ def test_is_zero_amount_accepts_zero_formats_only():
 
 def test_promo_currency_for_region_supports_zero_trial_regions():
     assert us_paypal.promo_currency_for_region("JP") == "JPY"
+    assert us_paypal.promo_currency_for_region("GB") == "GBP"
     assert us_paypal.promo_currency_for_region("br") == "BRL"
     assert us_paypal.promo_currency_for_region("VN") == "VND"
     assert us_paypal.promo_currency_for_region("TH") == "THB"
     assert us_paypal.promo_currency_for_region("PH") == "PHP"
-    assert us_paypal.promo_currency_for_region("TR") == "TRY"
+    assert us_paypal.promo_currency_for_region("TR") == "USD"
     assert us_paypal.promo_currency_for_region("US") == "USD"
 
 
@@ -714,14 +715,14 @@ def test_japan_checkout_country_uses_germany_billing_profile():
     assert billing["postal_code"] == "10117"
 
 
-def test_turkey_checkout_country_uses_germany_billing_profile():
+def test_turkey_checkout_country_uses_us_billing_profile():
     billing = us_paypal.paypal_billing(country="TR")
 
-    assert us_paypal.paypal_currency_for_country("TR") == "EUR"
-    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "DE", "currency": "EUR"}
-    assert billing["country"] == "DE"
-    assert billing["city"] == "Berlin"
-    assert billing["postal_code"] == "10117"
+    assert us_paypal.paypal_currency_for_country("TR") == "USD"
+    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "US", "currency": "USD"}
+    assert billing["country"] == "US"
+    assert billing["state"] in {"AK", "DE", "MT", "NH", "OR"}
+    assert billing["postal_code"]
 
 
 def test_japan_create_checkout_uses_germany_context_and_billing_to_keep_paypal_available(monkeypatch):

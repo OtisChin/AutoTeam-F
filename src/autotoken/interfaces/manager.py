@@ -2965,8 +2965,6 @@ def _detect_direct_register_step(page):
     if "create-account-enroll-passkey" in url or "enroll-passkey" in url:
         return "passkey"
 
-    if "email-verification" in url:
-        return "code"
     if "about-you" in url:
         return "profile"
     if "create-account/password" in url or url.endswith("/password"):
@@ -2981,14 +2979,14 @@ def _detect_direct_register_step(page):
         pass
 
     try:
-        if _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=300):
-            return "code"
+        if page.locator('input[name="name"], [role="spinbutton"]').first.is_visible(timeout=300):
+            return "profile"
     except Exception:
         pass
 
     try:
-        if page.locator('input[name="name"], [role="spinbutton"]').first.is_visible(timeout=300):
-            return "profile"
+        if _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=300):
+            return "code"
     except Exception:
         pass
 
@@ -2998,6 +2996,8 @@ def _detect_direct_register_step(page):
     except Exception:
         pass
 
+    if "email-verification" in url:
+        return "code"
     if "log-in-or-create-account" in url or url.endswith("/auth/login"):
         return "email"
     if "create-account" in url or "password" in url:
@@ -3098,6 +3098,36 @@ def _wait_for_direct_step_change(page, current_step, timeout=15):
             return step
         time.sleep(0.5)
     return _detect_direct_register_step(page)
+
+
+def _submit_direct_code_and_wait(page, anchor, *, timeout=45, max_attempts=3):
+    attempts = max(1, int(max_attempts or 1))
+    wait_seconds = max(1, int(timeout or 45))
+    last_step = "code"
+    for attempt in range(1, attempts + 1):
+        clicked = _click_primary_auth_button(page, anchor, _DIRECT_CODE_CONTINUE_LABELS)
+        if not clicked:
+            try:
+                if anchor is not None:
+                    anchor.press("Enter")
+                else:
+                    page.keyboard.press("Enter")
+            except Exception:
+                pass
+        last_step = _wait_for_direct_step_change(page, "code", timeout=wait_seconds)
+        logger.info(
+            "[直接注册] 提交验证码后状态: %s | URL: %s | attempt=%s/%s",
+            last_step,
+            page.url,
+            attempt,
+            attempts,
+        )
+        if last_step != "code":
+            return last_step
+        if attempt < attempts:
+            logger.warning("[直接注册] 验证码提交后仍停留在验证码页，准备重试提交 | URL: %s", page.url)
+            time.sleep(1)
+    return last_step
 
 
 def _complete_direct_about_you(page):
@@ -3632,9 +3662,28 @@ def _register_direct_once(
                     return _finish(False)
                 time.sleep(0.5)
                 anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
-                _click_primary_auth_button(page, anchor, _DIRECT_CODE_CONTINUE_LABELS)
-                time.sleep(8)
+                post_code_step = _submit_direct_code_and_wait(
+                    page,
+                    anchor,
+                    timeout=int(os.environ.get("REGISTER_DIRECT_CODE_SUBMIT_WAIT_SECONDS", "45") or 45),
+                    max_attempts=int(os.environ.get("REGISTER_DIRECT_CODE_SUBMIT_ATTEMPTS", "3") or 3),
+                )
                 _wait_for_cloudflare_challenge(page, stage="提交邮箱验证码后", timeout=90)
+                if post_code_step == "password":
+                    pwd_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=5000)
+                    if not pwd_input:
+                        logger.warning("[直接注册] 验证码后进入密码页但未找到密码输入框 | URL: %s", page.url)
+                        return _finish(False)
+                    logger.info("[直接注册] 验证码后设置密码")
+                    _humanized_fill(page, pwd_input, password, field_name="password_after_code")
+                    time.sleep(0.5)
+                    _humanized_auth_click(page, pwd_input, _DIRECT_PASSWORD_CONTINUE_LABELS)
+                    post_code_step = _wait_for_direct_step_change(page, "password", timeout=20)
+                    logger.info("[直接注册] 验证码后提交密码状态: %s | URL: %s", post_code_step, page.url)
+                if post_code_step == "code":
+                    logger.warning("[直接注册] 验证码提交后页面未前进 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                    _safe_invite_screenshot(page, "direct_05_code_still_pending.png")
+                    return _finish(False)
             else:
                 logger.error("[直接注册] %ss 内未收到验证码 provider=%s email=%s", code_timeout, provider_name or "<unknown>", email)
                 if provider_name == "outlook":
