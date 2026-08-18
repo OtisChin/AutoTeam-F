@@ -1351,7 +1351,8 @@ const registerAllDomainsSelected = computed(() => {
 const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'luckmail')
 const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
 const isICloudProvider = computed(() => registerForm.value.mailProvider === 'icloud')
-const isOutlookLikePoolProvider = computed(() => isOutlookProvider.value || isICloudProvider.value)
+const isGenericApiProvider = computed(() => registerForm.value.mailProvider === 'generic-api')
+const isOutlookLikePoolProvider = computed(() => isOutlookProvider.value || isICloudProvider.value || isGenericApiProvider.value)
 const isMailComProvider = computed(() => String(registerForm.value.mailProvider || '').trim().toLowerCase() === 'mail.com')
 const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
 const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookLikePoolProvider.value || isMailComProvider.value)
@@ -1361,6 +1362,7 @@ function normalizeRegisterProxyCountry(value) {
 }
 const registerProxyExtraCountryOptions = [
   { country: 'BR', currency: 'BRL', label: '巴西（BRL）' },
+  { country: 'GB', currency: 'GBP', label: '英国（GBP）' },
   { country: 'TH', currency: 'THB', label: '泰国（THB）' },
   { country: 'TR', currency: 'TRY', label: '土耳其（TRY）' },
   { country: 'KR', currency: 'KRW', label: '韩国（KRW）' },
@@ -1384,29 +1386,41 @@ const registerProviderPoolMessage = computed(() => {
   if (isLuckMailProvider.value) return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
   if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
   if (isICloudProvider.value) return 'iCloud 使用已配置的 iCloud 邮箱池和收码链接，注册域名选择不参与本次任务。'
+  if (isGenericApiProvider.value) return '通用API 使用已配置的邮箱池和收码链接，注册域名选择不参与本次任务。'
   if (isMailComProvider.value) return 'mail.com 邮箱池中选择'
   return ''
 })
-const accountPoolProviderLabel = computed(() => isICloudProvider.value ? 'iCloud' : 'Outlook')
+const accountPoolProviderLabel = computed(() => {
+  if (isICloudProvider.value) return 'iCloud'
+  if (isGenericApiProvider.value) return '通用API'
+  return 'Outlook'
+})
 const accountPoolProviderDescription = computed(() =>
   isICloudProvider.value
     ? '导入 iCloud 邮箱和收码链接；再次打开页面时将从首个可用邮箱继续注册。'
-    : '邮箱池会持久化保存；再次打开页面时将从首个可用邮箱继续注册。'
+    : isGenericApiProvider.value
+      ? '导入任意邮箱和收码链接；再次打开页面时将从首个可用邮箱继续注册。'
+      : '邮箱池会持久化保存；再次打开页面时将从首个可用邮箱继续注册。'
 )
 const accountPoolImportHelp = computed(() =>
   isICloudProvider.value
     ? '支持 txt 文件或直接粘贴，一行一个 iCloud 邮箱和收码链接。'
-    : '支持 txt 文件或直接粘贴，一行一个邮箱账号。'
+    : isGenericApiProvider.value
+      ? '支持 txt 文件或直接粘贴，一行一个“邮箱----收码链接”。'
+      : '支持 txt 文件或直接粘贴，一行一个邮箱账号。'
 )
 const accountPoolImportPlaceholder = computed(() =>
   isICloudProvider.value
     ? '例如：\nuser@icloud.com----https://icloud-api.top/show/xxx/user@icloud.com'
-    : '例如：\nuser@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx\nuser@outlook.com----password----client_id----refresh_token'
+    : isGenericApiProvider.value
+      ? '例如：\nnanette_hayspjq@birdlover.com----https://milwaukee-testimony-jackets-indication.trycloudflare.com/code/Kq6WBn3fb7JmfA5OubuzljzZbekYeSPJQKI0JEhf-nA'
+      : '例如：\nuser@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx\nuser@outlook.com----password----client_id----refresh_token'
 )
 const registerDomainSuffixLabel = computed(() => {
   if (isLuckMailProvider.value) return '@LuckMail'
   if (isOutlookProvider.value) return '@Outlook账号池'
   if (isICloudProvider.value) return '@iCloud账号池'
+  if (isGenericApiProvider.value) return '@通用API账号池'
   if (registerForm.value.mode === 'batch') {
     return selectedRegisterDomains.value.length
       ? `@随机域名(${selectedRegisterDomains.value.length})`
@@ -1422,6 +1436,7 @@ const registerPreviewEmail = computed(() => {
   if (isLuckMailProvider.value) return 'LuckMail邮箱池中选择'
   if (isOutlookProvider.value) return 'Outlook邮箱池中选择'
   if (isICloudProvider.value) return 'iCloud邮箱池中选择'
+  if (isGenericApiProvider.value) return '通用API邮箱池中选择'
   if (isMailComProvider.value) return 'mail.com邮箱池中选择'
   return `${prefix}@${domain}`
 })
@@ -1681,7 +1696,7 @@ function closeOutlookImportDialog() {
 }
 
 async function openOutlookPoolDialog() {
-  if (isICloudProvider.value) {
+  if (isICloudProvider.value || isGenericApiProvider.value) {
     outlookPoolStatusFilter.value = 'available'
   }
   outlookPoolDialogOpen.value = true
@@ -1883,7 +1898,9 @@ async function importOutlookAccounts() {
   try {
     const result = isICloudProvider.value
       ? await api.importICloudAccounts(content, outlookImportFilename.value || 'pasted.txt')
-      : await api.importOutlookAccounts(content, outlookImportFilename.value || 'pasted.txt')
+      : isGenericApiProvider.value
+        ? await api.importGenericApiAccounts(content, outlookImportFilename.value || 'pasted.txt')
+        : await api.importOutlookAccounts(content, outlookImportFilename.value || 'pasted.txt')
     const firstHint = result.first_imported_email
       ? `，单次注册将优先使用 ${result.first_imported_email}`
       : ''
@@ -1913,7 +1930,9 @@ async function loadOutlookPoolStatus(options = {}) {
   try {
     outlookPoolStatus.value = isICloudProvider.value
       ? await api.getICloudAccountsStatus(includeAll)
-      : await api.getOutlookAccountsStatus()
+      : isGenericApiProvider.value
+        ? await api.getGenericApiAccountsStatus(includeAll)
+        : await api.getOutlookAccountsStatus()
     pruneOutlookPoolSelectionToVisible()
   } catch (e) {
     outlookPoolStatus.value = null
@@ -1961,7 +1980,9 @@ async function deleteSelectedOutlookPoolEmails() {
   try {
     const result = isICloudProvider.value
       ? await api.deleteICloudAccounts(emails)
-      : await api.deleteOutlookAccounts(emails)
+      : isGenericApiProvider.value
+        ? await api.deleteGenericApiAccounts(emails)
+        : await api.deleteOutlookAccounts(emails)
     outlookPoolSelectedEmails.value = []
     await loadOutlookPoolStatus()
     setMessage(`已从 ${accountPoolProviderLabel.value} 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)

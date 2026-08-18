@@ -133,8 +133,6 @@ def create_account_refresh_quota_router(
                 message = str(acc.get("last_bind_message") or "").strip().lower()
                 return (
                     "token_revoked" in message
-                    or "token_invalidated" in message
-                    or "authentication token has been invalidated" in message
                     or "invalidated oauth token" in message
                 )
 
@@ -573,18 +571,50 @@ def create_account_refresh_quota_router(
                         }
                     auth_error_detail_lower = auth_error_detail.lower()
                     if (
-                        auth_error_code in {"token_revoked", "token_invalidated"}
-                        or auth_error_detail_lower.startswith("token_revoked")
+                        auth_error_code == "token_invalidated"
                         or auth_error_detail_lower.startswith("token_invalidated")
                         or "authentication token has been invalidated" in auth_error_detail_lower
+                    ):
+                        auth_error_message = (
+                            f"刷新额度返回 {auth_error_detail}，账号已标记为 Fail/废弃"
+                            if auth_error_detail
+                            else "刷新额度返回 token_invalidated，账号已标记为 Fail/废弃"
+                        )
+                        update_payload = {
+                            "status": STATUS_FAIL,
+                            "discarded_at": now_ts,
+                            "discarded_reason": "quota_refresh_401",
+                            "last_quota_check_at": now_ts,
+                            "last_bind_status": "failed",
+                            "last_bind_failure_stage": "auth_token_invalidated",
+                            "last_bind_message": auth_error_message,
+                        }
+                        failed_item = {
+                            "kind": "failed",
+                            "email": email,
+                            "index": index,
+                            "reason": "auth_error",
+                            "attempts": attempts,
+                            "update": update_payload,
+                            "message": (
+                                f"刷新额度返回 {auth_error_detail}，已标记 Fail/废弃: {email}"
+                                if auth_error_detail
+                                else f"刷新额度返回 token_invalidated，已标记 Fail/废弃: {email}"
+                            ),
+                        }
+                        if auth_error_detail:
+                            failed_item["error_detail"] = auth_error_detail
+                        return failed_item
+                    if (
+                        auth_error_code == "token_revoked"
+                        or auth_error_detail_lower.startswith("token_revoked")
                         or "invalidated oauth token" in auth_error_detail_lower
                     ):
-                        reason = "token_invalidated" if auth_error_code == "token_invalidated" or auth_error_detail_lower.startswith("token_invalidated") else "token_revoked"
                         return {
                             "kind": "network_error",
                             "email": email,
                             "index": index,
-                            "reason": reason,
+                            "reason": "token_revoked",
                             "attempts": attempts,
                             "update": {
                                 "status": "auth_revoked",
@@ -598,7 +628,7 @@ def create_account_refresh_quota_router(
                                 ),
                             },
                             "message": (
-                                f"刷新额度返回 {reason}，账号掉授权，未标记废弃: {email}"
+                                f"刷新额度返回 token_revoked，账号掉授权，未标记废弃: {email}"
                                 if not auth_error_detail
                                 else f"刷新额度返回 {auth_error_detail}，账号掉授权，未标记废弃: {email}"
                             ),

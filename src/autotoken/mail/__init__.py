@@ -33,6 +33,7 @@ def get_mail_client() -> MailProvider:
       - cloud-mail
       - outlook
       - icloud
+      - generic-api
       - luckmail
       - `cf_temp_email` / `maillab` 为历史别名
 
@@ -55,6 +56,10 @@ def get_mail_client() -> MailProvider:
         from autotoken.mail.icloud import ICloudMailProvider
 
         return ICloudMailProvider()
+    if raw in ("generic-api", "generic_api", "genericapi", "通用api", "通用-api"):
+        from autotoken.mail.generic_api import GenericApiMailProvider
+
+        return GenericApiMailProvider()
     if raw in ("mail.com", "mailcom", "mail_com"):
         from autotoken.mail.mailcom import MailComMailProvider
 
@@ -64,7 +69,7 @@ def get_mail_client() -> MailProvider:
 
         return LuckMailProvider()
     raise ValueError(
-        f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | icloud | mail.com | luckmail)"
+        f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | icloud | generic-api | mail.com | luckmail)"
     )
 
 

@@ -40,6 +40,8 @@ def normalize_mail_provider(raw: str | None) -> str:
         return "outlook"
     if provider in ("icloud", "icloud.com", "apple_icloud", "apple-icloud"):
         return "icloud"
+    if provider in ("generic-api", "generic_api", "genericapi", "通用api", "通用-api"):
+        return "generic-api"
     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
         return "luckmail"
     return provider

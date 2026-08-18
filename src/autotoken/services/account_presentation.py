@@ -46,8 +46,6 @@ def token_revoked_quota_failure_display_status(acc: dict, status: str) -> str:
     message = str(acc.get("last_bind_message") or "").strip().lower()
     if not (
         "token_revoked" in message
-        or "token_invalidated" in message
-        or "authentication token has been invalidated" in message
         or "invalidated oauth token" in message
     ):
         return status

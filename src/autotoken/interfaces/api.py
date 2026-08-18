@@ -3613,13 +3613,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             if invalid_domains:
                 raise HTTPException(status_code=400, detail=f"自动注册域名未配置: {', '.join(invalid_domains)}")
         auto_register_domains = requested_domains
-        if auto_register_mail_provider not in {"luckmail", "outlook", "icloud"} and not auto_register_domains:
+        if auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"} and not auto_register_domains:
             default_domain = str(get_register_domain() or "").strip().lstrip("@")
             if default_domain:
                 auto_register_domains = [default_domain]
             elif configured_domains:
                 auto_register_domains = [configured_domains[0]]
-        if auto_register_mail_provider not in {"luckmail", "outlook", "icloud"} and not auto_register_domains:
+        if auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"} and not auto_register_domains:
             raise HTTPException(status_code=400, detail="未配置可用注册域名")
         account_emails = []
     elif checkout_url:
@@ -5308,7 +5308,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 auto_register_domains[(index - 1) % len(auto_register_domains)] if auto_register_domains else ""
             )
             register_domain = str(register_domain or "").strip().lstrip("@")
-            if auto_register_mail_provider not in {"luckmail", "outlook", "icloud"} and not register_domain:
+            if auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"} and not register_domain:
                 raise RuntimeError("未配置可用注册域名")
             luckmail_register_domain = (
                 auto_register_luckmail_preferred_domains[(index - 1) % len(auto_register_luckmail_preferred_domains)]

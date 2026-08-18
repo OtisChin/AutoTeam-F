@@ -464,12 +464,35 @@ def icloud_accounts_by_email() -> dict[str, dict[str, str]]:
     return rows
 
 
+def generic_api_accounts_by_email() -> dict[str, dict[str, str]]:
+    """Return imported Generic API receive-code links keyed by mailbox email."""
+    try:
+        from autotoken.mail.generic_api import GenericApiMailProvider
+    except Exception:
+        return {}
+    try:
+        provider = GenericApiMailProvider()
+    except Exception:
+        return {}
+    rows: dict[str, dict[str, str]] = {}
+    for account in getattr(provider, "accounts", []) or []:
+        email = _normalized_email(getattr(account, "email", ""))
+        if not email:
+            continue
+        rows[email] = {
+            "email": str(getattr(account, "email", "") or "").strip() or email,
+            "receive_code_url": str(getattr(account, "receive_code_url", "") or "").strip(),
+        }
+    return rows
+
+
 def credential_export_line_for_account(
     account: dict,
     *,
     outlook_mailapi_urls: dict[str, str] | None = None,
     outlook_accounts: dict[str, dict[str, str]] | None = None,
     icloud_accounts: dict[str, dict[str, str]] | None = None,
+    generic_api_accounts: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Render account credentials as: email-----secret-----mail access URL."""
     email = _normalized_email(account.get("email"))
@@ -500,9 +523,21 @@ def credential_export_line_for_account(
         or icloud_source.get("receive_code_url")
         or ""
     ).strip()
+    generic_api_rows = generic_api_accounts if generic_api_accounts is not None else generic_api_accounts_by_email()
+    generic_api_source = generic_api_rows.get(email, {}) if isinstance(generic_api_rows, dict) else {}
+    is_generic_api_account = mail_provider in {"generic-api", "generic_api", "genericapi"} or bool(generic_api_source)
+    generic_api_export_email = str(generic_api_source.get("email") or account.get("original_email") or email).strip()
+    generic_api_receive_code_url = str(
+        account.get("receive_code_url")
+        or account.get("mail_url")
+        or generic_api_source.get("receive_code_url")
+        or ""
+    ).strip()
 
     if is_icloud_account:
         return f"{icloud_export_email}----{icloud_receive_code_url}"
+    if is_generic_api_account:
+        return f"{generic_api_export_email}----{generic_api_receive_code_url}"
     if mailapi_url:
         return f"{export_email}-----{password}-----{mailapi_url}"
     if is_outlook_account:
@@ -674,6 +709,7 @@ def _inventory_format_counts(accounts: list[dict], main_email: str, allocated: s
         for email, item in outlook_accounts.items()
         if str(item.get("mailapi_url") or "").strip()
     }
+    generic_api_accounts = generic_api_accounts_by_email()
 
     for account in accounts:
         email = _normalized_email(account.get("email"))
@@ -711,6 +747,7 @@ def _inventory_format_counts(accounts: list[dict], main_email: str, allocated: s
                 account,
                 outlook_mailapi_urls=outlook_urls,
                 outlook_accounts=outlook_accounts,
+                generic_api_accounts=generic_api_accounts,
             )
         )
 

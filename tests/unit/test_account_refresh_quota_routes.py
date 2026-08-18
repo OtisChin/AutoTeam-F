@@ -258,7 +258,7 @@ def test_refresh_quota_marks_token_revoked_as_auth_revoked_without_discarding(tm
     ]
 
 
-def test_refresh_quota_marks_token_invalidated_as_auth_revoked_without_discarding(tmp_path, monkeypatch):
+def test_refresh_quota_marks_token_invalidated_accounts_fail(tmp_path, monkeypatch):
     started = []
     updated = []
     account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "invalidated"), "status": "active"}
@@ -281,19 +281,27 @@ def test_refresh_quota_marks_token_invalidated_as_auth_revoked_without_discardin
     routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
     run_result = started[0]["func"]("task-refresh")
 
-    assert run_result["failed"] == []
-    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_invalidated"}]
+    assert run_result["failed"] == [
+        {
+            "email": "user@example.com",
+            "reason": "auth_error",
+            "error_detail": "token_invalidated: Your authentication token has been invalidated. Please try signing in again.",
+        }
+    ]
+    assert run_result["network_error"] == []
     assert updated == [
         (
             "user@example.com",
             {
-                "status": "auth_revoked",
+                "status": "fail",
+                "discarded_at": updated[0][1]["discarded_at"],
+                "discarded_reason": "quota_refresh_401",
                 "last_quota_check_at": updated[0][1]["last_quota_check_at"],
                 "last_bind_status": "failed",
-                "last_bind_failure_stage": "auth_token_revoked",
+                "last_bind_failure_stage": "auth_token_invalidated",
                 "last_bind_message": (
                     "刷新额度返回 token_invalidated: Your authentication token has been invalidated. "
-                    "Please try signing in again.，账号掉授权，未标记废弃"
+                    "Please try signing in again.，账号已标记为 Fail/废弃"
                 ),
             },
         )
@@ -384,7 +392,7 @@ def test_refresh_quota_rechecks_legacy_token_revoked_fail_accounts(tmp_path, mon
     assert "discarded_reason" not in updated[0][1]
 
 
-def test_refresh_quota_rechecks_legacy_token_invalidated_fail_accounts(tmp_path, monkeypatch):
+def test_refresh_quota_skips_legacy_token_invalidated_fail_accounts(tmp_path, monkeypatch):
     started = []
     updated = []
     quota_calls = []
@@ -419,13 +427,11 @@ def test_refresh_quota_rechecks_legacy_token_invalidated_fail_accounts(tmp_path,
     routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
     run_result = started[0]["func"]("task-refresh")
 
-    assert quota_calls == [True]
-    assert run_result["skipped"] == []
+    assert quota_calls == []
+    assert run_result["skipped"] == [{"email": "user@example.com", "reason": "fail_account"}]
     assert run_result["failed"] == []
-    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_invalidated"}]
-    assert updated[0][1]["status"] == "auth_revoked"
-    assert updated[0][1]["last_bind_failure_stage"] == "auth_token_revoked"
-    assert "discarded_reason" not in updated[0][1]
+    assert run_result["network_error"] == []
+    assert updated == []
 
 
 def test_refresh_quota_success_clears_legacy_quota_401_discard_marker(tmp_path, monkeypatch):
@@ -440,8 +446,7 @@ def test_refresh_quota_success_clears_legacy_quota_401_discard_marker(tmp_path, 
         "last_bind_status": "failed",
         "last_bind_failure_stage": "auth_401",
         "last_bind_message": (
-            "刷新额度返回 401: token_invalidated: Your authentication token has been invalidated. "
-            "Please try signing in again.，账号已标记为 Fail/废弃"
+            "刷新额度返回 401: token_expired: Provided authentication token is expired.，账号已标记为 Fail/废弃"
         ),
     }
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])

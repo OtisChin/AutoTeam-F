@@ -2435,7 +2435,7 @@ class AuthFlow:
             "Thomas",
         ]
         name = f"{random.choice(_FIRST)} {random.choice(_LAST)}"
-        birthdate = f"{random.randint(1985, 2000)}-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}"
+        birthdate = f"{random.randint(1985, 1999)}-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}"
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/create_account",
             headers=headers,

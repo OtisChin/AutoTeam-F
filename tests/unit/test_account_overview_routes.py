@@ -399,6 +399,78 @@ def test_account_overview_latest_mail_fetches_icloud_provider(monkeypatch):
     assert result["message"]["html"] == "<p>icloud body</p>"
 
 
+def test_account_overview_latest_mail_fetches_generic_api_provider(monkeypatch):
+    app, _captured = _app()
+    account = {
+        "email": "user@dutchmail.com",
+        "original_email": "user@dutchmail.com",
+        "mail_provider": "generic-api",
+    }
+    captured = {}
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+
+    def fake_search(self, recipient, size=10, account_id=None):
+        captured["recipient"] = recipient
+        captured["size"] = size
+        captured["account_id"] = account_id
+        return [
+            {
+                "id": "generic-1",
+                "subject": "Generic latest",
+                "sendEmail": "sender@example.com",
+                "toEmail": "user@dutchmail.com",
+                "html": "<p>generic body</p>",
+                "createTime": 1700000000,
+            }
+        ]
+
+    monkeypatch.setattr("autotoken.mail.generic_api.GenericApiMailProvider.search_emails_by_recipient", fake_search)
+
+    result = _endpoint(app, "/api/accounts/{email}/latest-mail", "GET")("User@dutchmail.com")
+
+    assert captured == {"recipient": "user@dutchmail.com", "size": 1, "account_id": "user@dutchmail.com"}
+    assert result["email"] == "user@dutchmail.com"
+    assert result["mail_email"] == "user@dutchmail.com"
+    assert result["provider"] == "generic-api"
+    assert result["message"]["subject"] == "Generic latest"
+    assert result["message"]["html"] == "<p>generic body</p>"
+
+
+def test_account_overview_latest_mail_falls_back_to_generic_api_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "cache.sqlite3"))
+    app, _captured = _app()
+    account = {
+        "email": "user@dutchmail.com",
+        "original_email": "user@dutchmail.com",
+        "mail_provider": "generic-api",
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.mail.generic_api.GenericApiMailProvider.search_emails_by_recipient", lambda *args, **kwargs: [])
+
+    from autotoken.storage.generic_api_pool import cache_mail_message
+
+    cache_mail_message(
+        "user@dutchmail.com",
+        {
+            "id": "cached-generic-1",
+            "subject": "Cached Generic latest",
+            "sendEmail": "sender@example.com",
+            "toEmail": "user@dutchmail.com",
+            "html": "<p>cached body</p>",
+            "createTime": 1700000000,
+        },
+        source="unit-test",
+    )
+
+    result = _endpoint(app, "/api/accounts/{email}/latest-mail", "GET")("User@dutchmail.com")
+
+    assert result["provider"] == "generic-api"
+    assert result["message"]["subject"] == "Cached Generic latest"
+    assert result["message"]["html"] == "<p>cached body</p>"
+
+
 def test_account_overview_subscription_queries_chatgpt_with_access_token(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auths"
     auth_dir.mkdir()

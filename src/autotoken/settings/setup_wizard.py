@@ -37,6 +37,11 @@ MAIL_PROVIDER_OPTIONS = [
         "description": "iCloud 账号池收码链接注册",
     },
     {
+        "value": "generic-api",
+        "label": "通用API",
+        "description": "任意邮箱 + 收码链接账号池注册",
+    },
+    {
         "value": "mail.com",
         "label": "mail.com",
         "description": "mail.com SQLite 邮箱池注册",
@@ -94,6 +99,15 @@ PROVIDER_SETUP_FIELDS = {
             True,
         ),
         ("ICLOUD_ACCOUNTS", "iCloud 账号池内联（email----收码链接，每行/分号分隔）", "", True),
+    ],
+    "generic-api": [
+        (
+            "GENERIC_API_ACCOUNTS_FILE",
+            "通用API账号池文件路径（默认 data/generic_api_accounts.txt）",
+            "data/generic_api_accounts.txt",
+            True,
+        ),
+        ("GENERIC_API_ACCOUNTS", "通用API账号池内联（email--收码链接，2个及以上-都可，每行/分号分隔）", "", True),
     ],
     "mail.com": [],
     "luckmail": [
@@ -178,6 +192,8 @@ def get_mail_provider(raw: str | None = None) -> str:
         return "outlook"
     if provider in ("icloud", "icloud.com", "apple_icloud", "apple-icloud"):
         return "icloud"
+    if provider in ("generic-api", "generic_api", "genericapi", "通用api", "通用-api"):
+        return "generic-api"
     if provider in ("mail.com", "mailcom", "mail_com"):
         return "mail.com"
     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
@@ -389,6 +405,7 @@ def _verify_temporary_email():
       - cloud-mail:需要 CLOUD_MAIL_API_URL / CLOUD_MAIL_ADMIN_EMAIL / CLOUD_MAIL_ADMIN_PASSWORD / CLOUD_MAIL_DOMAIN
       - outlook:需要 OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS 提供 Outlook 账号池
       - icloud:需要 ICLOUD_ACCOUNTS_FILE 或 ICLOUD_ACCOUNTS 提供 iCloud 账号池
+      - generic-api:需要 GENERIC_API_ACCOUNTS_FILE 或 GENERIC_API_ACCOUNTS 提供邮箱+收码链接账号池
       - luckmail:需要 LUCKMAIL_ACCOUNTS_FILE / LUCKMAIL_ACCOUNTS，或 LUCKMAIL_API_KEY 自动购买
     """
     provider = get_mail_provider()
@@ -438,6 +455,15 @@ def _verify_temporary_email():
         check_keys = "ICLOUD_ACCOUNTS_FILE 或 ICLOUD_ACCOUNTS"
         domain_key = "ICLOUD_ACCOUNTS_FILE"
         label = "icloud"
+    elif provider == "generic-api":
+        accounts_file = os.environ.get("GENERIC_API_ACCOUNTS_FILE", "")
+        accounts_inline = os.environ.get("GENERIC_API_ACCOUNTS", "")
+        default_file = PROJECT_ROOT / "data" / "generic_api_accounts.txt"
+        if not accounts_inline and not accounts_file and not default_file.exists():
+            return
+        check_keys = "GENERIC_API_ACCOUNTS_FILE 或 GENERIC_API_ACCOUNTS"
+        domain_key = "GENERIC_API_ACCOUNTS_FILE"
+        label = "generic-api"
     elif provider == "luckmail":
         accounts_file = os.environ.get("LUCKMAIL_ACCOUNTS_FILE", "")
         accounts_inline = os.environ.get("LUCKMAIL_ACCOUNTS", "")
@@ -450,7 +476,7 @@ def _verify_temporary_email():
         label = "luckmail"
     else:
         logger.error(
-            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | icloud | mail.com | luckmail",
+            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | icloud | generic-api | mail.com | luckmail",
             provider,
         )
         return False
@@ -472,7 +498,7 @@ def _verify_temporary_email():
         logger.error("[验证] 请检查 %s", check_keys)
         return False
 
-    if provider in ("outlook", "mail.com", "icloud", "luckmail"):
+    if provider in ("outlook", "mail.com", "icloud", "generic-api", "luckmail"):
         logger.info("[验证] %s 配置验证通过", label)
         return True
 

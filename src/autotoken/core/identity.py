@@ -275,16 +275,20 @@ def random_full_name():
     return f"{random_first_name()} {random_last_name()}"
 
 
-def random_birthday(min_age=22, max_age=42):
+def random_birthday(min_age=27, max_age=46):
     """
     返回字符串形式的 {"year", "month", "day"}，月/日补零到两位。
-    默认 22-42 岁范围内，避开 18-21 的"刚成年"区间（OpenAI 对年轻用户风控更严）。
+    默认只生成 2000 年以前的生日，避开过年轻生日导致 about-you 校验失败。
     """
     import datetime as _dt
 
     today = _dt.date.today()
-    age = random.randint(min_age, max_age)
-    year = today.year - age
+    latest_year = min(today.year - int(min_age), 1999)
+    earliest_year = today.year - int(max_age)
+    if earliest_year > latest_year:
+        span = max(0, int(max_age) - int(min_age))
+        earliest_year = latest_year - span
+    year = random.randint(earliest_year, latest_year)
     # 简单起见 day 只取 1-28，避免月末/闰年问题
     month = random.randint(1, 12)
     day = random.randint(1, 28)
@@ -295,7 +299,7 @@ def random_birthday(min_age=22, max_age=42):
     }
 
 
-def random_age(min_age=22, max_age=42):
+def random_age(min_age=27, max_age=46):
     """返回字符串形式的年龄，和 random_birthday 取值范围一致。"""
     return str(random.randint(min_age, max_age))
 

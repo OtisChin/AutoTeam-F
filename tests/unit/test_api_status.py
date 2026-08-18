@@ -18,7 +18,10 @@ from autotoken.api_routes.account_cpa_auths import (
     create_account_cpa_auths_router,
 )
 from autotoken.api_routes.config_io import (
+    GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES,
     OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES,
+    GenericApiAccountsDeleteParams,
+    GenericApiAccountsImportParams,
     ICloudAccountsDeleteParams,
     ICloudAccountsImportParams,
     OutlookAccountsDeleteParams,
@@ -1067,6 +1070,113 @@ def test_post_delete_icloud_accounts_removes_selected_lines_and_redacts_links(tm
     assert "keep@icloud.com----https://icloud-api.top/show/secret/keep@icloud.com" in saved
     assert "delete1@icloud.com" not in saved
     assert "secret/delete1" not in json.dumps(result)
+
+
+def test_post_import_generic_api_accounts_appends_valid_unique_lines(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "generic_api_accounts.txt"
+    accounts_file.write_text(
+        "used@birdlover.com----https://example.com/code/used\n",
+        encoding="utf-8",
+    )
+    written_env = {}
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"GENERIC_API_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr("autotoken.setup_wizard._write_env", lambda key, value: written_env.update({key: value}))
+
+    result = _config_io_routes()["post_import_generic_api_accounts"](
+        GenericApiAccountsImportParams(
+            filename="generic.txt",
+            content=(
+                "NewUser@birdlover.com----https://example.com/code/new\n"
+                "used@birdlover.com----https://example.com/code/dup\n"
+                "bad-line\n"
+            ),
+        )
+    )
+
+    saved = accounts_file.read_text(encoding="utf-8")
+    assert result["imported"] == 1
+    assert result["duplicates"] == 1
+    assert result["invalid"] == 1
+    assert result["first_imported_email"] == "newuser@birdlover.com"
+    assert saved.startswith("NewUser@birdlover.com----https://example.com/code/new\n")
+    assert written_env == {}
+
+
+def test_get_generic_api_accounts_status_marks_registered_and_redacts_links(tmp_path, monkeypatch):
+    from autotoken.storage import generic_api_pool
+
+    accounts_file = tmp_path / "generic_api_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "registered@birdlover.com----https://example.com/code/secret-registered",
+                "dead@birdlover.com----https://example.com/code/secret-dead",
+                "ready@birdlover.com----https://example.com/code/secret-ready",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"GENERIC_API_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr(generic_api_pool, "STATE_FILE", tmp_path / "generic_api_pool.json")
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [{"email": "registered@birdlover.com", "status": "active"}],
+    )
+    generic_api_pool.mark_registered_email("registered@birdlover.com", source="register_success")
+    generic_api_pool.mark_unavailable_email("dead@birdlover.com", source="account_deactivated")
+
+    result = _config_io_routes()["get_generic_api_accounts_status"](include_all=True)
+
+    assert result["total"] == 3
+    assert result["available"] == 1
+    assert result["registered"] == 1
+    assert result["unavailable"] == 1
+    assert result["next_available_email"] == "ready@birdlover.com"
+    assert {item["email"]: item["status"] for item in result["all_accounts"]} == {
+        "registered@birdlover.com": "registered",
+        "dead@birdlover.com": "unavailable",
+        "ready@birdlover.com": "available",
+    }
+    serialized = json.dumps(result)
+    assert "secret-registered" not in serialized
+    assert "secret-dead" not in serialized
+    assert "secret-ready" not in serialized
+
+
+def test_post_delete_generic_api_accounts_removes_selected_lines_and_redacts_links(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "generic_api_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "# keep comments",
+                "delete1@birdlover.com-----https://example.com/code/secret-delete1",
+                "keep@birdlover.com-----https://example.com/code/secret-keep",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"GENERIC_API_ACCOUNTS_FILE": str(accounts_file)})
+
+    result = _config_io_routes()["post_delete_generic_api_accounts"](
+        GenericApiAccountsDeleteParams(emails=["DELETE1@birdlover.com", "missing@birdlover.com"])
+    )
+
+    saved = accounts_file.read_text(encoding="utf-8")
+    assert result["requested"] == 2
+    assert result["deleted"] == 1
+    assert result["deleted_emails"] == ["delete1@birdlover.com"]
+    assert result["missing_emails"] == ["missing@birdlover.com"]
+    assert "# keep comments" in saved
+    assert "keep@birdlover.com-----https://example.com/code/secret-keep" in saved
+    assert "delete1@birdlover.com" not in saved
+    assert "secret-delete1" not in json.dumps(result)
 
 
 def test_post_import_outlook_accounts_rejects_relative_path_outside_project(tmp_path, monkeypatch):

@@ -39,6 +39,7 @@ def create_account_exports_router(
         """导出本地账号池账密，固定格式: 邮箱-----密码/Token-----接码地址。"""
         from autotoken.commerce.trade import (
             credential_export_line_for_account,
+            generic_api_accounts_by_email,
             icloud_accounts_by_email,
             outlook_accounts_by_email,
         )
@@ -87,6 +88,7 @@ def create_account_exports_router(
             if str(item.get("mailapi_url") or "").strip()
         }
         icloud_accounts = icloud_accounts_by_email()
+        generic_api_accounts = generic_api_accounts_by_email()
         include_totp_secret = bool(params.include_totp_secret)
         lines = []
         for account in export_rows:
@@ -95,6 +97,7 @@ def create_account_exports_router(
                 outlook_mailapi_urls=outlook_mailapi_urls,
                 outlook_accounts=outlook_accounts,
                 icloud_accounts=icloud_accounts,
+                generic_api_accounts=generic_api_accounts,
             )
             if include_totp_secret:
                 credentials = get_totp_credentials(normalize_email(account.get("email"))) or {}

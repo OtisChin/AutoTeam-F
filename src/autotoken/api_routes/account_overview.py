@@ -491,6 +491,10 @@ def _normalize_mail_provider_name(value: Any) -> str:
         "microsoft-outlook": "outlook",
         "luckmail": "luckmail",
         "lucky-mail": "luckmail",
+        "generic-api": "generic-api",
+        "genericapi": "generic-api",
+        "通用api": "generic-api",
+        "通用-api": "generic-api",
     }
     return aliases.get(raw, raw)
 
@@ -590,6 +594,15 @@ def _fetch_latest_mail_with_provider(provider: str, recipient: str, account: dic
         from autotoken.mail.icloud import ICloudMailProvider
 
         return ICloudMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+    if provider == "generic-api":
+        from autotoken.mail.generic_api import GenericApiMailProvider
+        from autotoken.storage.generic_api_pool import get_cached_mail_message
+
+        messages = GenericApiMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+        if messages:
+            return messages
+        cached = get_cached_mail_message(recipient)
+        return [cached] if cached else []
     if provider == "cloud-mail":
         from autotoken.mail.cloud_mail import CloudMailProviderClient
 

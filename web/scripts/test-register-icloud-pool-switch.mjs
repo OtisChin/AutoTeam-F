@@ -30,6 +30,7 @@ assert.match(page, /country:\s*'BR'[\s\S]*?label:\s*'巴西（BRL）'/, 'registe
 assert.match(page, /country:\s*'TH'[\s\S]*?label:\s*'泰国（THB）'/, 'register proxy country list includes Thailand')
 assert.match(page, /country:\s*'TR'[\s\S]*?label:\s*'土耳其（TRY）'/, 'register proxy country list includes Turkey')
 assert.match(page, /country:\s*'KR'[\s\S]*?label:\s*'韩国（KRW）'/, 'register proxy country list includes Korea')
+assert.match(page, /country:\s*'GB'[\s\S]*?label:\s*'英国（GBP）'/, 'register proxy country list includes United Kingdom')
 assert.match(
   page,
   /watch\(\s*\(\)\s*=>\s*registerForm\.value\.mailProvider[\s\S]*?loadOutlookPoolStatus\(\)/,

@@ -316,6 +316,14 @@ def _sync_provider_registered_email(
         except Exception as exc:
             logger.debug("[outlook] 标记已注册邮箱失败: %s", exc, exc_info=True)
         return
+    if provider in {"generic-api", "generic_api", "genericapi"}:
+        try:
+            from autotoken.storage.generic_api_pool import mark_registered_email
+
+            mark_registered_email(email, source=source)
+        except Exception as exc:
+            logger.debug("[generic-api] 标记已注册邮箱失败: %s", exc, exc_info=True)
+        return
     if provider in {"mail.com", "mailcom", "mail_com"}:
         try:
             from autotoken.storage.mail_accounts import mark_mailcom_registered
@@ -2586,6 +2594,14 @@ _DIRECT_CODE_SELECTORS = (
 _DIRECT_CONTINUE_LABELS = ("Continue", "继续", "繼續", "続行")
 _DIRECT_PASSWORD_CONTINUE_LABELS = (*_DIRECT_CONTINUE_LABELS, "Log in", "登录", "登入", "ログイン")
 _DIRECT_CODE_CONTINUE_LABELS = (*_DIRECT_CONTINUE_LABELS, "Verify", "Submit", "验证", "確認")
+_ABOUT_YOU_BIRTHDAY_TEXT_SELECTORS = (
+    'input[name*="birth" i], input[id*="birth" i], '
+    'input[placeholder*="Birthday" i], input[aria-label*="Birthday" i], '
+    'input[placeholder*="Date of birth" i], input[aria-label*="Date of birth" i], '
+    'input[placeholder*="生日" i], input[aria-label*="生日" i], '
+    'input[placeholder*="生年月日" i], input[aria-label*="生年月日" i], '
+    'input[placeholder*="생년월일" i], input[aria-label*="생년월일" i]'
+)
 _DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
     "完成帐户创建",
     "完成账号创建",
@@ -2598,6 +2614,15 @@ _DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
     "계정 생성 끝내기",
     "계정 만들기",
 )
+
+
+def _safe_invite_screenshot(page, name):
+    from autotoken.auth.invite import screenshot
+
+    try:
+        screenshot(page, name)
+    except Exception as exc:
+        logger.debug("[直接注册] 截图失败 %s: %s", name, exc)
 
 
 def _direct_humanize_enabled() -> bool:
@@ -2664,15 +2689,6 @@ def _humanized_click_locator(page, locator, *, label: str = "") -> None:
 def _humanized_auth_click(page, anchor_locator, labels) -> None:
     _direct_humanize_delay("click")
     _click_primary_auth_button(page, anchor_locator, labels)
-
-
-def _safe_invite_screenshot(page, name):
-    from autotoken.auth.invite import screenshot
-
-    try:
-        screenshot(page, name)
-    except Exception as exc:
-        logger.debug("[直接注册] 截图失败 %s: %s", name, exc)
 
 
 def _page_excerpt(page, limit=240):
@@ -2898,6 +2914,36 @@ def _fill_about_you_birthday_by_meta(page, desired=None):
     except Exception as exc:
         logger.warning("[直接注册] 按字段填写生日失败，降级为位置猜测: %s", exc)
     return False
+
+
+def _about_you_birthday_text_value(desired: dict) -> str:
+    """Return about-you single Birthday input value as DD/MM/YYYY."""
+    year = str((desired or {}).get("year") or "").strip()
+    month = str((desired or {}).get("month") or "").strip().zfill(2)
+    day = str((desired or {}).get("day") or "").strip().zfill(2)
+    return f"{day}/{month}/{year}"
+
+
+def _fill_about_you_birthday_text_input(page, desired=None) -> bool:
+    if not desired:
+        desired = random_birthday()
+    birthday_input = _first_visible_editable_locator(page, _ABOUT_YOU_BIRTHDAY_TEXT_SELECTORS, timeout=800)
+    if not birthday_input:
+        return False
+    value = _about_you_birthday_text_value(desired)
+    try:
+        _humanized_fill(page, birthday_input, value, field_name="about_you_birthday")
+        time.sleep(0.2)
+        logger.info("[直接注册] 填入生日: %s", value)
+        return True
+    except Exception as exc:
+        logger.warning("[直接注册] 生日文本框填写失败: %s", exc)
+        try:
+            birthday_input.fill(value)
+            logger.info("[直接注册] 填入生日: %s", value)
+            return True
+        except Exception:
+            return False
 
 
 def _accept_direct_about_you_required_consents(page) -> int:
@@ -3138,7 +3184,12 @@ def _complete_direct_about_you(page):
     # 本账号整个注册周期内固定一份身份数据，避免多次点提交导致生日漂移
     identity_bday = random_birthday()
     identity_name = random_full_name()
-    identity_age = random_age()
+    try:
+        import datetime as _dt
+
+        identity_age = str(max(18, _dt.date.today().year - int(identity_bday["year"])))
+    except Exception:
+        identity_age = random_age()
 
     # 字段顺序只尝试 3 种排列，但全部使用相同的随机生日值
     birthday_orders = [
@@ -3164,13 +3215,17 @@ def _complete_direct_about_you(page):
         except Exception:
             name_input = None
 
+        birthday_text_filled = _fill_about_you_birthday_text_input(page, desired=identity_bday)
         spinbuttons = []
-        try:
-            spinbuttons = page.locator('[role="spinbutton"]').all()
-        except Exception:
-            spinbuttons = []
+        if not birthday_text_filled:
+            try:
+                spinbuttons = page.locator('[role="spinbutton"]').all()
+            except Exception:
+                spinbuttons = []
 
-        if len(spinbuttons) >= 3:
+        if birthday_text_filled:
+            pass
+        elif len(spinbuttons) >= 3:
             filled = _fill_about_you_birthday_by_meta(page, desired=identity_bday)
             if not filled:
                 for label_sel in ("text=生日日期", "text=Date of birth"):
@@ -3451,7 +3506,7 @@ def _register_direct_once(
                         btn = page.locator(sel).first
                         if btn.is_visible(timeout=1000):
                             logger.info("[直接注册] 点击: %s", desc)
-                            btn.click()
+                            _humanized_click_locator(page, btn, label=desc)
                             time.sleep(2)
                             # 检查邮箱输入框是否出现了
                             step = _wait_for_direct_register_step(
@@ -3722,7 +3777,7 @@ def _register_direct_once(
             dismiss_passkey_prompt(page)
             join_btn = page.locator('button:has-text("Accept"), button:has-text("Join"), button:has-text("加入")').first
             if join_btn.is_visible(timeout=5000):
-                join_btn.click()
+                _humanized_click_locator(page, join_btn, label="join_workspace")
                 time.sleep(5)
         except Exception:
             pass
@@ -5348,7 +5403,7 @@ def cmd_register_accounts(
             provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
             register_target = (
                 f"provider={provider_label}"
-                if provider_label in {"luckmail", "outlook", "icloud", "mail.com"}
+                if provider_label in {"luckmail", "outlook", "icloud", "generic-api", "mail.com"}
                 else f"domain=@{job_domain or ''}"
             )
             logger.info(

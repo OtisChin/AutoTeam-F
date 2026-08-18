@@ -135,6 +135,34 @@ def test_export_account_credentials_uses_icloud_pool_line(monkeypatch):
     assert result["content"] == "User@icloud.com----https://icloud-api.top/show/secret/User@icloud.com"
 
 
+def test_export_account_credentials_uses_generic_api_pool_line(monkeypatch):
+    app = _app()
+    account = {
+        "email": "User@dutchmail.com",
+        "password": "chatgpt-password",
+        "mail_provider": "generic-api",
+        "account_source": "managed",
+    }
+
+    from autotoken.mail.generic_api import GenericApiAccount, GenericApiMailProvider
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {**account, **kwargs})
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: {})
+    monkeypatch.setattr("autotoken.commerce.trade.icloud_accounts_by_email", lambda: {})
+    monkeypatch.setattr(
+        GenericApiMailProvider,
+        "_load_accounts",
+        lambda self: [GenericApiAccount("User@dutchmail.com", "https://example.com/code/token")],
+    )
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["user@dutchmail.com"])
+    )
+
+    assert result["content"] == "User@dutchmail.com----https://example.com/code/token"
+
+
 def test_update_accounts_export_status_rejects_too_many_raw_emails():
     app = _app()
 

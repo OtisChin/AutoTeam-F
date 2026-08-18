@@ -17,6 +17,7 @@ from autotoken.core.textio import parse_env_line, read_text
 CONFIG_IMPORT_MAX_BYTES = 2 * 1024 * 1024
 OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES = 2 * 1024 * 1024
 ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES = 2 * 1024 * 1024
+GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES = 2 * 1024 * 1024
 
 
 class OutlookAccountsImportParams(BaseModel):
@@ -34,6 +35,15 @@ class ICloudAccountsImportParams(BaseModel):
 
 
 class ICloudAccountsDeleteParams(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
+class GenericApiAccountsImportParams(BaseModel):
+    filename: str = ""
+    content: str
+
+
+class GenericApiAccountsDeleteParams(BaseModel):
     emails: list[str] = Field(default_factory=list)
 
 
@@ -110,6 +120,9 @@ def _env_config_keys() -> list[str]:
         "OAUTH_TUJIE_SMS_POLL_INTERVAL_MS",
         "OAUTH_TUJIE_SMS_ACCOUNT_MAP_FILE",
         "OUTLOOK_REGISTER_CODE_TIMEOUT",
+        "GENERIC_API_ACCOUNTS_FILE",
+        "GENERIC_API_ACCOUNTS",
+        "GENERIC_API_SKIP_REGISTERED",
     ]
     for key in extra_keys:
         if key not in seen:
@@ -185,6 +198,23 @@ def _resolve_icloud_accounts_file() -> Path:
     return path
 
 
+def _resolve_generic_api_accounts_file() -> Path:
+    from autotoken.core.paths import PROJECT_ROOT
+    from autotoken.settings.setup_wizard import _read_env, _write_env
+
+    env = _read_env()
+    raw = str(env.get("GENERIC_API_ACCOUNTS_FILE") or os.environ.get("GENERIC_API_ACCOUNTS_FILE") or "").strip()
+    if not raw:
+        raw = "data/generic_api_accounts.txt"
+        _write_env("GENERIC_API_ACCOUNTS_FILE", raw)
+        os.environ["GENERIC_API_ACCOUNTS_FILE"] = raw
+    path = resolve_project_config_path(raw, project_root=PROJECT_ROOT)
+    if path is None:
+        raise HTTPException(status_code=400, detail="GENERIC_API_ACCOUNTS_FILE 不能指向项目目录外")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _split_outlook_account_lines(content: str) -> list[str]:
     lines: list[str] = []
     for line in str(content or "").replace("\ufeff", "").replace(";", "\n").splitlines():
@@ -196,6 +226,16 @@ def _split_outlook_account_lines(content: str) -> list[str]:
 
 
 def _split_icloud_account_lines(content: str) -> list[str]:
+    lines: list[str] = []
+    for line in str(content or "").replace("\ufeff", "").replace(";", "\n").splitlines():
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        lines.append(value)
+    return lines
+
+
+def _split_generic_api_account_lines(content: str) -> list[str]:
     lines: list[str] = []
     for line in str(content or "").replace("\ufeff", "").replace(";", "\n").splitlines():
         value = line.strip()
@@ -336,6 +376,86 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
     return payload
 
 
+def _load_generic_api_pool_status(target: Path, *, include_all: bool = False) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.generic_api import GenericApiMailProvider
+    from autotoken.storage.accounts import load_accounts
+    from autotoken.storage.generic_api_pool import registered_email_records, unavailable_email_records
+
+    content = read_text(target) if target.exists() else ""
+    local_accounts = {
+        normalize_email_addr(account.get("email")): account
+        for account in load_accounts()
+        if account.get("email")
+    }
+    registered_records = registered_email_records()
+    unavailable_records = unavailable_email_records()
+    skipped_emails = GenericApiMailProvider._registered_emails()
+
+    entries: list[dict[str, Any]] = []
+    invalid = 0
+    seen: set[str] = set()
+    for line in _split_generic_api_account_lines(content):
+        account = GenericApiMailProvider._parse_account_line(line)
+        if not account or not account.validate():
+            invalid += 1
+            continue
+        email = account.email.lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        local_account = local_accounts.get(email) or {}
+        local_status = str(local_account.get("status") or "").strip().lower()
+        last_error = str(local_account.get("last_error") or "").strip().lower()
+        unavailable_record = unavailable_records.get(email) or {}
+        unavailable_source = str(unavailable_record.get("source") or "").strip().lower()
+        local_unavailable = (
+            email in unavailable_records
+            or local_status == "fail"
+            or "account_deactivated" in last_error
+        )
+        registered = (email in registered_records or bool(local_account)) and not local_unavailable
+        unavailable = local_unavailable or (email in skipped_emails and not registered)
+        status = "registered" if registered else ("unavailable" if unavailable else "available")
+        unavailable_reason = last_error or unavailable_source
+        entries.append(
+            {
+                "email": account.email,
+                "status": status,
+                "registered": registered,
+                "available": status == "available",
+                "unavailable": status == "unavailable",
+                "unavailable_reason": unavailable_reason if status == "unavailable" else "",
+                "has_receive_code_url": bool(account.receive_code_url),
+            }
+        )
+
+    registered_count = sum(1 for item in entries if item["status"] == "registered")
+    unavailable_count = sum(1 for item in entries if item["status"] == "unavailable")
+    available_count = sum(1 for item in entries if item["status"] == "available")
+    available_entries = [item for item in entries if item["status"] == "available"]
+    payload = {
+        "file": str(target),
+        "total": len(entries),
+        "available": available_count,
+        "registered": registered_count,
+        "unavailable": unavailable_count,
+        "invalid": invalid,
+        "accounts": available_entries[:500],
+        "next_available_email": next((item["email"] for item in entries if item["status"] == "available"), ""),
+    }
+    if include_all:
+        payload.update(
+            {
+                "all_accounts": entries[:500],
+                "available_accounts": available_entries[:500],
+                "registered_accounts": [item for item in entries if item["status"] == "registered"][:500],
+                "unavailable_accounts": [item for item in entries if item["status"] == "unavailable"][:500],
+            }
+        )
+    return payload
+
+
 def _delete_outlook_pool_accounts(target: Path, emails: list[str]) -> dict[str, Any]:
     from autotoken.mail.base import normalize_email_addr
     from autotoken.mail.outlook import OutlookMailProvider
@@ -391,6 +511,45 @@ def _delete_icloud_pool_accounts(target: Path, emails: list[str]) -> dict[str, A
     for raw_line in content.replace("\ufeff", "").replace(";", "\n").splitlines():
         line = raw_line.strip()
         account = ICloudMailProvider._parse_account_line(line)
+        email = account.email.lower() if account and account.validate() else ""
+        if email and email in targets:
+            if email not in deleted_seen:
+                deleted_seen.add(email)
+                deleted_emails.append(email)
+            continue
+        kept_lines.append(raw_line)
+
+    next_content = "\n".join(kept_lines)
+    if next_content:
+        next_content += "\n"
+    target.write_text(next_content, encoding="utf-8")
+
+    missing = sorted(targets - deleted_seen)
+    return {
+        "file": str(target),
+        "requested": len(targets),
+        "deleted": len(deleted_seen),
+        "deleted_emails": deleted_emails[:50],
+        "missing_emails": missing[:50],
+    }
+
+
+def _delete_generic_api_pool_accounts(target: Path, emails: list[str]) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.generic_api import GenericApiMailProvider
+
+    requested = [normalize_email_addr(email) for email in emails or []]
+    targets = {email for email in requested if email}
+    if not targets:
+        raise HTTPException(status_code=400, detail="请选择要删除的 通用API 邮箱")
+
+    content = read_text(target) if target.exists() else ""
+    kept_lines: list[str] = []
+    deleted_emails: list[str] = []
+    deleted_seen: set[str] = set()
+    for raw_line in content.replace("\ufeff", "").replace(";", "\n").splitlines():
+        line = raw_line.strip()
+        account = GenericApiMailProvider._parse_account_line(line)
         email = account.email.lower() if account and account.validate() else ""
         if email and email in targets:
             if email not in deleted_seen:
@@ -694,6 +853,92 @@ def create_config_io_router(
         result = _delete_icloud_pool_accounts(target, params.emails)
         route_logger.info(
             "[icloud] 删除账号池邮箱: file=%s requested=%d deleted=%d",
+            target,
+            result["requested"],
+            result["deleted"],
+        )
+        return result
+
+    @router.post("/api/config/generic-api-accounts/import")
+    def post_import_generic_api_accounts(params: GenericApiAccountsImportParams):
+        """导入通用API账号池内容，格式 email@example.com--收码链接（2个及以上-均可）。"""
+        content = str(params.content or "")
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="上传文件为空")
+        if len(content.encode("utf-8", errors="ignore")) > GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="上传文件过大，最多支持 2MB txt")
+
+        from autotoken.mail.generic_api import GenericApiMailProvider
+
+        target = _resolve_generic_api_accounts_file()
+        if target.exists() and target.stat().st_size > GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有通用API账号池文件过大，最多支持 2MB txt")
+        existing_content = read_text(target) if target.exists() else ""
+        existing_accounts: dict[str, str] = {}
+        for line in _split_generic_api_account_lines(existing_content):
+            account = GenericApiMailProvider._parse_account_line(line)
+            if account and account.validate():
+                existing_accounts[account.email.lower()] = line
+
+        imported: list[str] = []
+        imported_emails: list[str] = []
+        duplicates: list[str] = []
+        invalid: list[dict[str, Any]] = []
+        seen_upload: set[str] = set()
+        for line_no, line in enumerate(_split_generic_api_account_lines(content), start=1):
+            account = GenericApiMailProvider._parse_account_line(line)
+            if not account or not account.validate():
+                invalid.append({"line": line_no, "preview": line[:120]})
+                continue
+            email_key = account.email.lower()
+            if email_key in existing_accounts or email_key in seen_upload:
+                duplicates.append(account.email)
+                continue
+            seen_upload.add(email_key)
+            imported.append(line)
+            imported_emails.append(account.email)
+
+        if imported:
+            suffix = "\n" if existing_content and not existing_content.startswith(("\n", "\r")) else ""
+            target.write_text("\n".join(imported) + suffix + existing_content, encoding="utf-8")
+
+        route_logger.info(
+            "[generic-api] 导入账号池: file=%s imported=%d duplicate=%d invalid=%d source=%s",
+            target,
+            len(imported),
+            len(duplicates),
+            len(invalid),
+            params.filename or "<inline>",
+        )
+        return {
+            "file": str(target),
+            "imported": len(imported),
+            "duplicates": len(duplicates),
+            "invalid": len(invalid),
+            "total": len(_split_generic_api_account_lines(content)),
+            "duplicate_emails": duplicates[:20],
+            "imported_emails": imported_emails[:20],
+            "first_imported_email": imported_emails[0] if imported_emails else "",
+            "invalid_lines": invalid[:20],
+        }
+
+    @router.get("/api/config/generic-api-accounts/status")
+    def get_generic_api_accounts_status(include_all: bool = False):
+        """读取通用API邮箱池状态。只返回邮箱和能力标记，不返回收码链接。"""
+        target = _resolve_generic_api_accounts_file()
+        if target.exists() and target.stat().st_size > GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有通用API账号池文件过大，最多支持 2MB txt")
+        return _load_generic_api_pool_status(target, include_all=include_all)
+
+    @router.post("/api/config/generic-api-accounts/delete")
+    def post_delete_generic_api_accounts(params: GenericApiAccountsDeleteParams):
+        """从通用API邮箱池删除指定邮箱行，不删除本地已注册账号。"""
+        target = _resolve_generic_api_accounts_file()
+        if target.exists() and target.stat().st_size > GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有通用API账号池文件过大，最多支持 2MB txt")
+        result = _delete_generic_api_pool_accounts(target, params.emails)
+        route_logger.info(
+            "[generic-api] 删除账号池邮箱: file=%s requested=%d deleted=%d",
             target,
             result["requested"],
             result["deleted"],

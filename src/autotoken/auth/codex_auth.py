@@ -5027,9 +5027,25 @@ def login_codex_via_browser(
                 if name_input.is_visible(timeout=3000):
                     name_input.fill("User")
 
-                # 自适应：生日日期（spinbutton）或年龄（普通 input）
+                # 自适应：新版单个 Birthday 文本框、生日日期（spinbutton）或年龄（普通 input）
+                birthday_text_input = page.locator(
+                    'input[name*="birth" i], input[id*="birth" i], input[placeholder*="Birthday" i], '
+                    'input[aria-label*="Birthday" i], input[placeholder*="Date of birth" i], '
+                    'input[aria-label*="Date of birth" i]'
+                ).first
+                birthday_text_filled = False
+                try:
+                    if birthday_text_input.is_visible(timeout=1000) and birthday_text_input.is_editable(timeout=1000):
+                        birthday_text_input.fill("15/06/1995")
+                        birthday_text_filled = True
+                        logger.info("[Codex] 填入生日: 15/06/1995 (text)")
+                except Exception:
+                    birthday_text_filled = False
+
                 spinbuttons = page.locator('[role="spinbutton"]').all()
-                if len(spinbuttons) >= 3:
+                if birthday_text_filled:
+                    pass
+                elif len(spinbuttons) >= 3:
                     # 类型 A：React Aria DateField
                     try:
                         page.locator("text=生日日期").click()

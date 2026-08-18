@@ -885,7 +885,7 @@
                   title="全选/取消全选(主号除外)" />
               </th>
               <th class="px-4 py-3 font-medium">#</th>
-              <th class="px-4 py-3 font-medium">邮箱</th>
+              <th class="px-4 py-3 font-medium min-w-56">邮箱</th>
               <th class="px-4 py-3 font-medium">账号类型</th>
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">绑定渠道</th>
@@ -930,8 +930,12 @@
                   class="accent-rose-500 cursor-pointer" />
               </td>
               <td class="px-4 py-3 text-gray-500">{{ accountPageStartIndex + i + 1 }}</td>
-              <td class="px-4 py-3">
-                <div class="font-mono text-xs text-gray-200">{{ displayEmail(acc) }}</div>
+              <td class="px-4 py-3 max-w-56">
+                <div
+                  class="w-56 max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-gray-200"
+                  :title="displayEmail(acc)">
+                  {{ displayEmailPreview(acc) }}
+                </div>
                 <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">
                   Hub: {{ acc.hub_source_name }}
                 </div>
@@ -2413,6 +2417,14 @@ function accountKakaoLinkExtracted(acc) {
 
 function displayEmail(acc) {
   return acc?.display_email || acc?.original_email || acc?.email || ''
+}
+
+function displayEmailPreview(acc) {
+  const email = displayEmail(acc)
+  if (!email) return ''
+  const maxVisible = 34
+  if (email.length <= maxVisible) return email
+  return `${email.slice(0, maxVisible)}…`
 }
 
 function isBindableFreeAccount(acc) {
@@ -4446,3 +4458,4 @@ async function batchDelete() {
   }
 }
 </script>
+

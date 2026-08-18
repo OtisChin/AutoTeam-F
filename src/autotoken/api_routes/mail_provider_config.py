@@ -30,6 +30,10 @@ def mail_provider_field_keys(provider: str) -> set[str]:
             "ICLOUD_ACCOUNTS_FILE",
             "ICLOUD_ACCOUNTS",
         },
+        "generic-api": {
+            "GENERIC_API_ACCOUNTS_FILE",
+            "GENERIC_API_ACCOUNTS",
+        },
         "luckmail": {
             "LUCKMAIL_BASE_URL",
             "LUCKMAIL_API_KEY",

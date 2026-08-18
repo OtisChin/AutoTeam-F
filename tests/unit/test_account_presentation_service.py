@@ -44,7 +44,7 @@ def test_sanitize_account_displays_token_expired_quota_failure_as_auth_invalid()
     assert sanitized["status"] == "auth_invalid"
 
 
-def test_sanitize_account_displays_token_invalidated_quota_failure_as_auth_revoked():
+def test_sanitize_account_keeps_token_invalidated_quota_failure_as_fail():
     sanitized = account_presentation.sanitize_account_with_indexes(
         {
             "email": "user@example.com",
@@ -65,7 +65,7 @@ def test_sanitize_account_displays_token_invalidated_quota_failure_as_auth_revok
     )
 
     assert sanitized["raw_status"] == "fail"
-    assert sanitized["status"] == "auth_revoked"
+    assert sanitized["status"] == "fail"
 
 
 def test_sanitize_account_exposes_display_email_from_original_email():

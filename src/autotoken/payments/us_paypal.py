@@ -203,7 +203,6 @@ PAYPAL_COUNTRY_BILLING_ALIASES = {
     "ID": "DE",
     "JP": "DE",
     "TH": "DE",
-    "TR": "US",
 }
 
 PAYPAL_CHECKOUT_BILLING_ALIASES = {
@@ -212,7 +211,6 @@ PAYPAL_CHECKOUT_BILLING_ALIASES = {
     "ID": "DE",
     "JP": "DE",
     "TH": "DE",
-    "TR": "US",
 }
 
 

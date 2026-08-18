@@ -339,7 +339,7 @@ def _looks_like_email_otp_message(email_data: dict) -> bool:
 
 def _is_icloud_message(email_data: dict, mail_client: Any = None) -> bool:
     provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
-    if provider == "icloud":
+    if provider in {"icloud", "generic-api", "generic_api", "genericapi"}:
         return True
     if not isinstance(email_data, dict):
         return False
@@ -348,6 +348,8 @@ def _is_icloud_message(email_data: dict, mail_client: Any = None) -> bool:
             continue
         item_provider = str(item.get("provider") or item.get("source") or "").strip().lower()
         if item_provider == "icloud" or item_provider.startswith("icloud_"):
+            return True
+        if item_provider in {"generic-api", "generic_api", "genericapi"} or item_provider.startswith("generic_api_"):
             return True
     return False
 

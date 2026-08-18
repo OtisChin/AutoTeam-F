@@ -96,7 +96,7 @@ def test_create_express_billing_agreement_returns_ba_url():
         ("MX", "MXN", "MX"),
         ("PH", "PHP", "PH"),
         ("TH", "EUR", "DE"),
-        ("TR", "USD", "US"),
+        ("TR", "USD", "TR"),
         ("NL", "EUR", "NL"),
     ],
 )
@@ -715,14 +715,14 @@ def test_japan_checkout_country_uses_germany_billing_profile():
     assert billing["postal_code"] == "10117"
 
 
-def test_turkey_checkout_country_uses_us_billing_profile():
+def test_turkey_checkout_country_uses_turkey_billing_profile():
     billing = us_paypal.paypal_billing(country="TR")
 
     assert us_paypal.paypal_currency_for_country("TR") == "USD"
-    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "US", "currency": "USD"}
-    assert billing["country"] == "US"
-    assert billing["state"] in {"AK", "DE", "MT", "NH", "OR"}
-    assert billing["postal_code"]
+    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "TR", "currency": "USD"}
+    assert billing["country"] == "TR"
+    assert billing["city"] == "Istanbul"
+    assert billing["postal_code"] == "34433"
 
 
 def test_japan_create_checkout_uses_germany_context_and_billing_to_keep_paypal_available(monkeypatch):
