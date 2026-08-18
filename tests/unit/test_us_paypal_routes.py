@@ -765,6 +765,36 @@ def test_protocol_batch_job_assigns_account_link_phone_and_proxy(monkeypatch):
     assert captured[1].proxy_url == "proxy2.example:1000:user2:pass2"
 
 
+def test_protocol_batch_job_accepts_manual_paypal_links_without_selected_accounts(monkeypatch):
+    captured = []
+
+    def fake_run(cfg, log, cancel_check):
+        captured.append(cfg)
+        return {"status": "success", "ba_token": cfg.ba_token}
+
+    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", fake_run)
+    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message="": {"email": email})
+
+    req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "paypalLinks": [
+            "https://www.paypal.com/agreements/approve?ba_token=BA-91G197898H813770D",
+            "BA-4PL91052NS685551N",
+        ],
+        "smsProvider": "hero_sms",
+        "country": "TH",
+        "concurrency": 2,
+    })
+    tasks = us_paypal._validate_protocol_batch_start(req)
+    job_id = us_paypal._new_protocol_batch_job([task["email"] for task in tasks], concurrency=2)
+
+    us_paypal._run_protocol_batch_payment_job(job_id, req)
+
+    assert [task["ba_token"] for task in tasks] == ["BA-91G197898H813770D", "BA-4PL91052NS685551N"]
+    assert sorted(cfg.ba_token for cfg in captured) == ["BA-4PL91052NS685551N", "BA-91G197898H813770D"]
+    assert us_paypal.JOBS[job_id]["status"] == "success"
+    assert us_paypal.JOBS[job_id]["total"] == 2
+
+
 def test_protocol_batch_account_retries_like_tuned_protocol_chain(monkeypatch):
     attempts = []
     job_id = us_paypal._new_protocol_batch_job(["buyer@example.com"], 1)
@@ -998,6 +1028,48 @@ def test_pay153_batch_job_assigns_account_link_phone_country_and_proxy(monkeypat
     statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses["gb@example.com"]["status"] == "paid"
     assert statuses["id@example.com"]["status"] == "paid"
+
+
+def test_pay153_batch_job_accepts_manual_paypal_links_without_selected_accounts(monkeypatch):
+    captured_create_payloads = []
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        captured_create_payloads.append({"paypal_url": paypal_url, "phone": phone, "country": country})
+        return {
+            "job": {
+                "id": f"remote-{len(captured_create_payloads)}",
+                "status": "completed",
+                "stage": "done",
+                "logs": [],
+                "result": {"status": "success", "ba_token": us_paypal.extract_protocol_ba_token(paypal_url)},
+            }
+        }
+
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+    monkeypatch.setattr(us_paypal, "_pay153_get_job", lambda remote_job_id, client=None: {"id": remote_job_id, "status": "completed", "stage": "done", "logs": [], "result": {"status": "success"}})
+    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message="": {"email": email})
+
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "paypalLinks": [
+            "https://www.paypal.com/agreements/approve?ba_token=BA-153MANUAL111",
+            "BA-153MANUAL222",
+        ],
+        "smsProvider": "sms_record",
+        "phonePool": "+66000000001----https://sms.example/one\n+66000000002----https://sms.example/two",
+        "proxies": "proxy-one\nproxy-two",
+        "country": "TH",
+        "concurrency": 2,
+    })
+    tasks = us_paypal._validate_pay153_batch_start(req)
+    job_id = us_paypal._new_pay153_batch_job([task["email"] for task in tasks], concurrency=2)
+
+    us_paypal._run_pay153_batch_payment_job(job_id, req)
+
+    assert [task["ba_token"] for task in tasks] == ["BA-153MANUAL111", "BA-153MANUAL222"]
+    assert sorted(us_paypal.extract_protocol_ba_token(item["paypal_url"]) for item in captured_create_payloads) == ["BA-153MANUAL111", "BA-153MANUAL222"]
+    assert sorted(item["phone"] for item in captured_create_payloads) == ["+66000000001", "+66000000002"]
+    assert us_paypal.JOBS[job_id]["status"] == "success"
+    assert us_paypal.JOBS[job_id]["total"] == 2
 
 
 def test_pay153_batch_job_marks_account_running_before_remote_create(monkeypatch):

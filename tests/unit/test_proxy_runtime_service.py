@@ -95,6 +95,63 @@ def test_fetch_proxy_from_api_url_rejects_html_response(monkeypatch):
             provider="1024proxy",
         )
 
+def test_fetch_proxy_from_api_url_retries_empty_cliproxy_response_then_succeeds(monkeypatch):
+    calls = []
+    sleeps = []
+
+    class EmptyResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "Please contact customer service"
+
+    class GoodResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "7.7.7.7:8080:user-e:pass-e"
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        return EmptyResponse() if len(calls) < 3 else GoodResponse()
+
+    monkeypatch.setattr(proxy_runtime.requests, "get", fake_get)
+    monkeypatch.setattr(proxy_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = proxy_runtime.fetch_proxy_from_api_url(
+        "https://api.cliproxy.io/white/api?region=IS&num=1&time=30&format=n&type=json",
+        default_auth_scheme="socks5h",
+        provider="cliproxy",
+    )
+
+    assert result == "socks5h://user-e:pass-e@7.7.7.7:8080"
+    assert len(calls) == 3
+    assert sleeps == [0.5, 1.0]
+
+def test_fetch_proxy_from_api_url_retries_empty_cliproxy_response_then_returns_empty(monkeypatch):
+    calls = []
+    sleeps = []
+
+    class EmptyResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "Please contact customer service"
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        return EmptyResponse()
+
+    monkeypatch.setattr(proxy_runtime.requests, "get", fake_get)
+    monkeypatch.setattr(proxy_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = proxy_runtime.fetch_proxy_from_api_url(
+        "https://api.cliproxy.io/white/api?region=IS&num=1&time=30&format=n&type=json",
+        default_auth_scheme="socks5h",
+        provider="cliproxy",
+    )
+
+    assert result == ""
+    assert len(calls) == proxy_runtime.PROXY_API_EMPTY_RETRY_ATTEMPTS
+    assert sleeps == [0.5, 1.0]
+
 def test_build_oauth_proxy_selector_treats_proxy_pool_api_url_as_api(monkeypatch):
     class FakeResponse:
         status_code = 200

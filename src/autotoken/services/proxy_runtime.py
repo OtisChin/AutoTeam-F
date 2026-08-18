@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -12,6 +13,8 @@ from autotoken.settings.config import normalize_proxy_url
 
 PROXY_POOL_TEXT_MAX_BYTES = 1 * 1024 * 1024
 PROXY_POOL_MAX_ENTRIES = 5_000
+PROXY_API_EMPTY_RETRY_ATTEMPTS = 3
+PROXY_API_EMPTY_RETRY_DELAY_SECONDS = 0.5
 
 
 def parse_proxy_pool_values(values: list[Any] | tuple[Any, ...] | None = None, text: str | None = None) -> list[str]:
@@ -236,42 +239,56 @@ def fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provider
     if not url:
         return ""
     normalized_provider = normalize_proxy_api_provider(provider or infer_proxy_api_provider_from_url(url))
-    try:
-        resp = requests.get(url, timeout=30)
-    except Exception as exc:
-        raise RuntimeError(f"动态代理 API 请求失败: {exc}") from exc
-    if resp.status_code >= 400:
-        raise RuntimeError(f"动态代理 API 返回 HTTP {resp.status_code}: {str(resp.text or '')[:160]}")
-    content_type = str(resp.headers.get("content-type") or "").lower()
-    payload: Any
-    if "json" in content_type:
+    empty_retry_attempts = PROXY_API_EMPTY_RETRY_ATTEMPTS if normalized_provider == "cliproxy" else 1
+    last_error_message = ""
+
+    for attempt in range(1, empty_retry_attempts + 1):
         try:
-            payload = resp.json()
-        except Exception:
-            payload = resp.text
-    else:
-        text = str(resp.text or "").strip()
-        if re.match(r"(?is)^\s*<!doctype\s+html\b|^\s*<html\b", text):
-            raise RuntimeError(
-                f"动态代理 API 返回 HTML 页面，请检查 {normalized_provider} API 地址、登录态/Token、白名单或套餐是否有效"
-            )
+            resp = requests.get(url, timeout=30)
+        except Exception as exc:
+            raise RuntimeError(f"动态代理 API 请求失败: {exc}") from exc
+        if resp.status_code >= 400:
+            raise RuntimeError(f"动态代理 API 返回 HTTP {resp.status_code}: {str(resp.text or '')[:160]}")
+        content_type = str(resp.headers.get("content-type") or "").lower()
+        payload: Any
+        if "json" in content_type:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = resp.text
+        else:
+            text = str(resp.text or "").strip()
+            if re.match(r"(?is)^\s*<!doctype\s+html\b|^\s*<html\b", text):
+                raise RuntimeError(
+                    f"动态代理 API 返回 HTML 页面，请检查 {normalized_provider} API 地址、登录态/Token、白名单或套餐是否有效"
+                )
+            try:
+                payload = json.loads(text)
+            except Exception:
+                payload = text
+        candidate = extract_proxy_candidate_from_api_payload(payload)
+        if not candidate:
+            last_error_message = "动态代理 API 未返回可识别的代理"
+            if normalized_provider == "cliproxy" and attempt < empty_retry_attempts:
+                time.sleep(PROXY_API_EMPTY_RETRY_DELAY_SECONDS * attempt)
+                continue
+            if normalized_provider == "cliproxy":
+                return ""
+            raise RuntimeError(last_error_message)
+        if "://" not in candidate and "@" not in candidate:
+            candidate = f"{default_auth_scheme}://{candidate}"
         try:
-            payload = json.loads(text)
-        except Exception:
-            payload = text
-    candidate = extract_proxy_candidate_from_api_payload(payload)
-    if not candidate:
-        if normalized_provider == "cliproxy":
-            return ""
-        raise RuntimeError("动态代理 API 未返回可识别的代理")
-    if "://" not in candidate and "@" not in candidate:
-        candidate = f"{default_auth_scheme}://{candidate}"
-    try:
-        return normalize_proxy_url(candidate, default_auth_scheme=default_auth_scheme)
-    except Exception as exc:
-        if normalized_provider == "cliproxy":
-            return ""
-        raise RuntimeError(f"动态代理 API 返回的代理格式无效: {candidate} ({exc})") from exc
+            return normalize_proxy_url(candidate, default_auth_scheme=default_auth_scheme)
+        except Exception as exc:
+            if normalized_provider == "cliproxy" and attempt < empty_retry_attempts:
+                time.sleep(PROXY_API_EMPTY_RETRY_DELAY_SECONDS * attempt)
+                continue
+            if normalized_provider == "cliproxy":
+                return ""
+            raise RuntimeError(f"动态代理 API 返回的代理格式无效: {candidate} ({exc})") from exc
+    if normalized_provider == "cliproxy":
+        return ""
+    raise RuntimeError(last_error_message or "动态代理 API 未返回可识别的代理")
 
 
 def preflight_payment_proxy_url(proxy_url: str, *, timeout_seconds: float = 20.0) -> tuple[bool, str]:

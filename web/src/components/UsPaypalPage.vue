@@ -435,7 +435,8 @@
 
               <label class="block">
                 <span class="mb-1.5 block text-sm font-semibold text-gray-300">BA 链接 / BA token</span>
-                <textarea v-model.trim="protocolForm.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+                <textarea v-model.trim="protocolForm.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-...&#10;https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+                <span class="mt-1 block text-xs text-gray-500">每行一条，可粘贴多条 BA 链接；未勾选已提链账号时会按并发数批量协议支付。</span>
               </label>
 
               <div class="grid gap-4 md:grid-cols-2">
@@ -676,6 +677,12 @@
                   </table>
                 </div>
               </div>
+
+              <label class="block">
+                <span class="mb-1.5 block text-sm font-semibold text-gray-300">BA 链接 / BA token</span>
+                <textarea v-model.trim="pay153Form.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-...&#10;https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-cyan-500 focus:outline-none" :disabled="pay153Busy"></textarea>
+                <span class="mt-1 block text-xs text-gray-500">每行一条，可粘贴多条 BA 链接；未选择已提链账号时会直接按这些链接并发提交 153支付。</span>
+              </label>
 
               <div class="grid gap-4 md:grid-cols-2">
                 <label class="block">
@@ -987,6 +994,7 @@ const protocolAutoPaySeenKeys = ref(new Set())
 const protocolAutoPayLastNewAt = ref(0)
 const protocolAutoPayStatusText = ref('')
 const pay153Form = ref({
+  paypalLink: '',
   country: 'AUTO',
   smsProvider: 'sms_record',
   phone: '',
@@ -2130,6 +2138,19 @@ async function drainPay153AutoPayQueue() {
 function splitProtocolLines(value) {
   return String(value || '').replace(/,/g, '\n').split(/\r?\n/).map(item => item.trim()).filter(Boolean)
 }
+function parseManualPaypalLinks(value) {
+  const seen = new Set()
+  const links = []
+  for (const line of splitProtocolLines(value)) {
+    const token = displayBaToken(line)
+    if (!/^BA-[A-Za-z0-9_-]+$/i.test(token)) continue
+    const key = token.toUpperCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    links.push(line)
+  }
+  return links
+}
 function parseSmsRecordPhonePoolLines(value) {
   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(line => /^\S+\s*-{4,}\s*https?:\/\//i.test(line))
 }
@@ -2141,16 +2162,19 @@ function validateProtocolPayment(targetEmails = protocolSelectedEmails.value) {
   protocolForm.value.smsProvider = String(protocolForm.value.smsProvider || 'sms_record').trim().toLowerCase().replace(/-/g, '_')
   if (!['sms_record', 'hero_sms', 'hero_sms_rent', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
   const batchCount = Array.isArray(targetEmails) ? targetEmails.length : 0
-  if (!batchCount && !String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token，或多选已成功提链账号。', true); return false }
+  const manualPaypalLinks = batchCount ? [] : parseManualPaypalLinks(protocolForm.value.paypalLink)
+  const manualLinkCount = manualPaypalLinks.length
+  if (!batchCount && !manualLinkCount) { setProtocolStatus('请填写有效 BA 链接或 BA token，或多选已成功提链账号。', true); return false }
   if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付支持 AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US。', true); return false }
   const phoneCount = splitProtocolLines(protocolForm.value.phone).length
   const phonePoolCount = phonePoolReuseEnabled.value ? parseSmsRecordPhonePoolLines(protocolForm.value.phonePool).length : usablePhonePoolEntriesFromText(protocolForm.value.phonePool, 'protocol').length
+  const requiredPaymentCount = batchCount || manualLinkCount || 1
   if (protocolForm.value.smsProvider === 'sms_record') {
-    const requiredCount = batchCount || 1
+    const requiredCount = requiredPaymentCount
     if (phonePoolCount < requiredCount) { setProtocolStatus('协议支付号池数量不足；请按“手机号----SMS record URL”每行导入一个号码。', true); return false }
   } else if (protocolForm.value.smsProvider === 'hero_sms_rent') {
     if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写 HeroSMS 长效号码。', true); return false }
-    if (batchCount > 1 && phoneCount < batchCount) { setProtocolStatus('HeroSMS 长效号批量支付时，每个账号都需要一行长效号码。', true); return false }
+    if (requiredPaymentCount > 1 && phoneCount < requiredPaymentCount) { setProtocolStatus('HeroSMS 长效号批量支付时，每个账号或 BA 链接都需要一行长效号码。', true); return false }
   }
   protocolForm.value.concurrency = Math.max(1, Math.min(20, Number(protocolForm.value.concurrency || 1)))
   protocolForm.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(protocolForm.value.proxyPreflightAttempts || 5)))
@@ -2163,6 +2187,8 @@ async function startProtocolPayment(options = {}) {
   const selectedEmails = Array.isArray(options.autoBatchEmails) ? options.autoBatchEmails : protocolSelectedEmails.value
   if (Array.isArray(options.autoBatchEmails)) selectedProtocolAccountEmails.value = new Set(options.autoBatchEmails)
   if (!validateProtocolPayment(selectedEmails)) return false
+  const manualPaypalLinks = selectedEmails.length ? [] : parseManualPaypalLinks(protocolForm.value.paypalLink)
+  const paymentCount = manualPaypalLinks.length || selectedEmails.length || 1
   protocolBusy.value = true
   protocolCanceling.value = false
   protocolLogs.value = []
@@ -2170,12 +2196,13 @@ async function startProtocolPayment(options = {}) {
   protocolJob.value = null
   activeTab.value = 'protocol'
   setProtocolStatus('协议支付任务已提交，正在启动本地 PayPal 引擎。')
-  const claimedPhonePoolEntries = protocolForm.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(protocolForm.value.phonePool, selectedEmails.length || 1, 'protocol') : []
+  const claimedPhonePoolEntries = protocolForm.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(protocolForm.value.phonePool, paymentCount, 'protocol') : []
   const claimedPhonePoolKeys = claimedPhonePoolEntries.map(item => item.key).filter(Boolean)
   try {
     saveProtocolForm({ silent: true })
     const payload = {
-      paypalLink: protocolForm.value.paypalLink,
+      paypalLink: manualPaypalLinks[0] || protocolForm.value.paypalLink,
+      paypalLinks: manualPaypalLinks,
       phone: protocolForm.value.phone,
       phonePool: protocolForm.value.smsProvider === 'sms_record' ? (phonePoolReuseEnabled.value ? phonePoolPayloadForSubmission(protocolForm.value.phonePool, 'protocol') : formatPhonePoolEntries(claimedPhonePoolEntries)) : protocolForm.value.phonePool,
       smsRecordUrl: protocolForm.value.smsRecordUrl,
@@ -2188,13 +2215,13 @@ async function startProtocolPayment(options = {}) {
       smsRecordWaitSeconds: protocolForm.value.smsRecordWaitSeconds,
       smsRecordPollSeconds: protocolForm.value.smsRecordPollSeconds,
     }
-    const data = selectedEmails.length
+    const data = selectedEmails.length || manualPaypalLinks.length
       ? await api.startUsPaypalProtocolBatch({ ...payload, accountEmails: selectedEmails })
       : await api.startUsPaypalProtocol(payload)
     if (!data.job_id) throw new Error('后端没有返回协议支付任务 ID')
     if (claimedPhonePoolKeys.length) protocolClaimedPhonePoolKeysByJob.set(data.job_id, claimedPhonePoolKeys)
-    protocolJob.value = { id: data.job_id, status: 'queued', total: selectedEmails.length || 1, completed: 0, concurrency: protocolForm.value.concurrency }
-    persistProtocolJobState({ jobId: data.job_id, accountCount: selectedEmails.length || 1, concurrency: protocolForm.value.concurrency, startedAt: Date.now(), claimedPhonePoolKeys })
+    protocolJob.value = { id: data.job_id, status: 'queued', total: paymentCount, completed: 0, concurrency: protocolForm.value.concurrency }
+    persistProtocolJobState({ jobId: data.job_id, accountCount: paymentCount, concurrency: protocolForm.value.concurrency, startedAt: Date.now(), claimedPhonePoolKeys })
     await pollProtocolJob(data.job_id)
     return true
   } catch (error) {
@@ -2341,13 +2368,16 @@ function clearSelectedPay153Accounts() {
 function currentPay153BaPayload() {
   const selectedEmail = pay153SelectedEmails.value[0] || ''
   const selected = selectedEmail ? pay153LinkAccountOptions.value.find(item => item.email === selectedEmail) : null
+  const manualPaypalLinks = parseManualPaypalLinks(pay153Form.value.paypalLink)
   return {
-    paypalLink: selected?.paypalLink || '',
-    baToken: displayBaToken(selected?.paypalLink || ''),
+    paypalLink: selected?.paypalLink || manualPaypalLinks[0] || '',
+    baToken: displayBaToken(selected?.paypalLink || manualPaypalLinks[0] || ''),
   }
 }
 function validatePay153Payment(targetEmails = pay153SelectedEmails.value) {
   const batchCount = Array.isArray(targetEmails) ? targetEmails.length : 0
+  const manualPaypalLinks = batchCount ? [] : parseManualPaypalLinks(pay153Form.value.paypalLink)
+  const manualLinkCount = manualPaypalLinks.length
   const phoneCount = splitProtocolLines(pay153Form.value.phone).length
   const phonePoolCount = phonePoolReuseEnabled.value ? parsePay153PhonePoolLines(pay153Form.value.phonePool).length : usablePhonePoolEntriesFromText(pay153Form.value.phonePool, 'pay153').length
   const proxyCount = splitProtocolLines(pay153Form.value.proxies).length
@@ -2359,11 +2389,12 @@ function validatePay153Payment(targetEmails = pay153SelectedEmails.value) {
   pay153Form.value.concurrency = Math.max(1, Math.min(10, Number(pay153Form.value.concurrency || 1)))
   pay153Form.value.smsRecordWaitSeconds = Math.max(30, Math.min(900, Number(pay153Form.value.smsRecordWaitSeconds || 300)))
   pay153Form.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(pay153Form.value.smsRecordPollSeconds || 3)))
-  if (!batchCount) { setPay153Status('请选择要使用 153支付 的已成功提链账号。', true); return false }
+  const requiredPaymentCount = batchCount || manualLinkCount
+  if (!requiredPaymentCount) { setPay153Status('请选择要使用 153支付 的已成功提链账号，或填写有效 BA 链接。', true); return false }
   if (pay153Form.value.smsProvider === 'sms_record') {
-    if (phonePoolCount < batchCount) { setPay153Status('153支付号池数量不足；请按“手机号----SMS record URL”每行导入一个号码。', true); return false }
-  } else if (pay153Form.value.smsProvider === 'hero_sms_rent' && phoneCount < batchCount) {
-    setPay153Status('HeroSMS 长效号 153支付批量提交时，每个账号都需要一行长效号码。', true); return false
+    if (phonePoolCount < requiredPaymentCount) { setPay153Status('153支付号池数量不足；请按“手机号----SMS record URL”每行导入一个号码。', true); return false }
+  } else if (pay153Form.value.smsProvider === 'hero_sms_rent' && phoneCount < requiredPaymentCount) {
+    setPay153Status('HeroSMS 长效号 153支付批量提交时，每个账号或 BA 链接都需要一行长效号码。', true); return false
   }
   if (!proxyCount) { setPay153Status('请填写153支付代理池。', true); return false }
   if (proxyCount > 500) { setPay153Status('153支付代理池最多支持 500 条。', true); return false }
@@ -2373,6 +2404,8 @@ async function startPay153Payment(options = {}) {
   const selectedEmails = Array.isArray(options.autoBatchEmails) ? options.autoBatchEmails : pay153SelectedEmails.value
   if (Array.isArray(options.autoBatchEmails)) selectedPay153AccountEmails.value = new Set(options.autoBatchEmails)
   if (!validatePay153Payment(selectedEmails)) return false
+  const manualPaypalLinks = selectedEmails.length ? [] : parseManualPaypalLinks(pay153Form.value.paypalLink)
+  const paymentCount = manualPaypalLinks.length || selectedEmails.length
   pay153Busy.value = true
   pay153Canceling.value = false
   pay153Logs.value = []
@@ -2380,12 +2413,13 @@ async function startPay153Payment(options = {}) {
   pay153Job.value = null
   activeTab.value = 'pay153'
   setPay153Status('153支付任务已提交，正在创建远端任务。')
-  const claimedPhonePoolEntries = pay153Form.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(pay153Form.value.phonePool, selectedEmails.length, 'pay153') : []
+  const claimedPhonePoolEntries = pay153Form.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(pay153Form.value.phonePool, paymentCount, 'pay153') : []
   const claimedPhonePoolKeys = claimedPhonePoolEntries.map(item => item.key).filter(Boolean)
   try {
     savePay153Form({ silent: true })
     const data = await api.startUsPaypal153Batch({
       accountEmails: selectedEmails,
+      paypalLinks: manualPaypalLinks,
       country: pay153Form.value.country,
       smsProvider: pay153Form.value.smsProvider,
       phone: pay153Form.value.phone,
@@ -2400,8 +2434,8 @@ async function startPay153Payment(options = {}) {
     })
     if (!data.job_id) throw new Error('后端没有返回153支付任务 ID')
     if (claimedPhonePoolKeys.length) pay153ClaimedPhonePoolKeysByJob.set(data.job_id, claimedPhonePoolKeys)
-    pay153Job.value = { id: data.job_id, status: 'queued', total: selectedEmails.length, completed: 0, concurrency: pay153Form.value.concurrency, children: {} }
-    persistPay153JobState({ jobId: data.job_id, accountCount: selectedEmails.length, concurrency: pay153Form.value.concurrency, startedAt: Date.now(), claimedPhonePoolKeys })
+    pay153Job.value = { id: data.job_id, status: 'queued', total: paymentCount, completed: 0, concurrency: pay153Form.value.concurrency, children: {} }
+    persistPay153JobState({ jobId: data.job_id, accountCount: paymentCount, concurrency: pay153Form.value.concurrency, startedAt: Date.now(), claimedPhonePoolKeys })
     await pollPay153Job(data.job_id)
     return true
   } catch (error) {

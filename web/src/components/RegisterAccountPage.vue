@@ -1363,6 +1363,7 @@ function normalizeRegisterProxyCountry(value) {
 const registerProxyExtraCountryOptions = [
   { country: 'BR', currency: 'BRL', label: '巴西（BRL）' },
   { country: 'GB', currency: 'GBP', label: '英国（GBP）' },
+  { country: 'IS', currency: 'ISK', label: '冰岛（ISK）' },
   { country: 'TH', currency: 'THB', label: '泰国（THB）' },
   { country: 'TR', currency: 'TRY', label: '土耳其（TRY）' },
   { country: 'KR', currency: 'KRW', label: '韩国（KRW）' },
