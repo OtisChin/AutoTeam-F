@@ -552,6 +552,8 @@ def _provider_order(provider: str, account: dict[str, Any] | None, recipients: l
 
     if provider:
         add(provider)
+    if str((account or {}).get("mailapi_url") or "").strip():
+        add("generic-api")
 
     cloudmail_account_id = str((account or {}).get("cloudmail_account_id") or "").strip()
     if cloudmail_account_id:
@@ -595,10 +597,17 @@ def _fetch_latest_mail_with_provider(provider: str, recipient: str, account: dic
 
         return ICloudMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
     if provider == "generic-api":
-        from autotoken.mail.generic_api import GenericApiMailProvider
+        from autotoken.mail.generic_api import GenericApiAccount, GenericApiMailProvider
         from autotoken.storage.generic_api_pool import get_cached_mail_message
 
-        messages = GenericApiMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+        mailapi_url = str((account or {}).get("mailapi_url") or "").strip()
+        client = GenericApiMailProvider()
+        if mailapi_url:
+            direct_account = GenericApiAccount(email=recipient, receive_code_url=mailapi_url)
+            messages = client._fetch_receive_code_messages(direct_account, count=1)
+            if messages:
+                return messages
+        messages = client.search_emails_by_recipient(recipient, size=1, account_id=recipient)
         if messages:
             return messages
         cached = get_cached_mail_message(recipient)

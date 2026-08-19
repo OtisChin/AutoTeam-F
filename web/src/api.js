@@ -69,6 +69,7 @@ export const api = {
   updateAccountMetadata: (email, payload) => request('PATCH', `/accounts/${encodeURIComponent(email)}/metadata`, payload),
   updateAccountsMetadataBatch: (payload) => request('PATCH', '/accounts/metadata-batch', payload),
   exportAccountCredentials: (emails) => request('POST', '/accounts/export-credentials', { emails }),
+  importExternalAccounts: (text) => request('POST', '/accounts/import-external', { text }),
   importAccountCpaAuths: (payload) => request('POST', '/accounts/import-cpa-auths', payload),
   importFinishedAccounts: (payload) => request('POST', '/accounts/import-finished', payload),
   exportAccountCpaAuths: (emails) => request('POST', '/accounts/export-cpa-auths', { emails }),

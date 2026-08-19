@@ -42,6 +42,16 @@ def _is_similar_phone_fraud_guard_error(message: str | None) -> bool:
     return "fraud_guard" in text and "phone numbers similar" in text
 
 
+def _is_account_deactivated_error(message: str | None) -> bool:
+    text = str(message or "").lower()
+    return (
+        "account_deactivated" in text
+        or "account deactivated" in text
+        or "deleted or deactivated" in text
+        or "account is deactivated" in text
+    )
+
+
 def _oauth_proxy_preflight_attempt_limit() -> int:
     try:
         return max(
@@ -209,6 +219,25 @@ def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) ->
     return kwargs
 
 
+def _plain_relogin_kwargs(login_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Keep ordinary ChatGPT login inputs and strip Codex OAuth/binding/SMS controls."""
+
+    cleaned = dict(login_kwargs)
+    for key in (
+        "refresh_auth_session",
+        "protocol_only",
+        "bind_email",
+        "bind_phone",
+        "use_roxybrowser",
+        "oauth_phone_sms_provider",
+        "oauth_phone_sms_country",
+        "oauth_phone_sms_max_price",
+        "oauth_oasis_sms_cdks",
+    ):
+        cleaned.pop(key, None)
+    return cleaned
+
+
 
 def _apply_stored_totp_secret(login_kwargs: dict[str, Any], email: str) -> None:
     try:
@@ -277,11 +306,7 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        plain_relogin = (
-            bool(params.refresh_auth_session)
-            and not _account_has_codex_auth_file(acc)
-            and str(params.oauth_browser_mode or "").strip().lower() not in {"roxy", "roxybrowser", "roxy-browser"}
-        )
+        plain_relogin = bool(params.refresh_auth_session) and "@" in email
         oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
             oauth_proxy_meta.get("proxy_pool_count") or 0
         ) > 0
@@ -403,10 +428,7 @@ def create_account_login_router(
                             login_kwargs["proxy_url"] = selected_oauth_proxy
                         _apply_stored_totp_secret(login_kwargs, email)
                         if plain_relogin:
-                            login_kwargs.pop("refresh_auth_session", None)
-                            login_kwargs.pop("protocol_only", None)
-                            login_kwargs.pop("bind_email", None)
-                            login_kwargs.pop("bind_phone", None)
+                            login_kwargs = _plain_relogin_kwargs(login_kwargs)
                             return relogin_account_auth_session_once(
                                 email,
                                 acc,
@@ -506,6 +528,22 @@ def create_account_login_router(
                     },
                 )
                 raise task_result_error(result["message"], task_result=result) from exc
+            except Exception as exc:
+                error_summary = safe_error_summary(exc, limit=220)
+                if _is_account_deactivated_error(error_summary):
+                    result = oauth_account_deactivated_result(email, exc)
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_deactivated_removed",
+                            "email": email,
+                            "removed_pool_emails": result["removed_pool_emails"],
+                            "message": result["message"],
+                            "level": "warn",
+                        },
+                    )
+                    raise task_result_error(result["message"], task_result=result) from exc
+                raise
 
         return start_task(
             f"login:{email}",
@@ -557,11 +595,7 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        plain_relogin = bool(params.refresh_auth_session) and str(params.oauth_browser_mode or "").strip().lower() not in {
-            "roxy",
-            "roxybrowser",
-            "roxy-browser",
-        }
+        plain_relogin = bool(params.refresh_auth_session)
         oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
             oauth_proxy_meta.get("proxy_pool_count") or 0
         ) > 0
@@ -833,11 +867,8 @@ def create_account_login_router(
                             if selected_oauth_proxy:
                                 login_kwargs["proxy_url"] = selected_oauth_proxy
                             _apply_stored_totp_secret(login_kwargs, email)
-                            if plain_relogin and not _account_has_codex_auth_file(acc):
-                                login_kwargs.pop("refresh_auth_session", None)
-                                login_kwargs.pop("protocol_only", None)
-                                login_kwargs.pop("bind_email", None)
-                                login_kwargs.pop("bind_phone", None)
+                            if plain_relogin and "@" in str(email or ""):
+                                login_kwargs = _plain_relogin_kwargs(login_kwargs)
                                 login_result = relogin_account_auth_session_once(
                                     email,
                                     acc,
@@ -912,6 +943,15 @@ def create_account_login_router(
                     return {"kind": "account_deactivated", "email": email, "index": index, "result": result}
                 except Exception as exc:
                     error_summary = safe_error_summary(exc, limit=220)
+                    if _is_account_deactivated_error(error_summary):
+                        result = oauth_account_deactivated_result(email, exc)
+                        logger.warning(
+                            "[账号登录] 批量 worker 账号停用: email=%s elapsed=%.1fs error=%s",
+                            email,
+                            time.time() - started_at,
+                            error_summary,
+                        )
+                        return {"kind": "account_deactivated", "email": email, "index": index, "result": result}
                     logger.error(
                         "[账号登录] 批量 worker 异常: email=%s elapsed=%.1fs error=%s",
                         email,

@@ -215,12 +215,31 @@ class GenericApiMailProvider(ICloudMailProvider):
             return set()
 
     def _find_account(self, *, to_email: str, account_id: int | str | None = None) -> GenericApiAccount | None:
-        wanted = normalize_email_addr(account_id or to_email)
-        if not wanted:
+        candidates: list[str] = []
+        for value in (account_id, to_email):
+            email = normalize_email_addr(value)
+            if email and email not in candidates:
+                candidates.append(email)
+        if not candidates:
             return None
         for account in self.accounts:
-            if account.email.lower() == wanted.lower():
+            if account.email.lower() in candidates:
                 return account
+        try:
+            from autotoken.storage.accounts import load_accounts
+
+            for record in load_accounts():
+                email = normalize_email_addr(record.get("email"))
+                if email.lower() not in candidates:
+                    continue
+                receive_code_url = str(record.get("mailapi_url") or "").strip()
+                if not receive_code_url:
+                    continue
+                account = GenericApiAccount(email=email, receive_code_url=receive_code_url)
+                if account.validate():
+                    return account
+        except Exception:
+            logger.debug("[generic-api] 从账号池读取通用API收码链接失败: %s", candidates, exc_info=True)
         return None
 
     # ------------------------------------------------------------------ parse adapters

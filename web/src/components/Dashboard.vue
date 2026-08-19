@@ -58,6 +58,15 @@
             {{ accessTokenExporting ? '导出中...' : `导出ac (${selectedEmails.length})` }}
           </button>
           <button
+            @click="openExternalAccountImport"
+            :disabled="externalAccountImporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="externalAccountImporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+            {{ externalAccountImporting ? '导入中...' : '导入账号' }}
+          </button>
+          <button
             @click="openCpaImport"
             :disabled="cpaImporting"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -757,6 +766,14 @@
             </option>
           </select>
           <select
+            v-model="bindProviderFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部绑定渠道</option>
+            <option v-for="option in accountBindProviderFilterOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
             v-model="registerDateFilter"
             class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
             <option value="">全部注册日期</option>
@@ -853,7 +870,7 @@
             </option>
           </select>
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || bindProviderFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -1106,6 +1123,58 @@
             class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
             末页
           </button>
+        </div>
+      </div>
+
+      <!-- 外部账号导入弹窗 -->
+      <div v-if="externalAccountImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeExternalAccountImport">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <div>
+              <h3 class="text-white font-semibold">导入账号</h3>
+              <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL；新账号默认 Free，绑定渠道为外部导入。</div>
+            </div>
+            <button @click="closeExternalAccountImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+          </div>
+          <div class="p-4 space-y-4 overflow-y-auto flex-1">
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">账号内容</label>
+              <textarea
+                v-model="externalAccountImportText"
+                rows="10"
+                placeholder="user@example.com----https://example.com/api/mail?token=..."
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
+              <div class="mt-1 text-xs text-gray-500">重复邮箱只导入第一条；已存在账号会更新取件URL和绑定渠道，不覆盖账号类型/状态。</div>
+            </div>
+
+            <div v-if="externalAccountImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
+              <div class="text-gray-200">
+                新增 {{ externalAccountImportResult.imported || 0 }}，更新 {{ externalAccountImportResult.updated || 0 }}，重复 {{ externalAccountImportResult.duplicates || 0 }}，无效 {{ externalAccountImportResult.invalid?.length || 0 }}
+              </div>
+              <div v-if="externalAccountImportResult.invalid?.length" class="mt-2 text-amber-300">
+                跳过 {{ externalAccountImportResult.invalid.length }} 条无效；前 5 条：
+                <div v-for="item in externalAccountImportResult.invalid.slice(0, 5)" :key="String(item.line || '') + String(item.error || '')" class="mt-1 text-amber-200/80 font-mono break-all">
+                  第 {{ item.line }} 行：{{ item.error }}<span v-if="item.content"> / {{ item.content }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+            <button
+              @click="closeExternalAccountImport"
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              关闭
+            </button>
+            <button
+              @click="submitExternalAccountImport"
+              :disabled="externalAccountImporting || !externalAccountImportText.trim()"
+              class="px-4 py-2 text-sm rounded-lg border transition"
+              :class="externalAccountImporting || !externalAccountImportText.trim()
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'">
+              {{ externalAccountImporting ? '导入中...' : '开始导入' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1729,6 +1798,7 @@ const messageClass = ref('')
 const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
+const bindProviderFilter = ref('')
 const registerDateFilter = ref('')
 const registerStartTimeFilter = ref('')
 const registerEndTimeFilter = ref('')
@@ -1755,6 +1825,10 @@ const batchAccountEditProvider = ref(BATCH_METADATA_SKIP)
 const batchAccountSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
+const externalAccountImportOpen = ref(false)
+const externalAccountImportText = ref('')
+const externalAccountImporting = ref(false)
+const externalAccountImportResult = ref(null)
 const cpaImportOpen = ref(false)
 const cpaImportText = ref('')
 const cpaImportFiles = ref([])
@@ -2171,6 +2245,12 @@ function buildOauthEmailPayload() {
     protocol_only: !useRoxyBrowser,
     bind_email: !bindPhone,
     bind_phone: bindPhone,
+    ...buildOauthMailProviderPayload(),
+  }
+}
+
+function buildOauthMailProviderPayload() {
+  return {
     ...(oauthEmailMailProvider.value ? { mail_provider: oauthEmailMailProvider.value } : {}),
     ...(oauthEmailMailProvider.value === 'luckmail' && oauthEmailLuckmailEmailType.value
       ? { luckmail_email_type: oauthEmailLuckmailEmailType.value }
@@ -2225,6 +2305,16 @@ function buildDashboardOauthPayload() {
     ...buildOauthProxyPayload(),
     ...buildOauthEmailPayload(),
     ...buildOauthPhoneSmsPayload(),
+  }
+}
+
+function buildDashboardReloginPayload() {
+  const proxyPayload = { ...buildOauthProxyPayload() }
+  delete proxyPayload.oauth_browser_mode
+  return {
+    ...proxyPayload,
+    ...buildOauthMailProviderPayload(),
+    refresh_auth_session: true,
   }
 }
 
@@ -2391,6 +2481,16 @@ const allAccounts = computed(() => props.status?.accounts || [])
 
 function accountBindTs(acc) {
   return Number(acc?.plus_bound_at || acc?.last_bind_at || 0) || 0
+}
+
+function accountBindProviderFilterValue(acc) {
+  return String(acc?.last_bind_provider || '').trim().toLowerCase() || '__none__'
+}
+
+function accountBindProviderFilterLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === '__none__' || normalized === '') return '未绑定'
+  return editableBindProviderOptions.find(option => option.value === normalized)?.label || normalized
 }
 
 function accountRegisterTs(acc) {
@@ -2582,6 +2682,7 @@ watch(
     emailFilter,
     statusFilter,
     accountTypeFilter,
+    bindProviderFilter,
     registerDateFilter,
     registerStartTimeFilter,
     registerEndTimeFilter,
@@ -2604,6 +2705,7 @@ const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
+  const bindProviderNeedle = bindProviderFilter.value
   const registerRange = registerTimeRange.value
   const exportNeedle = credentialExportFilter.value
   const exportRange = exportTimeRange.value
@@ -2622,6 +2724,7 @@ const filteredAccounts = computed(() => {
       if (emailNeedle && !email.includes(emailNeedle)) return false
       if (statusNeedle && status !== statusNeedle) return false
       if (typeNeedle && accountType !== typeNeedle) return false
+      if (bindProviderNeedle && accountBindProviderFilterValue(acc) !== bindProviderNeedle) return false
       if (registerRange.start || registerRange.end) {
         const registerTs = accountRegisterTs(acc)
         if (!registerTs) return false
@@ -2701,6 +2804,23 @@ const accountTypeOptions = computed(() => {
   return Array.from(counts.entries())
     .sort((a, b) => accountTypeLabel(a[0]).localeCompare(accountTypeLabel(b[0]), 'zh-Hans-CN'))
     .map(([value, count]) => ({ value, label: accountTypeLabel(value), count }))
+})
+const accountBindProviderFilterOptions = computed(() => {
+  const counts = new Map()
+  for (const acc of allAccounts.value) {
+    const provider = accountBindProviderFilterValue(acc)
+    counts.set(provider, (counts.get(provider) || 0) + 1)
+  }
+  const knownOrder = ['__none__', ...editableBindProviderOptions.map(option => option.value).filter(Boolean)]
+  const known = knownOrder
+    .filter((value, index, arr) => arr.indexOf(value) === index)
+    .filter(value => counts.has(value))
+    .map(value => ({ value, label: accountBindProviderFilterLabel(value), count: counts.get(value) || 0 }))
+  const extra = Array.from(counts.entries())
+    .filter(([value]) => !knownOrder.includes(value))
+    .sort((a, b) => accountBindProviderFilterLabel(a[0]).localeCompare(accountBindProviderFilterLabel(b[0]), 'zh-Hans-CN'))
+    .map(([value, count]) => ({ value, label: accountBindProviderFilterLabel(value), count }))
+  return [...known, ...extra]
 })
 const credentialExportOptions = computed(() => {
   let exported = 0
@@ -3141,6 +3261,7 @@ function clearFilters() {
   emailFilter.value = ''
   statusFilter.value = ''
   accountTypeFilter.value = ''
+  bindProviderFilter.value = ''
   registerDateFilter.value = ''
   registerStartTimeFilter.value = ''
   registerEndTimeFilter.value = ''
@@ -3196,6 +3317,40 @@ function openCredentialExport() {
 function closeCredentialExport() {
   if (credentialExporting.value) return
   credentialExportOpen.value = false
+}
+
+function openExternalAccountImport() {
+  externalAccountImportOpen.value = true
+  externalAccountImportResult.value = null
+}
+
+function closeExternalAccountImport() {
+  if (externalAccountImporting.value) return
+  externalAccountImportOpen.value = false
+}
+
+async function submitExternalAccountImport() {
+  const text = externalAccountImportText.value.trim()
+  if (externalAccountImporting.value || !text) return
+  externalAccountImporting.value = true
+  externalAccountImportResult.value = null
+  message.value = ''
+  try {
+    const result = await api.importExternalAccounts(text)
+    externalAccountImportResult.value = result
+    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，跳过 ${result.invalid.length} 条无效` : ''
+    const skippedMain = Array.isArray(result.skipped_main) && result.skipped_main.length ? `，跳过主号 ${result.skipped_main.length} 个` : ''
+    message.value = `账号导入完成：新增 ${result.imported || 0}，更新 ${result.updated || 0}，重复 ${result.duplicates || 0}${invalid}${skippedMain}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    externalAccountImportText.value = ''
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    externalAccountImporting.value = false
+    setTimeout(() => { message.value = '' }, 10000)
+  }
 }
 
 function openCpaImport() {
@@ -4061,14 +4216,10 @@ async function batchReloginAccounts() {
   batchReloggingIn.value = true
   message.value = ''
   try {
-    await loadOauthPhoneSmsConfig({ silent: true })
-    const reloginPayload = { ...buildDashboardOauthPayload(), refresh_auth_session: true }
+    const reloginPayload = buildDashboardReloginPayload()
     const result = await api.loginAccountsBatch(emails, reloginPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
-    const browserText = oauthBrowserMode.value === 'roxy' ? '，RoxyBrowser模式' : ''
-    const bindText = reloginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
-    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${browserText}${bindText}${phoneText}`
+    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}`
     messageClass.value = 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
     emit('task-started')
     emit('refresh')
@@ -4269,7 +4420,7 @@ function canOauthAuthorize(acc) {
 }
 
 function canRelogin(acc) {
-  return Boolean(acc?.email) && !acc.is_main_account
+  return Boolean(acc?.email) && !acc.is_main_account && !isPhoneOnlyAccount(acc)
 }
 
 function isPhoneOnlyAccount(acc) {
@@ -4284,7 +4435,6 @@ function oauthAuthorizeLabel(acc) {
 }
 
 function reloginLabel(acc) {
-  if (isPhoneOnlyAccount(acc)) return '补登录/绑邮箱'
   return '补登录'
 }
 
@@ -4335,14 +4485,10 @@ async function reloginAccount(email) {
   actionType.value = 'relogin'
   message.value = ''
   try {
-    await loadOauthPhoneSmsConfig({ silent: true })
-    const reloginPayload = { ...buildDashboardOauthPayload(), refresh_auth_session: true }
+    const reloginPayload = buildDashboardReloginPayload()
     const result = await api.loginAccount(email, reloginPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
-    const browserText = oauthBrowserMode.value === 'roxy' ? '，RoxyBrowser模式' : ''
-    const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
-    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交 ${email} 的补登录任务: ${result.task_id}${proxyText}${browserText}${bindText}${phoneText}`
+    message.value = `已提交 ${email} 的补登录任务: ${result.task_id}${proxyText}`
     messageClass.value = 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
     emit('task-started')
     emit('refresh')

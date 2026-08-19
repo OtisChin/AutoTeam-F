@@ -437,6 +437,48 @@ def test_account_overview_latest_mail_fetches_generic_api_provider(monkeypatch):
     assert result["message"]["html"] == "<p>generic body</p>"
 
 
+def test_account_overview_latest_mail_uses_account_mailapi_url(monkeypatch):
+    app, _captured = _app()
+    account = {
+        "email": "user@dutchmail.com",
+        "original_email": "user@dutchmail.com",
+        "mail_provider": "generic-api",
+        "mailapi_url": "https://mail.example/code/user",
+    }
+    captured = {}
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+
+    def fake_fetch(self, generic_account, *, count):
+        captured["email"] = generic_account.email
+        captured["receive_code_url"] = generic_account.receive_code_url
+        captured["count"] = count
+        return [
+            {
+                "id": "direct-1",
+                "subject": "Direct latest",
+                "sendEmail": "sender@example.com",
+                "toEmail": "user@dutchmail.com",
+                "html": "<p>direct body</p>",
+                "createTime": 1700000000,
+            }
+        ]
+
+    monkeypatch.setattr("autotoken.mail.generic_api.GenericApiMailProvider._fetch_receive_code_messages", fake_fetch)
+
+    result = _endpoint(app, "/api/accounts/{email}/latest-mail", "GET")("User@dutchmail.com")
+
+    assert captured == {
+        "email": "user@dutchmail.com",
+        "receive_code_url": "https://mail.example/code/user",
+        "count": 1,
+    }
+    assert result["email"] == "user@dutchmail.com"
+    assert result["provider"] == "generic-api"
+    assert result["message"]["subject"] == "Direct latest"
+    assert result["message"]["html"] == "<p>direct body</p>"
+
+
 def test_account_overview_latest_mail_falls_back_to_generic_api_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "cache.sqlite3"))
     app, _captured = _app()

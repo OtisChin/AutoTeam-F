@@ -135,8 +135,6 @@ def relogin_account_auth_session_once(
     if not normalized:
         raise ValueError("邮箱不能为空")
     password = str((account or {}).get("password") or "").strip()
-    if not password:
-        raise ValueError(f"账号缺少密码，无法补登录: {normalized}")
 
     requested_mail_provider = str(mail_provider or "").strip().lower()
     account_mail_provider = str((account or {}).get("mail_provider") or "").strip().lower()

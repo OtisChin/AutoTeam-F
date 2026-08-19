@@ -530,6 +530,7 @@ def credential_export_line_for_account(
     generic_api_receive_code_url = str(
         account.get("receive_code_url")
         or account.get("mail_url")
+        or account.get("mailapi_url")
         or generic_api_source.get("receive_code_url")
         or ""
     ).strip()

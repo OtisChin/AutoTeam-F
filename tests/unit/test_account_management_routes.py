@@ -5,6 +5,7 @@ import autotoken.api_routes.account_management as account_management
 from autotoken import account_ops, accounts, admin_state, auth_session_store, chatgpt_api, manager
 from autotoken.api_routes.account_management import (
     ACCOUNT_DELETE_BATCH_MAX_EMAILS,
+    AccountExternalImportParams,
     AccountMetadataBatchUpdateParams,
     AccountMetadataUpdateParams,
     AccountTypeUpdateParams,
@@ -614,6 +615,80 @@ def test_account_management_update_accounts_metadata_batch_rejects_empty_payload
         _endpoint(app, "/api/accounts/metadata-batch", "PATCH")(
             AccountMetadataBatchUpdateParams(emails=["user@example.com"], status="invalid")
         )
+
+
+def test_account_management_import_external_accounts_adds_free_external_records(monkeypatch):
+    app = _app()
+    existing = {"email": "old@example.com", "account_type": "plus", "status": "stashed", "last_bind_provider": "paypal"}
+    add_calls = []
+    update_calls = []
+    current_accounts = [existing]
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: list(current_accounts))
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda loaded, email: next((account for account in loaded if account["email"] == email), None),
+    )
+
+    def fake_add_account(email, password, **kwargs):
+        add_calls.append((email, password, kwargs))
+        current_accounts.append({"email": email})
+
+    def fake_update_account(email, **changes):
+        update_calls.append((email, changes))
+        base = next((account for account in current_accounts if account["email"] == email), {"email": email})
+        return {**base, **changes}
+
+    monkeypatch.setattr(accounts, "add_account", fake_add_account)
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    result = _endpoint(app, "/api/accounts/import-external", "POST")(
+        AccountExternalImportParams(
+            text=(
+                "New@Example.com----https://mail.example/new\n"
+                "bad line\n"
+                "old@example.com----https://mail.example/old\n"
+                "new@example.com----https://mail.example/duplicate\n"
+            )
+        )
+    )
+
+    assert add_calls == [
+        (
+            "new@example.com",
+            "",
+            {"mail_provider": "generic-api", "mailapi_url": "https://mail.example/new"},
+        )
+    ]
+    assert update_calls == [
+        (
+            "new@example.com",
+            {
+                "status": "active",
+                "account_type": "free",
+                "mail_provider": "generic-api",
+                "mailapi_url": "https://mail.example/new",
+                "last_bind_provider": "external_import",
+            },
+        ),
+        (
+            "old@example.com",
+            {
+                "mail_provider": "generic-api",
+                "mailapi_url": "https://mail.example/old",
+                "last_bind_provider": "external_import",
+            },
+        ),
+    ]
+    assert result["imported"] == 1
+    assert result["updated"] == 1
+    assert result["duplicates"] == 1
+    assert result["invalid"] == [{"line": 2, "content": "bad line", "error": "格式应为 邮箱----取件URL"}]
+    assert result["accounts"][0]["email"] == "new@example.com"
+    assert result["accounts"][0]["account_type"] == "free"
+    assert result["accounts"][1]["email"] == "old@example.com"
+    assert result["accounts"][1]["account_type"] == "plus"
 
 
 def test_account_management_update_account_type_reports_invalid_main_and_missing(monkeypatch):

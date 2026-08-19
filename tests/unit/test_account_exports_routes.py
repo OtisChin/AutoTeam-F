@@ -163,6 +163,32 @@ def test_export_account_credentials_uses_generic_api_pool_line(monkeypatch):
     assert result["content"] == "User@dutchmail.com----https://example.com/code/token"
 
 
+def test_export_account_credentials_uses_external_imported_mailapi_url(monkeypatch):
+    app = _app()
+    account = {
+        "email": "nicklesjh-split-6b9c8a@rocketship.com",
+        "password": "",
+        "mail_provider": "generic-api",
+        "mailapi_url": "https://mail.example/api/latest?token=secret",
+        "last_bind_provider": "external_import",
+        "account_source": "managed",
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {**account, **kwargs})
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: {})
+    monkeypatch.setattr("autotoken.commerce.trade.icloud_accounts_by_email", lambda: {})
+    monkeypatch.setattr("autotoken.commerce.trade.generic_api_accounts_by_email", lambda: {})
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["nicklesjh-split-6b9c8a@rocketship.com"])
+    )
+
+    assert result["content"] == (
+        "nicklesjh-split-6b9c8a@rocketship.com----https://mail.example/api/latest?token=secret"
+    )
+
+
 def test_update_accounts_export_status_rejects_too_many_raw_emails():
     app = _app()
 

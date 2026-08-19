@@ -23,6 +23,9 @@ def _routes(
     build_oauth_proxy_selector=None,
     preflight_oauth_proxy_url=None,
     run_account_codex_login_once=None,
+    append_task_progress=None,
+    oauth_account_deactivated_result=None,
+    task_result_error=None,
     current_oauth_task=None,
     init_oauth_batch_control=None,
     append_oauth_batch_emails=None,
@@ -34,6 +37,11 @@ def _routes(
     run_account_codex_login_once = run_account_codex_login_once or (
         lambda email, _acc, **_kwargs: {"email": email, "plan": "free"}
     )
+    append_task_progress = append_task_progress or (lambda _task_id, _progress: None)
+    oauth_account_deactivated_result = oauth_account_deactivated_result or (
+        lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []}
+    )
+    task_result_error = task_result_error or RuntimeError
 
     def start_task(command, func, params, *args, **kwargs):
         started.append({"command": command, "func": func, "params": params, "args": args, "kwargs": kwargs})
@@ -46,12 +54,12 @@ def _routes(
         build_oauth_proxy_selector=build_oauth_proxy_selector,
         preflight_oauth_proxy_url=preflight_oauth_proxy_url,
         run_account_codex_login_once=run_account_codex_login_once,
-        append_task_progress=lambda _task_id, _progress: None,
+        append_task_progress=append_task_progress,
         oauth_phone_required_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
         oauth_phone_rate_limited_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
         oauth_login_required_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
-        oauth_account_deactivated_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
-        task_result_error=RuntimeError,
+        oauth_account_deactivated_result=oauth_account_deactivated_result,
+        task_result_error=task_result_error,
         current_oauth_task=current_oauth_task,
         init_oauth_batch_control=init_oauth_batch_control,
         append_oauth_batch_emails=append_oauth_batch_emails,
@@ -172,7 +180,7 @@ def test_post_account_login_starts_oauth_task(monkeypatch):
     assert started[0]["func"]("task-1") == {"email": "user@example.com", "plan": "free"}
 
 
-def test_post_account_login_refresh_session_with_auth_file_uses_oauth_authorization(monkeypatch):
+def test_post_account_login_refresh_session_with_auth_file_uses_plain_relogin(monkeypatch):
     started = []
     oauth_calls = []
     plain_calls = []
@@ -186,7 +194,7 @@ def test_post_account_login_refresh_session_with_auth_file_uses_oauth_authorizat
 
     def fake_plain_relogin(email, acc, **kwargs):
         plain_calls.append((email, acc, kwargs))
-        return {"email": email, "status": "success", "auth_session_file": "auth_session/revoked.json", "codex_auth_updated": True}
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/revoked.json", "codex_auth_updated": False}
 
     routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
     monkeypatch.setattr(
@@ -195,28 +203,55 @@ def test_post_account_login_refresh_session_with_auth_file_uses_oauth_authorizat
         raising=False,
     )
     routes["post_account_login"](
-        LoginAccountParams(email="revoked@example.com", refresh_auth_session=True, protocol_only=False)
+        LoginAccountParams(
+            email="revoked@example.com",
+            refresh_auth_session=True,
+            protocol_only=False,
+            bind_phone=True,
+            oauth_phone_sms_provider="hero_sms",
+            oauth_phone_sms_country="187",
+        )
     )
     task_result = started[0]["func"]("task-1")
 
-    assert task_result == {"email": "revoked@example.com", "plan": "plus"}
-    assert plain_calls == []
-    assert oauth_calls[0][2]["refresh_auth_session"] is True
-    assert oauth_calls[0][2]["protocol_only"] is True
+    assert task_result == {
+        "email": "revoked@example.com",
+        "status": "success",
+        "auth_session_file": "auth_session/revoked.json",
+        "codex_auth_updated": False,
+    }
+    assert oauth_calls == []
+    assert plain_calls[0][0] == "revoked@example.com"
+    assert "refresh_auth_session" not in plain_calls[0][2]
+    assert "protocol_only" not in plain_calls[0][2]
+    assert "bind_email" not in plain_calls[0][2]
+    assert "bind_phone" not in plain_calls[0][2]
+    assert "oauth_phone_sms_provider" not in plain_calls[0][2]
+    assert "oauth_phone_sms_country" not in plain_calls[0][2]
 
 
-def test_post_account_login_roxy_mode_keeps_browser_oauth_for_auth_file_refresh(monkeypatch):
+def test_post_account_login_roxy_mode_still_uses_plain_relogin_for_auth_session_refresh(monkeypatch):
     started = []
     oauth_calls = []
+    plain_calls = []
     account = {"email": "revoked@example.com", "status": "auth_revoked", "auth_file": "auths/old.json"}
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
     monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "revoked@example.com" else None)
 
     def fake_oauth_run(email, acc, **kwargs):
         oauth_calls.append((email, acc, kwargs))
-        return {"email": email, "plan": "plus"}
+        raise AssertionError("补登录不能走 Codex OAuth 授权")
+
+    def fake_plain_relogin(email, acc, **kwargs):
+        plain_calls.append((email, acc, kwargs))
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/revoked.json"}
 
     routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
     routes["post_account_login"](
         LoginAccountParams(
             email="revoked@example.com",
@@ -227,15 +262,15 @@ def test_post_account_login_roxy_mode_keeps_browser_oauth_for_auth_file_refresh(
     )
     task_result = started[0]["func"]("task-1")
 
-    assert task_result == {"email": "revoked@example.com", "plan": "plus"}
-    assert oauth_calls[0][2]["refresh_auth_session"] is True
-    assert oauth_calls[0][2]["protocol_only"] is False
-    assert oauth_calls[0][2]["use_roxybrowser"] is True
+    assert task_result == {"email": "revoked@example.com", "status": "success", "auth_session_file": "auth_session/revoked.json"}
+    assert oauth_calls == []
+    assert "use_roxybrowser" not in plain_calls[0][2]
 
 
-def test_post_accounts_login_batch_roxy_mode_passes_browser_mode(monkeypatch):
+def test_post_accounts_login_batch_roxy_mode_still_uses_plain_relogin(monkeypatch):
     started = []
     oauth_calls = []
+    plain_calls = []
     account = {"email": "revoked@example.com", "status": "auth_revoked", "auth_file": "auths/old.json"}
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
     monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "revoked@example.com" else None)
@@ -243,9 +278,18 @@ def test_post_accounts_login_batch_roxy_mode_passes_browser_mode(monkeypatch):
 
     def fake_oauth_run(email, acc, **kwargs):
         oauth_calls.append((email, acc, kwargs))
-        return {"email": email, "plan": "plus"}
+        raise AssertionError("补登录不能走 Codex OAuth 授权")
+
+    def fake_plain_relogin(email, acc, **kwargs):
+        plain_calls.append((email, acc, kwargs))
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/revoked.json"}
 
     routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
     routes["post_accounts_login_batch"](
         AccountEmailBatchParams(
             emails=["revoked@example.com"],
@@ -256,10 +300,9 @@ def test_post_accounts_login_batch_roxy_mode_passes_browser_mode(monkeypatch):
     )
     task_result = started[0]["func"]("task-batch")
 
-    assert task_result["ok"] == [{"email": "revoked@example.com", "plan": "plus"}]
-    assert oauth_calls[0][2]["refresh_auth_session"] is True
-    assert oauth_calls[0][2]["protocol_only"] is False
-    assert oauth_calls[0][2]["use_roxybrowser"] is True
+    assert task_result["ok"] == [{"email": "revoked@example.com", "status": "success", "auth_session_file": "auth_session/revoked.json"}]
+    assert oauth_calls == []
+    assert "use_roxybrowser" not in plain_calls[0][2]
 
 
 def test_post_account_login_refresh_session_without_auth_file_uses_plain_relogin(monkeypatch):
@@ -293,7 +336,38 @@ def test_post_account_login_refresh_session_without_auth_file_uses_plain_relogin
     assert "update_codex_auth" not in plain_calls[0][2]
 
 
-def test_post_account_login_roxy_mode_without_auth_file_uses_browser_oauth(monkeypatch):
+def test_post_account_login_refresh_session_without_password_uses_plain_relogin(monkeypatch):
+    started = []
+    oauth_calls = []
+    plain_calls = []
+    account = {"email": "missing-password@example.com", "password": "", "auth_file": ""}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "missing-password@example.com" else None)
+
+    def fake_oauth_run(email, acc, **kwargs):
+        oauth_calls.append((email, acc, kwargs))
+        raise AssertionError("passwordless auth_session refresh must not use Codex OAuth")
+
+    def fake_plain_relogin(email, acc, **kwargs):
+        plain_calls.append((email, acc, kwargs))
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/missing-password.json"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
+    routes["post_account_login"](LoginAccountParams(email="missing-password@example.com", refresh_auth_session=True))
+    task_result = started[0]["func"]("task-1")
+
+    assert task_result == {"email": "missing-password@example.com", "status": "success", "auth_session_file": "auth_session/missing-password.json"}
+    assert oauth_calls == []
+    assert plain_calls[0][0] == "missing-password@example.com"
+    assert plain_calls[0][1]["password"] == ""
+
+
+def test_post_account_login_roxy_mode_without_auth_file_uses_plain_relogin(monkeypatch):
     started = []
     oauth_calls = []
     plain_calls = []
@@ -324,15 +398,13 @@ def test_post_account_login_roxy_mode_without_auth_file_uses_browser_oauth(monke
     )
     task_result = started[0]["func"]("task-1")
 
-    assert task_result == {"email": "missing-auth@example.com", "plan": "free", "auth_session_file": "auth_session/missing-auth.json"}
-    assert plain_calls == []
-    assert oauth_calls[0][2]["refresh_auth_session"] is True
-    assert oauth_calls[0][2]["protocol_only"] is False
-    assert oauth_calls[0][2]["use_roxybrowser"] is True
-    assert oauth_calls[0][2]["headless"] is False
+    assert task_result == {"email": "missing-auth@example.com", "status": "success", "auth_session_file": "auth_session/missing-auth.json"}
+    assert oauth_calls == []
+    assert "use_roxybrowser" not in plain_calls[0][2]
+    assert plain_calls[0][2]["headless"] is False
 
 
-def test_post_accounts_login_batch_refresh_session_with_auth_file_uses_oauth_authorization(monkeypatch):
+def test_post_accounts_login_batch_refresh_session_with_auth_file_uses_plain_relogin(monkeypatch):
     started = []
     oauth_calls = []
     plain_calls = []
@@ -347,7 +419,7 @@ def test_post_accounts_login_batch_refresh_session_with_auth_file_uses_oauth_aut
 
     def fake_plain_relogin(email, acc, **kwargs):
         plain_calls.append((email, acc, kwargs))
-        return {"email": email, "status": "success", "codex_auth_updated": True}
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/revoked.json", "codex_auth_updated": False}
 
     routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
     monkeypatch.setattr(
@@ -356,15 +428,189 @@ def test_post_accounts_login_batch_refresh_session_with_auth_file_uses_oauth_aut
         raising=False,
     )
     routes["post_accounts_login_batch"](
-        AccountEmailBatchParams(emails=["revoked@example.com"], refresh_auth_session=True, protocol_only=False)
+        AccountEmailBatchParams(
+            emails=["revoked@example.com"],
+            refresh_auth_session=True,
+            protocol_only=False,
+            bind_phone=True,
+            oauth_phone_sms_provider="hero_sms",
+            oauth_phone_sms_country="187",
+        )
     )
     task_result = started[0]["func"]("task-batch")
 
     assert started[0]["params"]["refresh_auth_session"] is True
-    assert task_result["ok"] == [{"email": "revoked@example.com", "plan": "plus"}]
-    assert plain_calls == []
-    assert oauth_calls[0][2]["refresh_auth_session"] is True
-    assert oauth_calls[0][2]["protocol_only"] is True
+    assert task_result["ok"] == [
+        {
+            "email": "revoked@example.com",
+            "status": "success",
+            "auth_session_file": "auth_session/revoked.json",
+            "codex_auth_updated": False,
+        }
+    ]
+    assert oauth_calls == []
+    assert plain_calls[0][0] == "revoked@example.com"
+    assert "refresh_auth_session" not in plain_calls[0][2]
+    assert "protocol_only" not in plain_calls[0][2]
+    assert "bind_email" not in plain_calls[0][2]
+    assert "bind_phone" not in plain_calls[0][2]
+    assert "oauth_phone_sms_provider" not in plain_calls[0][2]
+    assert "oauth_phone_sms_country" not in plain_calls[0][2]
+
+
+def test_post_accounts_login_batch_refresh_session_without_password_uses_plain_relogin(monkeypatch):
+    started = []
+    oauth_calls = []
+    plain_calls = []
+    account = {"email": "missing-password@example.com", "password": "", "auth_file": ""}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "missing-password@example.com" else None)
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+
+    def fake_oauth_run(email, acc, **kwargs):
+        oauth_calls.append((email, acc, kwargs))
+        raise AssertionError("passwordless auth_session refresh must not use Codex OAuth")
+
+    def fake_plain_relogin(email, acc, **kwargs):
+        plain_calls.append((email, acc, kwargs))
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/missing-password.json"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(emails=["missing-password@example.com"], refresh_auth_session=True)
+    )
+    task_result = started[0]["func"]("task-batch")
+
+    assert task_result["ok"] == [
+        {
+            "email": "missing-password@example.com",
+            "status": "success",
+            "auth_session_file": "auth_session/missing-password.json",
+        }
+    ]
+    assert oauth_calls == []
+    assert plain_calls[0][0] == "missing-password@example.com"
+    assert plain_calls[0][1]["password"] == ""
+
+
+def test_post_accounts_login_batch_deletes_account_when_plain_relogin_reports_deactivated(monkeypatch):
+    started = []
+    removed = []
+    progress = []
+    account = {"email": "dead@example.com", "password": "", "auth_file": ""}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "dead@example.com" else None)
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+
+    def fake_plain_relogin(_email, _acc, **_kwargs):
+        raise RuntimeError(
+            "OTP 验证失败: 403: account_deactivated: You do not have an account "
+            "because it has been deleted or deactivated."
+        )
+
+    def fake_deactivated_result(email, exc):
+        removed.append((email, str(exc)))
+        return {
+            "email": email,
+            "message": f"账号已停用，已删除: {email}",
+            "removed_pool_emails": [email],
+            "failure_stage": "oauth_account_deactivated",
+        }
+
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
+    routes, _accounts = _routes(
+        started,
+        accounts=[account],
+        append_task_progress=lambda _task_id, item: progress.append(item),
+        oauth_account_deactivated_result=fake_deactivated_result,
+    )
+
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(emails=["dead@example.com"], refresh_auth_session=True)
+    )
+    task_result = started[0]["func"]("task-batch")
+
+    assert removed == [
+        (
+            "dead@example.com",
+            "OTP 验证失败: 403: account_deactivated: You do not have an account because it has been deleted or deactivated.",
+        )
+    ]
+    assert task_result["ok"] == []
+    assert task_result["failed"][0]["failure_stage"] == "oauth_account_deactivated"
+    assert any(
+        item.get("stage") == "account_login_deactivated_removed"
+        and item.get("removed_pool_emails") == ["dead@example.com"]
+        for item in progress
+    )
+
+
+def test_post_account_login_deletes_account_when_plain_relogin_reports_deactivated(monkeypatch):
+    class TaskResultError(RuntimeError):
+        def __init__(self, message, *, task_result=None):
+            super().__init__(message)
+            self.task_result = task_result
+
+    started = []
+    removed = []
+    progress = []
+    account = {"email": "dead@example.com", "password": "", "auth_file": ""}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "dead@example.com" else None)
+
+    def fake_plain_relogin(_email, _acc, **_kwargs):
+        raise RuntimeError(
+            "OTP 验证失败: 403: account_deactivated: You do not have an account "
+            "because it has been deleted or deactivated."
+        )
+
+    def fake_deactivated_result(email, exc):
+        removed.append((email, str(exc)))
+        return {
+            "email": email,
+            "message": f"账号已停用，已删除: {email}",
+            "removed_pool_emails": [email],
+            "failure_stage": "oauth_account_deactivated",
+        }
+
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
+    routes, _accounts = _routes(
+        started,
+        accounts=[account],
+        append_task_progress=lambda _task_id, item: progress.append(item),
+        oauth_account_deactivated_result=fake_deactivated_result,
+        task_result_error=TaskResultError,
+    )
+
+    routes["post_account_login"](LoginAccountParams(email="dead@example.com", refresh_auth_session=True))
+    with pytest.raises(TaskResultError) as exc_info:
+        started[0]["func"]("task-1")
+
+    assert removed == [
+        (
+            "dead@example.com",
+            "OTP 验证失败: 403: account_deactivated: You do not have an account because it has been deleted or deactivated.",
+        )
+    ]
+    assert exc_info.value.task_result["failure_stage"] == "oauth_account_deactivated"
+    assert any(
+        item.get("stage") == "account_login_deactivated_removed"
+        and item.get("removed_pool_emails") == ["dead@example.com"]
+        for item in progress
+    )
 
 
 def test_post_account_login_can_start_nonexclusive_oauth_task(monkeypatch):

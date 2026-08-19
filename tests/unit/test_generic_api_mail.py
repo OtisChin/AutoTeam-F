@@ -89,6 +89,71 @@ def test_search_emails_by_recipient_reads_plain_or_html_link(monkeypatch):
     assert client.extract_verification_code(messages[0]) == "123456"
 
 
+def test_search_emails_by_recipient_falls_back_to_account_pool_mailapi_url(monkeypatch):
+    client = GenericApiMailProvider()
+    client.accounts = []
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [
+            {
+                "email": "imported@saintly.com",
+                "mail_provider": "generic-api",
+                "mailapi_url": "https://example.com/code/imported",
+            }
+        ],
+    )
+
+    captured = {}
+
+    def fake_get(url, *args, **kwargs):
+        captured["url"] = url
+        return FakeResponse(
+            {
+                "email": "imported@saintly.com",
+                "code": "112233",
+                "mail": {"subject": "Your verification code", "content": "Use 112233"},
+            }
+        )
+
+    monkeypatch.setattr("autotoken.mail.icloud.curl_requests.get", fake_get)
+
+    messages = client.search_emails_by_recipient("imported@saintly.com", account_id="imported@saintly.com")
+
+    assert captured["url"] == "https://example.com/code/imported"
+    assert len(messages) == 1
+    assert messages[0]["provider"] == "generic-api"
+    assert client.extract_verification_code(messages[0]) == "112233"
+
+
+def test_search_emails_by_recipient_account_pool_fallback_uses_to_email_when_account_id_is_not_email(monkeypatch):
+    client = GenericApiMailProvider()
+    client.accounts = []
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [
+            {
+                "email": "imported@saintly.com",
+                "mail_provider": "generic-api",
+                "mailapi_url": "https://example.com/code/imported",
+            }
+        ],
+    )
+
+    captured = {}
+
+    def fake_get(url, *args, **kwargs):
+        captured["url"] = url
+        return FakeResponse({"email": "imported@saintly.com", "code": "445566"})
+
+    monkeypatch.setattr("autotoken.mail.icloud.curl_requests.get", fake_get)
+
+    messages = client.search_emails_by_recipient("imported@saintly.com", account_id="mailbox-id")
+
+    assert captured["url"] == "https://example.com/code/imported"
+    assert len(messages) == 1
+    assert client.extract_verification_code(messages[0]) == "445566"
+
+
 def test_search_emails_by_recipient_parses_code_inside_mail_field(monkeypatch):
     client = GenericApiMailProvider()
     client.accounts = [

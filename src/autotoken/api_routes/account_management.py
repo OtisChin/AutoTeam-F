@@ -37,6 +37,10 @@ class AccountMetadataBatchUpdateParams(BaseModel):
     last_bind_provider: str | None = None
 
 
+class AccountExternalImportParams(BaseModel):
+    text: str
+
+
 class DeleteBatchParams(BaseModel):
     emails: list[str]
     continue_on_error: bool = True
@@ -144,6 +148,35 @@ def _account_metadata_update_fields(
     if "account_type" in changes:
         return _account_type_update_fields(account, str(changes.pop("account_type")), **changes)
     return changes
+
+
+def _parse_external_account_import_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    entries: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for line_no, raw_line in enumerate(str(text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "----" not in line:
+            invalid.append({"line": line_no, "content": line, "error": "格式应为 邮箱----取件URL"})
+            continue
+        raw_email, raw_url = line.split("----", 1)
+        email = normalized_email(raw_email)
+        mailapi_url = raw_url.strip()
+        if not email or "@" not in email:
+            invalid.append({"line": line_no, "content": line, "error": "邮箱无效"})
+            continue
+        if not mailapi_url:
+            invalid.append({"line": line_no, "content": line, "error": "取件URL不能为空"})
+            continue
+        if email in seen:
+            duplicates += 1
+            continue
+        seen.add(email)
+        entries.append({"email": email, "mailapi_url": mailapi_url, "line": line_no})
+    return entries, invalid, duplicates
 
 
 def _delete_batch_audit_path() -> Path:
@@ -263,6 +296,72 @@ def create_account_management_router(
     sanitize_account: Callable[[dict], dict],
 ) -> APIRouter:
     router = APIRouter()
+
+    @router.post("/api/accounts/import-external")
+    def import_external_accounts(params: AccountExternalImportParams):
+        """导入 邮箱----取件URL 格式账号；新账号默认 Free，绑定渠道为外部导入。"""
+        from autotoken.storage.accounts import (
+            ACCOUNT_TYPE_FREE,
+            STATUS_ACTIVE,
+            add_account,
+            find_account,
+            load_accounts,
+            update_account,
+        )
+
+        entries, invalid, duplicates = _parse_external_account_import_lines(params.text)
+        if not entries:
+            raise HTTPException(status_code=400, detail={"message": "未导入任何有效账号", "invalid": invalid})
+
+        existing_accounts = load_accounts()
+        imported = 0
+        updated = 0
+        accounts: list[dict[str, Any]] = []
+        skipped_main: list[str] = []
+        for entry in entries:
+            email = entry["email"]
+            mailapi_url = entry["mailapi_url"]
+            if is_main_account_email(email):
+                skipped_main.append(email)
+                continue
+            current = find_account(existing_accounts, email)
+            if current:
+                updated_account = update_account(
+                    email,
+                    mail_provider="generic-api",
+                    mailapi_url=mailapi_url,
+                    last_bind_provider="external_import",
+                )
+                updated += 1
+            else:
+                add_account(
+                    email,
+                    "",
+                    mail_provider="generic-api",
+                    mailapi_url=mailapi_url,
+                )
+                updated_account = update_account(
+                    email,
+                    status=STATUS_ACTIVE,
+                    account_type=ACCOUNT_TYPE_FREE,
+                    mail_provider="generic-api",
+                    mailapi_url=mailapi_url,
+                    last_bind_provider="external_import",
+                )
+                imported += 1
+                existing_accounts.append({"email": email})
+            if updated_account:
+                accounts.append(sanitize_account(updated_account))
+
+        return {
+            "message": f"导入账号完成：新增 {imported}，更新 {updated}，重复 {duplicates}，无效 {len(invalid)}",
+            "imported": imported,
+            "updated": updated,
+            "duplicates": duplicates,
+            "invalid": invalid,
+            "skipped_main": skipped_main,
+            "accounts": accounts,
+        }
 
     @router.delete("/api/accounts/{email}")
     def delete_account(email: str):
