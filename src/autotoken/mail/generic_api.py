@@ -18,6 +18,10 @@ import re
 import threading
 
 from dataclasses import dataclass
+from email import policy
+from email.header import decode_header, make_header
+from email.parser import Parser
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from curl_cffi import requests as curl_requests
 
@@ -244,12 +248,33 @@ class GenericApiMailProvider(ICloudMailProvider):
 
     # ------------------------------------------------------------------ parse adapters
 
+    @staticmethod
+    def _pickup_api_request(url: str) -> tuple[str, str] | None:
+        parsed = urlparse(str(url or "").strip())
+        token = (parse_qs(parsed.query).get("pickup_token") or [""])[0].strip()
+        if not token:
+            return None
+        if not parsed.path.rstrip("/").endswith("/pickup"):
+            return None
+        api_url = urljoin(f"{parsed.scheme}://{parsed.netloc}", "/pickup_api/mails")
+        return api_url, token
+
     def _fetch_receive_code_messages(self, account: GenericApiAccount, *, count: int) -> list[dict]:
+        pickup_api = self._pickup_api_request(account.receive_code_url)
+        request_url = account.receive_code_url
+        headers = {"Accept": "text/html,application/json;q=0.9,*/*;q=0.8"}
+        if pickup_api:
+            request_url, pickup_token = pickup_api
+            headers = {
+                "Accept": "application/json,*/*",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {pickup_token}",
+            }
         resp = curl_requests.get(
-            account.receive_code_url,
+            request_url,
             timeout=30,
             impersonate="chrome110",
-            headers={"Accept": "text/html,application/json;q=0.9,*/*;q=0.8"},
+            headers=headers,
         )
         if resp.status_code in (404, 410):
             logger.debug("[generic-api] %s 收码链接暂无邮件: HTTP %s", account.email, resp.status_code)
@@ -280,6 +305,14 @@ class GenericApiMailProvider(ICloudMailProvider):
 
     @classmethod
     def _payload_items(cls, payload) -> list:
+        if isinstance(payload, dict):
+            value = payload.get("results")
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                nested = cls._payload_items(value)
+                if nested:
+                    return nested
         if isinstance(payload, dict) and {"email", "code", "mail"} & set(payload.keys()):
             code = str(payload.get("code") or "").strip()
             mail = payload.get("mail")
@@ -294,6 +327,10 @@ class GenericApiMailProvider(ICloudMailProvider):
 
     @classmethod
     def _item_to_legacy(cls, account: GenericApiAccount, item, *, index: int) -> dict:
+        if isinstance(item, dict) and str(item.get("raw") or "").strip():
+            parsed = cls._raw_email_to_item(item)
+            if parsed:
+                item = {**item, **parsed}
         if isinstance(item, dict) and "mail" in item:
             mail = item.get("mail")
             merged = {key: value for key, value in item.items() if key != "mail"}
@@ -320,3 +357,52 @@ class GenericApiMailProvider(ICloudMailProvider):
             if source.startswith("icloud_"):
                 raw["source"] = source.replace("icloud_", "generic_api_", 1)
         return message
+
+    @staticmethod
+    def _decode_mime_header(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return str(make_header(decode_header(text))).strip()
+        except Exception:
+            return text
+
+    @classmethod
+    def _raw_email_to_item(cls, item: dict) -> dict:
+        raw = str(item.get("raw") or "")
+        if not raw.strip():
+            return {}
+        try:
+            message = Parser(policy=policy.default).parsestr(raw)
+        except Exception:
+            return {"content": raw, "message": raw, "body": raw}
+
+        html = ""
+        text = ""
+        if message.is_multipart():
+            html_part = message.get_body(preferencelist=("html",))
+            text_part = message.get_body(preferencelist=("plain",))
+            if html_part is not None:
+                html = html_part.get_content()
+            if text_part is not None:
+                text = text_part.get_content()
+        else:
+            content_type = str(message.get_content_type() or "").lower()
+            body = message.get_content()
+            if "html" in content_type:
+                html = str(body or "")
+            else:
+                text = str(body or "")
+
+        return {
+            "subject": cls._decode_mime_header(str(message.get("subject") or "")),
+            "from": cls._decode_mime_header(str(message.get("from") or "")),
+            "to": cls._decode_mime_header(str(message.get("to") or "")),
+            "html": html,
+            "text": text,
+            "content": html or text or raw,
+            "message": html or text or raw,
+            "body": html or text or raw,
+            "date": str(message.get("date") or item.get("created_at") or ""),
+        }

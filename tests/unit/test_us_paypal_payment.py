@@ -96,7 +96,7 @@ def test_create_express_billing_agreement_returns_ba_url():
         ("MX", "MXN", "MX"),
         ("PH", "PHP", "PH"),
         ("TH", "EUR", "DE"),
-        ("TR", "USD", "TR"),
+        ("TR", "USD", "US"),
         ("NL", "EUR", "NL"),
     ],
 )
@@ -473,8 +473,8 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
     )
 
     update_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
-    assert update_payload["billing_details"] == {"country": "JP", "currency": "JPY"}
-    assert warmup_countries == ["US", "JP"]
+    assert update_payload["billing_details"] == {"country": "US", "currency": "USD"}
+    assert warmup_countries == ["US", "US"]
     assert result["amount"] == "0"
     assert result["fields"]["pre_promo_amount"] == "2120"
     assert result["fields"]["post_promo_payment_method_types"] == ["card", "paypal"]
@@ -585,12 +585,9 @@ def test_generate_paypal_trial_uses_target_proxy_country_and_mapped_checkout_bil
     checkout_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout"))
     promo_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
     assert checkout_payload["billing_details"] == {"country": "DE", "currency": "EUR"}
-    assert promo_payload["billing_details"] == {"country": "JP", "currency": "JPY"}
+    assert promo_payload["billing_details"] == {"country": "DE", "currency": "EUR"}
+    assert len(proxy_stages) == 1
     assert "-custom-region-BA-session-" in proxy_stages[0]
-    assert "-custom-region-BA-session-" in proxy_stages[1]
-    assert "-custom-region-JP-session-" in proxy_stages[2]
-    assert "-custom-region-BA-session-" in proxy_stages[3]
-    assert proxy_stages[3] != proxy_stages[1]
     assert result["fields"]["billing"]["country"] == "DE"
     assert result["fields"]["amount"] == "0"
     assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
@@ -715,14 +712,13 @@ def test_japan_checkout_country_uses_germany_billing_profile():
     assert billing["postal_code"] == "10117"
 
 
-def test_turkey_checkout_country_uses_turkey_billing_profile():
+def test_turkey_checkout_country_uses_us_billing_profile():
     billing = us_paypal.paypal_billing(country="TR")
 
     assert us_paypal.paypal_currency_for_country("TR") == "USD"
-    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "TR", "currency": "USD"}
-    assert billing["country"] == "TR"
-    assert billing["city"] == "Istanbul"
-    assert billing["postal_code"] == "34433"
+    assert us_paypal.paypal_checkout_billing_details_for_country("TR") == {"country": "US", "currency": "USD"}
+    assert billing["country"] == "US"
+    assert billing["state"] in {"AK", "DE", "MT", "NH", "OR"}
 
 
 def test_japan_create_checkout_uses_germany_context_and_billing_to_keep_paypal_available(monkeypatch):

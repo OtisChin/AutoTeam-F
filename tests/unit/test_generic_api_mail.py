@@ -33,6 +33,60 @@ def test_parse_generic_api_account_line_accepts_five_hyphen_separator():
     assert account.validate()
 
 
+def test_search_emails_by_recipient_reads_pickup_token_mail_api(monkeypatch):
+    client = GenericApiMailProvider()
+    pickup_url = (
+        "https://mail.example.com/pickup?"
+        "pickup_token=eyJhbGciOiJIUzI1Ni.fake-token"
+    )
+    client.accounts = [
+        GenericApiMailProvider._parse_account_line(f"user@birdlover.com----{pickup_url}")
+    ]
+    captured = {}
+
+    raw_mail = """Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset=utf-8
+Date: Thu, 20 Aug 2026 07:21:58 +0000
+From: ChatGPT <noreply@tm.openai.com>
+Subject: Your temporary ChatGPT verification code
+To: user@birdlover.com
+
+<html><body>
+<p>Enter this temporary verification code to continue:</p>
+<p>727842</p>
+</body></html>
+"""
+
+    def fake_get(url, *args, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers") or {}
+        return FakeResponse(
+            {
+                "address": "user@birdlover.com",
+                "results": [
+                    {
+                        "id": 2105,
+                        "created_at": "2026-08-20 07:21:59",
+                        "raw": raw_mail,
+                    }
+                ],
+            },
+            text='{"address":"user@birdlover.com","results":[]}',
+        )
+
+    monkeypatch.setattr("autotoken.mail.icloud.curl_requests.get", fake_get)
+
+    messages = client.search_emails_by_recipient("user@birdlover.com", account_id="user@birdlover.com")
+
+    assert captured["url"] == "https://mail.example.com/pickup_api/mails"
+    assert captured["headers"]["Authorization"] == "Bearer eyJhbGciOiJIUzI1Ni.fake-token"
+    assert len(messages) == 1
+    assert messages[0]["subject"] == "Your temporary ChatGPT verification code"
+    assert messages[0]["sendEmail"] == "ChatGPT <noreply@tm.openai.com>"
+    assert messages[0]["provider"] == "generic-api"
+    assert client.extract_verification_code(messages[0]) == "727842"
+
+
 def test_create_temp_email_skips_registered_and_filters_domain(monkeypatch):
     client = GenericApiMailProvider()
     client.accounts = [

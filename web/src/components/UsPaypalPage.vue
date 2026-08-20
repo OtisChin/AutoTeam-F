@@ -87,14 +87,22 @@
               <select v-model="form.promoRegion" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
                 <option v-for="country in promoRegionOptions" :key="country.value" :value="country.value">{{ country.label }}</option>
               </select>
-              <span class="mt-1 block text-xs text-gray-500">promo 后注入阶段使用优惠区代理，默认 JP。</span>
+              <span class="mt-1 block text-xs text-gray-500">保留优惠区参数；当前 PayPal 提链会复用目标国家同一条粘性代理。</span>
             </label>
           </div>
 
           <label class="block">
             <span class="mb-2 block text-sm font-semibold text-gray-300">代理</span>
             <textarea v-model.trim="form.proxies" rows="3" spellcheck="false" placeholder="global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-xxxx-sessTime-180-sessAuto-1:pass" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" :disabled="busy"></textarea>
-            <span class="mt-1 block text-xs text-gray-500">填一条代理即可；后端会按目标国家/优惠区自动切换 region 和 sid。兼容 711、ArxLabs 等 host:port:user:pass 或 URL 格式。</span>
+            <span class="mt-1 block text-xs text-gray-500">填一条代理即可；后端会按目标国家自动切换 region 和 sid，并在创建/优惠/Stripe/approve 复用同一粘性代理。兼容 711、ArxLabs 等 host:port:user:pass 或 URL 格式。</span>
+          </label>
+
+          <label class="block">
+            <span class="mb-2 block text-sm font-semibold text-gray-300">Access Token 输入（优先于账号池）</span>
+            <textarea v-model.trim="form.accessTokens" rows="4" spellcheck="false" placeholder="每行一个 ChatGPT access token；也支持 Bearer xxx。填写后运行时会忽略账号池勾选。" class="w-full rounded-xl border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 font-mono text-xs text-emerald-50 placeholder:text-emerald-900/60 focus:border-emerald-400 focus:outline-none" :disabled="busy"></textarea>
+            <span class="mt-1 block text-xs" :class="directAccessTokens.length ? 'text-emerald-300' : 'text-gray-500'">
+              已识别 {{ directAccessTokens.length }} 个 access token；填写后以 token 列表为准，不读取账号池 accessToken。
+            </span>
           </label>
 
           <div class="grid gap-4 md:grid-cols-3">
@@ -125,7 +133,7 @@
 
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
             <button @click="start" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">
-              {{ busy ? '提取中...' : `开始提链 (${selectedEmails.length})` }}
+              {{ busy ? '提取中...' : `开始提链 (${linkInputCount})` }}
             </button>
             <button v-if="busy" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
               {{ canceling ? '取消中...' : '取消提链' }}
@@ -922,6 +930,7 @@ const promoRegionOptions = [
 
 const form = ref({
   proxies: '',
+  accessTokens: '',
   concurrency: 1,
   maxAttempts: 5,
   proxyPreflightAttempts: 5,
@@ -1037,6 +1046,8 @@ const protocolClaimedPhonePoolKeysByJob = new Map()
 const pay153ClaimedPhonePoolKeysByJob = new Map()
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
+const directAccessTokens = computed(() => parseAccessTokens(form.value.accessTokens))
+const linkInputCount = computed(() => directAccessTokens.value.length || selectedEmails.value.length)
 const protocolSelectedEmails = computed(() => Array.from(selectedProtocolAccountEmails.value))
 const pay153SelectedEmails = computed(() => Array.from(selectedPay153AccountEmails.value))
 const retryFailedEmails = computed(() => Array.from(retryFailedEmailSet.value).filter(email => accounts.value.some(account => account.email === email && accountSelectable(account))))
@@ -1513,9 +1524,40 @@ async function reloadAll() {
   if (!busy.value) setStatus('账号和链接已刷新。')
 }
 
+function cleanAccessToken(value) {
+  const token = String(value || '').trim().replace(/^Bearer\s+/i, '').replace(/^[\\"']+|[\\"',;\s]+$/g, '').trim()
+  return token
+}
+function parseAccessTokens(value) {
+  const seen = new Set()
+  const tokens = []
+  for (const rawLine of String(value || '').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const candidates = /^Bearer\s+/i.test(line) || line.startsWith('{')
+      ? [line]
+      : line.split(/[\s,;]+/).filter(Boolean)
+    for (const candidate of candidates) {
+      let token = cleanAccessToken(candidate)
+      if (token.startsWith('{') && token.includes('accessToken')) {
+        try {
+          const parsed = JSON.parse(token)
+          token = cleanAccessToken(parsed?.accessToken || parsed?.access_token || '')
+        } catch { /* keep raw token fallback */ }
+      }
+      if (token && !seen.has(token)) {
+        seen.add(token)
+        tokens.push(token)
+      }
+    }
+  }
+  return tokens
+}
+
 function validateStart(emails = selectedEmails.value) {
-  if (!emails.length) {
-    setStatus('请在账号池中选择至少一个账号。', true)
+  const tokens = directAccessTokens.value
+  if (!tokens.length && !emails.length) {
+    setStatus('请在账号池中选择至少一个账号，或粘贴 access token。', true)
     return false
   }
   form.value.concurrency = Math.max(1, Math.min(30, Number(form.value.concurrency || 1)))
@@ -1531,18 +1573,22 @@ function validateStart(emails = selectedEmails.value) {
 }
 
 async function startWithEmails(emails, actionText = '提取') {
-  const accountEmails = Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
+  const accessTokens = directAccessTokens.value
+  const accountEmails = accessTokens.length ? [] : Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
   if (!validateStart(accountEmails)) return
+  const inputCount = accessTokens.length || accountEmails.length
+  const inputSource = accessTokens.length ? 'access token' : '账号'
   busy.value = true
   canceling.value = false
   logs.value = []
   currentResult.value = null
   currentJob.value = null
-  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PayPal，目标国家 ${form.value.region}，优惠区 ${form.value.promoRegion}，并发 ${form.value.concurrency}，重试 ${form.value.maxAttempts}${form.value.onlyOaics ? '，仅 OAICS' : ''}。`)
+  setStatus(`任务已提交，正在为 ${inputCount} 个${inputSource}${actionText} PayPal，目标国家 ${form.value.region}，优惠区 ${form.value.promoRegion}，并发 ${form.value.concurrency}，重试 ${form.value.maxAttempts}${form.value.onlyOaics ? '，仅 OAICS' : ''}。`)
   try {
     saveProxy({ silent: true })
     const payload = {
       proxies: form.value.proxies,
+      accessTokens,
       concurrency: form.value.concurrency,
       maxAttempts: form.value.maxAttempts,
       proxyPreflightAttempts: form.value.proxyPreflightAttempts,
@@ -1553,8 +1599,8 @@ async function startWithEmails(emails, actionText = '提取') {
     }
     const data = await api.startUsPaypalBatch({ ...payload, accountEmails })
     if (!data.job_id) throw new Error('后端没有返回任务 ID')
-    currentJob.value = { id: data.job_id, status: 'queued', total: accountEmails.length, completed: 0, concurrency: form.value.concurrency, running_count: 0 }
-    persistLinkJobState({ jobId: data.job_id, accountCount: accountEmails.length, concurrency: form.value.concurrency, startedAt: Date.now() })
+    currentJob.value = { id: data.job_id, status: 'queued', total: inputCount, completed: 0, concurrency: form.value.concurrency, running_count: 0 }
+    persistLinkJobState({ jobId: data.job_id, accountCount: inputCount, concurrency: form.value.concurrency, startedAt: Date.now() })
     await pollJob(data.job_id)
   } catch (error) {
     setStatus(cleanError(error), true)

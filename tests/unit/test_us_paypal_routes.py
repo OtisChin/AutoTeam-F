@@ -118,6 +118,80 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
     assert statuses[email]["status"] == "success"
 
 
+def test_paypal_batch_access_tokens_take_priority_over_account_pool(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: pytest.fail("accessTokens should bypass account pool selection"))
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda value: pytest.fail("direct access token should not load token by email"))
+
+    def fake_generate_paypal_trial(cfg, log):
+        captured.setdefault("tokens", []).append(cfg.access_token)
+        return {
+            "ok": True,
+            "amount": "0",
+            "fields": {
+                "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-DIRECT",
+                "ba_token": "BA-DIRECT",
+                "cs_id": "cs_direct",
+                "billing": {"country": "US"},
+            },
+            "billing": {"country": "US"},
+        }
+
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", fake_generate_paypal_trial)
+    job_id = "paypal-direct-token-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": ["pool@example.com"],
+        "accessTokens": "Bearer direct-token\nsecond-token\ndirect-token",
+        "proxies": "host:1000:user:pass",
+        "concurrency": 1,
+        "promoMode": "skip",
+    })
+    us_paypal._run_batch_job(job_id, req)
+
+    job = us_paypal.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["completed"] == 2
+    assert captured["tokens"] == ["direct-token", "second-token"]
+    assert [item["email"] for item in job["result"]["successes"]] == ["access-token-001", "access-token-002"]
+    assert any("输入源=accessToken" in line for line in job["logs"])
+
+
+def test_paypal_batch_start_accepts_access_tokens_without_selected_accounts(monkeypatch):
+    app = _app()
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            captured["target"] = target
+            captured["args"] = args
+            captured["daemon"] = daemon
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [],
+        "accessTokens": "direct-token-1\ndirect-token-2",
+        "proxies": "host:1000:user:pass",
+    })
+    result = _endpoint(app, "/api/us-paypal/batch/start", "POST")(req)
+
+    assert result["job_id"] in us_paypal.JOBS
+    assert us_paypal.JOBS[result["job_id"]]["total"] == 2
+    assert captured["target"] is us_paypal._run_batch_job
+    assert captured["args"][1] is req
+    assert captured["started"] is True
+
+
 def test_paypal_link_batch_concurrency_allows_thirty():
     req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 99})
 
@@ -354,7 +428,7 @@ def test_paypal_proxy_preflight_has_separate_ten_attempt_budget(monkeypatch):
     assert any("proxy6.example" in proxy for proxy in preflighted)
 
 
-def test_paypal_preflights_promo_region_before_generation(monkeypatch):
+def test_paypal_reuses_checkout_proxy_for_promo_preflight(monkeypatch):
     email = "promo-preflight@example.com"
     preflighted: list[str] = []
     captured = {}
@@ -399,11 +473,11 @@ def test_paypal_preflights_promo_region_before_generation(monkeypatch):
     result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
 
     assert result["ok"] is True
-    assert any("-region-US-sid-" in proxy for proxy in preflighted)
-    assert any("-region-JP-sid-" in proxy for proxy in preflighted)
-    assert captured["cfg"].preflighted_promo_proxy_url
-    assert us_paypal.build_paypal_dynamic_proxy(captured["cfg"], 2, "JP")[0] == captured["cfg"].preflighted_promo_proxy_url
-    assert any("优惠区代理预检通过" in line for line in us_paypal.JOBS[job_id]["logs"])
+    assert len(preflighted) == 1
+    assert "-region-US-sid-" in preflighted[0]
+    assert "-region-JP-sid-" not in preflighted[0]
+    assert captured["cfg"].preflighted_promo_proxy_url == captured["cfg"].preflighted_checkout_proxy_url
+    assert any("优惠区代理预检跳过" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
 def test_load_links_backfills_country_from_billing_for_old_records():

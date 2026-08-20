@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import json
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -30,7 +31,17 @@ from autotoken.payments.brazil_pix import (
 LogFn = Callable[[str], None]
 
 PAYPAL_STRIPE_VERSION = "2020-08-27;custom_checkout_beta=v1; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
-PAYPAL_STRIPE_RUNTIME_VERSION = "81274c9437"
+PAYPAL_STRIPE_RUNTIME_VERSION = "6f8494a281"
+PAYPAL_BROWSER_TIMEZONE = "America/New_York"
+PAYPAL_BROWSER_TIMEZONE_OFFSET_MIN = 240
+PAYPAL_SEC_CH_UA = '"Chromium";v="146", "Google Chrome";v="146", "Not.A/Brand";v="99"'
+PAYPAL_SEC_CH_UA_FULL = (
+    '"Chromium";v="146.0.7423.118", '
+    '"Google Chrome";v="146.0.7423.118", '
+    '"Not.A/Brand";v="99.0.0.0"'
+)
+PAYPAL_CLIENT_VERSION = "prod-db390ebea64862bf1899c420a4c736e0cf639747"
+PAYPAL_CLIENT_BUILD_NUMBER = "7904904"
 PAYPAL_BA_APPROVE_BASE = "https://www.paypal.com/agreements/approve"
 PAYPAL_CHECKOUT_SESSION_PREFIXES = ("cs_",)
 PAYPAL_BA_TOKEN_RE = re.compile(r"(?i)ba_token[=:%22'\\\s]+(?P<token>BA-[A-Za-z0-9_-]+)")
@@ -203,6 +214,7 @@ PAYPAL_COUNTRY_BILLING_ALIASES = {
     "ID": "DE",
     "JP": "DE",
     "TH": "DE",
+    "TR": "US",
 }
 
 PAYPAL_CHECKOUT_BILLING_ALIASES = {
@@ -211,6 +223,7 @@ PAYPAL_CHECKOUT_BILLING_ALIASES = {
     "ID": "DE",
     "JP": "DE",
     "TH": "DE",
+    "TR": "US",
 }
 
 
@@ -356,8 +369,37 @@ def new_http_session(proxy_url: str = "") -> requests.Session:
     return session
 
 
+_OAI_SESSION_IDS: dict[str, str] = {}
+_OAI_SESSION_IDS_LOCK = threading.Lock()
+
+
+def oai_session_id_for_device(device_id: str) -> str:
+    key = str(device_id or "").strip()
+    if not key:
+        return ""
+    with _OAI_SESSION_IDS_LOCK:
+        value = _OAI_SESSION_IDS.get(key)
+        if value:
+            return value
+        if len(_OAI_SESSION_IDS) >= 4096:
+            _OAI_SESSION_IDS.pop(next(iter(_OAI_SESSION_IDS)))
+        value = str(uuid.uuid4())
+        _OAI_SESSION_IDS[key] = value
+        return value
+
+
+def _safe_close_session(session: Any) -> None:
+    close = getattr(session, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def build_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str = "") -> requests.Session:
     device_id = str(device_id or uuid.uuid4())
+    oai_session_id = oai_session_id_for_device(device_id)
     session = new_http_session(proxy_url)
     session.headers.update(
         {
@@ -370,7 +412,11 @@ def build_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str
             "Content-Type": "application/json",
             "oai-device-id": device_id,
             "oai-language": "en-US",
-            "sec-ch-ua": '"Google Chrome";v="146", "Chromium";v="146", "Not.A/Brand";v="24"',
+            "oai-session-id": oai_session_id,
+            "oai-client-version": PAYPAL_CLIENT_VERSION,
+            "oai-client-build-number": PAYPAL_CLIENT_BUILD_NUMBER,
+            "sec-ch-ua": PAYPAL_SEC_CH_UA,
+            "sec-ch-ua-full-version-list": PAYPAL_SEC_CH_UA_FULL,
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-dest": "empty",
@@ -383,10 +429,9 @@ def build_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str
 
 
 def _browser_timezone_offset_min() -> int:
-    local_utc_offset_seconds = -time.timezone
-    if time.daylight and time.localtime().tm_isdst > 0:
-        local_utc_offset_seconds = -time.altzone
-    return int(-local_utc_offset_seconds / 60)
+    # Keep the visible browser timezone aligned with the PayPal/Stripe US profile
+    # instead of leaking the host machine's local timezone.
+    return PAYPAL_BROWSER_TIMEZONE_OFFSET_MIN
 
 
 def warm_chatgpt_checkout_context(chatgpt: requests.Session, country: str, log: LogFn | None = None) -> None:
@@ -423,6 +468,16 @@ def warm_chatgpt_checkout_context(chatgpt: requests.Session, country: str, log: 
             statuses.append(f"{target_path.rsplit('/', 1)[-1]}={type(exc).__name__}")
     if callable(poster):
         try:
+            ping_route = "/backend-api/sentinel/ping"
+            try:
+                resp = getter(
+                    "https://chatgpt.com/backend-api/sentinel/ping",
+                    headers={"x-openai-target-path": ping_route, "x-openai-target-route": ping_route},
+                    timeout=8,
+                )
+                statuses.append(f"sentinel_get={getattr(resp, 'status_code', 0)}")
+            except Exception as exc:
+                statuses.append(f"sentinel_get={type(exc).__name__}")
             resp = poster(
                 "https://chatgpt.com/backend-api/sentinel/ping",
                 json={},
@@ -443,9 +498,14 @@ def build_stripe_session(proxy_url: str = "") -> requests.Session:
     session.headers.update(
         {
             "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "application/json",
             "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://pay.openai.com",
-            "Referer": "https://pay.openai.com/",
+            "Origin": "https://js.stripe.com",
+            "Referer": "https://js.stripe.com/",
+            "sec-ch-ua": PAYPAL_SEC_CH_UA,
+            "sec-ch-ua-full-version-list": PAYPAL_SEC_CH_UA_FULL,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-site": "cross-site",
             "sec-fetch-mode": "cors",
             "sec-fetch-dest": "empty",
@@ -555,6 +615,7 @@ def _ctx() -> dict[str, str]:
         "elements_session_config_id": str(uuid.uuid4()),
         "config_id": "",
         "init_checksum": "",
+        "runtime_version": PAYPAL_STRIPE_RUNTIME_VERSION,
     }
 
 
@@ -563,7 +624,7 @@ def stripe_init(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict[
         f"https://api.stripe.com/v1/payment_pages/{cs_id}/init",
         data={
             "browser_locale": "en-US",
-            "browser_timezone": "America/Los_Angeles",
+            "browser_timezone": PAYPAL_BROWSER_TIMEZONE,
             "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
             "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
             "elements_session_client[elements_init_source]": "custom_checkout",
@@ -1426,11 +1487,15 @@ def chatgpt_approve(
     *,
     country: str = "US",
 ) -> None:
-    cg = build_chatgpt_session(access_token, proxy_url, device_id)
-    warm_chatgpt_checkout_context(cg, country, log)
     last_err = ""
     for attempt in range(1, 4):
+        cg = build_chatgpt_session(access_token, proxy_url, device_id)
         try:
+            # Isolate retries in a clean ChatGPT session while keeping the same
+            # sticky proxy and oai-device-id.  A blocked approval attempt can
+            # poison transient cookies; rebuilding the session prevents that
+            # state from leaking into the next retry.
+            warm_chatgpt_checkout_context(cg, country, log)
             resp = cg.post(
                 "https://chatgpt.com/backend-api/payments/checkout/approve",
                 json={"checkout_session_id": cs_id, "processor_entity": processor},
@@ -1455,6 +1520,8 @@ def chatgpt_approve(
         except Exception as exc:
             last_err = short(exc)
             log(f"approve attempt {attempt} error: {last_err}")
+        finally:
+            _safe_close_session(cg)
         time.sleep(1.0)
     raise RuntimeError(f"approve failed: {last_err}")
 
@@ -1471,31 +1538,34 @@ def chatgpt_update_trial_promo(
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     cg = build_chatgpt_session(access_token, proxy_url, device_id)
-    warm_chatgpt_checkout_context(cg, country, log)
-    resp = cg.post(
-        "https://chatgpt.com/backend-api/payments/checkout/update",
-        json={
-            "checkout_session_id": cs_id,
-            "processor_entity": processor,
-            "plan_name": "chatgptplusplan",
-            "price_interval": "month",
-            "seat_quantity": 1,
-            "billing_details": {"country": country, "currency": currency},
-            "promo_campaign": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": False},
-        },
-        headers={
-            "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
-            "x-openai-target-path": "/backend-api/payments/checkout/update",
-            "x-openai-target-route": "/backend-api/payments/checkout/update",
-        },
-        timeout=TIMEOUT,
-    )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"update failed: HTTP {resp.status_code} {short(resp.text)}")
     try:
-        return resp.json() or {}
-    except Exception:
-        return {}
+        warm_chatgpt_checkout_context(cg, country, log)
+        resp = cg.post(
+            "https://chatgpt.com/backend-api/payments/checkout/update",
+            json={
+                "checkout_session_id": cs_id,
+                "processor_entity": processor,
+                "plan_name": "chatgptplusplan",
+                "price_interval": "month",
+                "seat_quantity": 1,
+                "billing_details": {"country": country, "currency": currency},
+                "promo_campaign": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": False},
+            },
+            headers={
+                "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+                "x-openai-target-path": "/backend-api/payments/checkout/update",
+                "x-openai-target-route": "/backend-api/payments/checkout/update",
+            },
+            timeout=TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"update failed: HTTP {resp.status_code} {short(resp.text)}")
+        try:
+            return resp.json() or {}
+        except Exception:
+            return {}
+    finally:
+        _safe_close_session(cg)
 
 
 def _confirm_paypal_inline(
@@ -1508,6 +1578,8 @@ def _confirm_paypal_inline(
     amount: str,
     return_url: str,
 ) -> dict[str, Any]:
+    runtime_version = ctx.get("runtime_version") or PAYPAL_STRIPE_RUNTIME_VERSION
+    client_session_id = ctx.get("client_session_id") or ctx["stripe_js_id"]
     body = {
         "guid": ctx["guid"],
         "muid": ctx["muid"],
@@ -1528,7 +1600,7 @@ def _confirm_paypal_inline(
         "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
         "elements_options_client[saved_payment_method][enable_save]": "never",
         "elements_options_client[saved_payment_method][enable_redisplay]": "never",
-        "client_attribution_metadata[client_session_id]": ctx["stripe_js_id"],
+        "client_attribution_metadata[client_session_id]": client_session_id,
         "client_attribution_metadata[checkout_session_id]": cs_id,
         "client_attribution_metadata[checkout_config_id]": ctx["config_id"],
         "client_attribution_metadata[elements_session_id]": ctx["elements_session_id"],
@@ -1540,6 +1612,22 @@ def _confirm_paypal_inline(
         "client_attribution_metadata[payment_method_selection_flow]": "automatic",
         "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
         "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
+        "payment_method_data[payment_user_agent]": (
+            f"stripe.js/{runtime_version}; stripe-js-v3/{runtime_version}; "
+            "payment-element; deferred-intent"
+        ),
+        "payment_method_data[referrer]": "https://chatgpt.com",
+        "payment_method_data[time_on_page]": str(random.randint(25000, 55000)),
+        "payment_method_data[client_attribution_metadata][client_session_id]": client_session_id,
+        "payment_method_data[client_attribution_metadata][checkout_session_id]": cs_id,
+        "payment_method_data[client_attribution_metadata][checkout_config_id]": ctx["config_id"],
+        "payment_method_data[client_attribution_metadata][elements_session_id]": ctx["elements_session_id"],
+        "payment_method_data[client_attribution_metadata][elements_session_config_id]": ctx["elements_session_config_id"],
+        "payment_method_data[client_attribution_metadata][merchant_integration_source]": "elements",
+        "payment_method_data[client_attribution_metadata][merchant_integration_subtype]": "payment-element",
+        "payment_method_data[client_attribution_metadata][merchant_integration_version]": "2021",
+        "payment_method_data[client_attribution_metadata][payment_intent_creation_flow]": "deferred",
+        "payment_method_data[client_attribution_metadata][payment_method_selection_flow]": "automatic",
         "consent[terms_of_service]": "accepted",
         "key": stripe_pk,
         "_stripe_version": PAYPAL_STRIPE_VERSION,
@@ -1620,7 +1708,6 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
 
     device_id = str(uuid.uuid4())
     checkout_region = normalize_paypal_country(cfg.region, "US")
-    promo_region = normalize_paypal_country(cfg.promo_region, "JP")
     billing = paypal_billing(country=checkout_region)
     checkout_billing_country = billing.get("country") or checkout_region
     checkout_billing_details = paypal_checkout_billing_details_for_country(checkout_region)
@@ -1629,30 +1716,46 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
     state_text = f"-{billing.get('state')}" if billing.get("state") else ""
     log(f"账单: {billing['name']} / {billing['city']}{state_text} / {billing['postal_code']} / {billing['country']}")
 
-    dyn1, sid1 = build_paypal_dynamic_proxy(cfg, 0, checkout_region)
+    # PayPal cs_* is sensitive to IP/session drift.  Keep checkout, promo update,
+    # Stripe init/confirm/poll and ChatGPT approve on one sticky proxy/tunnel for
+    # this account attempt.  Do not rotate to promo-region proxies inside the same
+    # checkout session; the promo update keeps the original billing country/currency
+    # and only adds the campaign.
+    sticky_proxy, sticky_sid = build_paypal_dynamic_proxy(cfg, 0, checkout_region)
     front_promo_for_oaics = bool(cfg.only_oaics and cfg.apply_promo)
-    log(f"[1/6] {checkout_region} 创建 checkout（{'前置 promo' if front_promo_for_oaics else '先不带 promo'}） sid={sid1}")
-    with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
-        p1 = chain1.url
-        cg = build_chatgpt_session(token, p1, device_id)
-        warm_chatgpt_checkout_context(cg, checkout_create_country, log)
-        checkout_body: dict[str, Any] = {
-            "entry_point": "all_plans_pricing_modal",
-            "plan_name": "chatgptplusplan",
-            "billing_details": {"country": checkout_create_country, "currency": checkout_currency},
-            "checkout_ui_mode": "custom",
-        }
-        if front_promo_for_oaics:
-            checkout_body["promo_campaign"] = {
-                "promo_campaign_id": "plus-1-month-free",
-                "is_coupon_from_query_param": False,
+    log(
+        f"[1/6] {checkout_region} 创建 checkout（{'前置 promo' if front_promo_for_oaics else '先不带 promo'}）"
+        f" sticky={sticky_sid}"
+    )
+
+    with pix_proxy_context(cfg.local_proxy, sticky_proxy, log) as chain:
+        proxy_url = chain.url
+        cg = build_chatgpt_session(token, proxy_url, device_id)
+        try:
+            warm_chatgpt_checkout_context(cg, checkout_create_country, log)
+            checkout_body: dict[str, Any] = {
+                "entry_point": "all_plans_pricing_modal",
+                "plan_name": "chatgptplusplan",
+                "billing_details": {"country": checkout_create_country, "currency": checkout_currency},
+                "checkout_ui_mode": "custom",
             }
-        resp = cg.post(
-            "https://chatgpt.com/backend-api/payments/checkout",
-            json=checkout_body,
-            headers={"x-openai-target-path": "/backend-api/payments/checkout", "x-openai-target-route": "/backend-api/payments/checkout"},
-            timeout=TIMEOUT,
-        )
+            if front_promo_for_oaics:
+                checkout_body["promo_campaign"] = {
+                    "promo_campaign_id": "plus-1-month-free",
+                    "is_coupon_from_query_param": False,
+                }
+            resp = cg.post(
+                "https://chatgpt.com/backend-api/payments/checkout",
+                json=checkout_body,
+                headers={
+                    "Referer": "https://chatgpt.com/",
+                    "x-openai-target-path": "/backend-api/payments/checkout",
+                    "x-openai-target-route": "/backend-api/payments/checkout",
+                },
+                timeout=TIMEOUT,
+            )
+        finally:
+            _safe_close_session(cg)
         log(f"checkout HTTP {resp.status_code}")
         if resp.status_code >= 400:
             raise RuntimeError(f"checkout failed: {short(resp.text)}")
@@ -1664,7 +1767,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
                 access_token=token,
                 cs_id=cs_id,
                 processor=processor,
-                proxy_url=p1,
+                proxy_url=proxy_url,
                 device_id=device_id,
                 billing=billing,
                 country=checkout_billing_country,
@@ -1678,11 +1781,8 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         pk = extract_pk(data) or DEFAULT_STRIPE_PK
         processor = str(data.get("processor_entity") or "openai_llc")
 
-    dyn2, sid2 = build_paypal_dynamic_proxy(cfg, 1, checkout_region)
-    log(f"[2/6] {checkout_region} Stripe init 预热 PayPal 支付方式 sid={sid2}")
-    with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
-        stripe_proxy = chain2.url
-        stripe = build_stripe_session(stripe_proxy)
+        log(f"[2/6] {checkout_region} Stripe init 预热 PayPal 支付方式 sticky={sticky_sid}")
+        stripe = build_stripe_session(proxy_url)
         ctx = _ctx()
         init_payload = stripe_init(stripe, cs_id, pk, ctx)
         amount = amount_info(init_payload)
@@ -1695,27 +1795,24 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
 
         if cfg.apply_promo:
-            dyn3, sid3 = build_paypal_dynamic_proxy(cfg, 2, promo_region)
-            log(f"[3/6] {promo_region} 后注入试用 promo sid={sid3}")
-            with pix_proxy_context(cfg.local_proxy, dyn3, log) as chain3:
-                update_payload = chatgpt_update_trial_promo(
-                    token,
-                    cs_id=cs_id,
-                    processor=processor,
-                    proxy_url=chain3.url,
-                    device_id=device_id,
-                    country=promo_region,
-                    currency=promo_currency_for_region(promo_region),
-                    log=log,
-                )
-                log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
+            log(
+                f"[3/6] 同代理/同账单后注入试用 promo "
+                f"billing={checkout_create_country}/{checkout_currency} sticky={sticky_sid}"
+            )
+            update_payload = chatgpt_update_trial_promo(
+                token,
+                cs_id=cs_id,
+                processor=processor,
+                proxy_url=proxy_url,
+                device_id=device_id,
+                country=checkout_create_country,
+                currency=checkout_currency,
+                log=log,
+            )
+            log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
 
-            dyn4, sid4 = build_paypal_dynamic_proxy(cfg, 3, checkout_region)
-            log(f"[4/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal sid={sid4}")
-            with pix_proxy_context(cfg.local_proxy, dyn4, log) as chain4:
-                stripe_proxy = chain4.url
-                stripe = build_stripe_session(stripe_proxy)
-                init_payload = stripe_init(stripe, cs_id, pk, ctx)
+            log(f"[4/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal sticky={sticky_sid}")
+            init_payload = stripe_init(stripe, cs_id, pk, ctx)
             amount = amount_info(init_payload)
             pmt, ordered, has_paypal = pmt_info(init_payload)
             log(f"后注入金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
@@ -1725,7 +1822,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             log("[3/6] 跳过 promo update")
             if not is_zero_amount(amount):
                 raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
-            log(f"[4/6] 更新 {checkout_region} tax_region {billing.get('state') or '-'}")
+            log(f"[4/6] 更新 {checkout_region} tax_region {billing.get('state') or '-'} sticky={sticky_sid}")
             stripe_update_tax_region(stripe, cs_id, pk, billing)
             init_payload = stripe_init(stripe, cs_id, pk, ctx)
             amount = amount_info(init_payload)
@@ -1763,7 +1860,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
         log("[6/6] approve + poll PayPal")
-        chatgpt_approve(token, cs_id, processor, p1, device_id, log, country=checkout_region)
+        chatgpt_approve(token, cs_id, processor, proxy_url, device_id, log, country=checkout_create_country)
         last_err: dict[str, Any] = {}
         for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)

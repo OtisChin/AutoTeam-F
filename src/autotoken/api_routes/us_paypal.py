@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from autotoken.api_routes import brazil_pix as pix_routes
+from autotoken.core.normalization import normalize_access_token
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.us_paypal import (
     PaypalOnlyOaicsSkipped,
@@ -32,6 +33,7 @@ from autotoken.payments.us_paypal import (
 )
 from autotoken.services import paypal_protocol_local as paypal_protocol_service
 from autotoken.services import proxy_runtime
+from autotoken.services.chatgpt_session import email_from_access_token
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
@@ -168,6 +170,7 @@ class UsPaypalStartRequest(BaseModel):
 
 class UsPaypalBatchStartRequest(UsPaypalStartRequest):
     account_emails: list[str] = Field(default_factory=list, alias="accountEmails")
+    access_tokens: list[str] = Field(default_factory=list, alias="accessTokens")
     max_accounts: int | None = Field(None, alias="maxAccounts")
 
     @field_validator("account_emails", mode="before")
@@ -186,6 +189,31 @@ class UsPaypalBatchStartRequest(UsPaypalStartRequest):
                 seen.add(key)
                 emails.append(email)
         return emails
+
+    @field_validator("access_tokens", mode="before")
+    @classmethod
+    def _clean_access_tokens(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        raw_items = value if isinstance(value, list) else [value]
+        seen: set[str] = set()
+        tokens: list[str] = []
+        for raw_item in raw_items:
+            text = str(raw_item or "").strip()
+            if not text:
+                continue
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            for line in lines:
+                if line.lower().startswith("bearer ") or line.startswith("{"):
+                    candidates = [line]
+                else:
+                    candidates = [part for part in re.split(r"[\s,;]+", line) if part]
+                for candidate in candidates:
+                    token = normalize_access_token(candidate)
+                    if token and token not in seen:
+                        seen.add(token)
+                        tokens.append(token)
+        return tokens
 
 
 
@@ -589,6 +617,31 @@ def _load_token_for_email(email: str) -> str:
     return pix_routes._load_token_for_email(email)
 
 
+def _direct_access_token_accounts(tokens: list[str]) -> list[dict[str, Any]]:
+    accounts: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for index, token in enumerate(tokens, start=1):
+        clean_token = normalize_access_token(token)
+        if not clean_token:
+            continue
+        decoded_email = email_from_access_token(clean_token)
+        base_label = decoded_email or f"access-token-{index:03d}"
+        label = base_label
+        suffix = 2
+        while label.strip().lower() in seen_labels:
+            label = f"{base_label}#{suffix}"
+            suffix += 1
+        seen_labels.add(label.strip().lower())
+        accounts.append(
+            {
+                "email": label,
+                "access_token": clean_token,
+                "direct_access_token": True,
+            }
+        )
+    return accounts
+
+
 def _parse_proxies(value: str | list[str]) -> list[str]:
     return pix_routes._parse_proxies(value)
 
@@ -650,15 +703,24 @@ def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log, max_attem
         raise RuntimeError(f"代理预检失败: {target_region} {'; '.join(region_errors[-attempts:])}")
 
     checkout_proxy = preflight_region(cfg, region, "目标国家")
-    cfg = replace(cfg, direct_proxies=[checkout_proxy], preflighted_checkout_proxy_url=checkout_proxy)
-    promo_region = str(cfg.promo_region or "JP").strip().upper() or "JP"
-    if cfg.apply_promo and promo_region != region:
-        promo_proxy = preflight_region(cfg, promo_region, "优惠区")
-        cfg = replace(cfg, preflighted_promo_proxy_url=promo_proxy)
+    cfg = replace(
+        cfg,
+        direct_proxies=[checkout_proxy],
+        preflighted_checkout_proxy_url=checkout_proxy,
+        preflighted_promo_proxy_url=checkout_proxy if cfg.apply_promo else "",
+    )
+    if cfg.apply_promo:
+        log("优惠区代理预检跳过：PayPal 提链创建/优惠/Stripe/approve 复用同一条粘性代理")
     return cfg
 
 
 def _select_batch_accounts(req: UsPaypalBatchStartRequest) -> list[dict[str, Any]]:
+    direct_accounts = _direct_access_token_accounts(req.access_tokens)
+    if direct_accounts:
+        selected = direct_accounts
+        if req.max_accounts and req.max_accounts > 0:
+            selected = selected[: int(req.max_accounts)]
+        return selected
     available = _iter_auth_accounts()
     by_email = {str(item.get("email") or "").strip().lower(): item for item in available}
     requested = [str(email or "").strip() for email in req.account_emails if str(email or "").strip()]
@@ -874,6 +936,7 @@ def _run_batch_account(
     proxies: list[str],
 ) -> dict[str, Any]:
     email = str(account.get("email") or "").strip()
+    direct_access_token = bool(account.get("direct_access_token"))
     started = time.monotonic()
     if _is_job_cancel_requested(job_id):
         _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
@@ -888,7 +951,7 @@ def _run_batch_account(
     attempts = 0
     try:
         _set_account_status(email, PAYPAL_STATUS_RUNNING, job_id=job_id)
-        token = _load_token_for_email(email)
+        token = normalize_access_token(account.get("access_token")) if direct_access_token else _load_token_for_email(email)
         if not token:
             raise RuntimeError("账号缺少有效 accessToken")
         last_error = ""
@@ -935,13 +998,20 @@ def _run_batch_account(
                         "status": status,
                     }
                 if pix_routes._is_already_paid_error(last_error):
-                    _mark_account_plus_paypal(email, last_error)
+                    if not direct_access_token:
+                        _mark_account_plus_paypal(email, last_error)
                     status = _set_account_status(email, PAYPAL_STATUS_SUCCESS, error=last_error, job_id=job_id)
-                    _append_log(job_id, f"[{index}/{total}] 账号已是 Plus：{email}，已更新账号类型=Plus 绑定渠道=PayPal")
-                    return {"skipped": True, "email": email, "reason": "账号已是 Plus，已标记绑定渠道 PayPal", "status": status}
+                    reason = "账号已是 Plus" + ("" if direct_access_token else "，已标记绑定渠道 PayPal")
+                    _append_log(job_id, f"[{index}/{total}] {reason}：{email}")
+                    return {"skipped": True, "email": email, "reason": reason, "status": status}
                 if pix_routes._is_token_invalidated_error(last_error) or pix_routes._is_no_organization_error(last_error):
-                    cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=last_error, job_id=job_id)
+                    if direct_access_token:
+                        cleanup: dict[str, Any] = {"skipped": True, "reason": "direct_access_token"}
+                        error_text = f"accessToken 不可用：{last_error}"
+                    else:
+                        cleanup = _delete_invalid_account(email)
+                        error_text = f"账号不可用，已从账号池删除：{last_error}"
                     return {
                         "ok": False,
                         "email": email,
@@ -949,7 +1019,7 @@ def _run_batch_account(
                             "email": email,
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
-                            "error": f"账号不可用，已从账号池删除：{last_error}",
+                            "error": error_text,
                             "cleanup": cleanup,
                         },
                         "status": status,
@@ -1032,6 +1102,7 @@ def _run_batch_job(job_id: str, req: UsPaypalBatchStartRequest) -> None:
         log(
             f"PayPal 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，"
             f"目标国家={req.region}，优惠区={req.promo_region}，重试={_account_attempt_limit(req)}，promo={req.promo_mode}"
+            f"{'，输入源=accessToken' if req.access_tokens else ''}"
         )
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -2822,11 +2893,12 @@ def create_us_paypal_router() -> APIRouter:
 
     @router.post("/api/us-paypal/batch/start")
     def start_us_paypal_batch(req: UsPaypalBatchStartRequest) -> dict[str, str]:
-        emails = list(req.account_emails)
+        direct_accounts = _direct_access_token_accounts(req.access_tokens)
+        emails = [str(item.get("email") or "").strip() for item in direct_accounts] if direct_accounts else list(req.account_emails)
         if req.max_accounts and req.max_accounts > 0:
             emails = emails[: int(req.max_accounts)]
         if not emails:
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择要提链的账号"})
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择要提链的账号或粘贴 access token"})
         job_id = _new_job(emails, req.concurrency)
         threading.Thread(target=_run_batch_job, args=(job_id, req), daemon=True).start()
         return {"job_id": job_id}
