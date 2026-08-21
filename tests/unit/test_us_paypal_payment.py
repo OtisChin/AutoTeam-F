@@ -463,6 +463,12 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
     monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", lambda *args, **kwargs: calls.append(("approve", args[1])))
+    monkeypatch.setattr(us_paypal, "page_get", lambda *args, **kwargs: {
+        "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}},
+        "submission_attempt": {"state": "processing"},
+    })
+    monkeypatch.setattr(us_paypal, "resolve_external_redirect", lambda stripe, url: "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO")
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
         "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
         "submission_attempt": {"state": "requires_action"},
@@ -472,14 +478,17 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
         us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
     )
 
-    update_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
+    approve_index = calls.index(("approve", "cs_test"))
+    update_index = next(i for i, item in enumerate(calls) if item[0] == "chatgpt_post" and item[1].endswith("/checkout/update"))
+    assert approve_index < update_index
+    update_payload = next(item[2] for item in calls if len(item) == 3 and item[0] == "chatgpt_post" and item[1].endswith("/checkout/update"))
     assert update_payload["billing_details"] == {"country": "US", "currency": "USD"}
     assert warmup_countries == ["US", "US"]
     assert result["amount"] == "0"
     assert result["fields"]["pre_promo_amount"] == "2120"
     assert result["fields"]["post_promo_payment_method_types"] == ["card", "paypal"]
     assert result["fields"]["ba_token"] == "BA-LATEPROMO"
-    assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
+    assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
 
 
@@ -517,6 +526,12 @@ def test_generate_paypal_trial_keeps_br_cs_checkout_promo_late_in_normal_mode(mo
     monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", lambda *args, **kwargs: calls.append(("approve", args[1])))
+    monkeypatch.setattr(us_paypal, "page_get", lambda *args, **kwargs: {
+        "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}},
+        "submission_attempt": {"state": "processing"},
+    })
+    monkeypatch.setattr(us_paypal, "resolve_external_redirect", lambda stripe, url: "https://www.paypal.com/agreements/approve?ba_token=BA-BRLATE")
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
         "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-BRLATE",
     })
@@ -532,10 +547,11 @@ def test_generate_paypal_trial_keeps_br_cs_checkout_promo_late_in_normal_mode(mo
         )
     )
 
-    checkout_payload = next(payload for _kind, url, payload in calls if url.endswith("/payments/checkout"))
-    promo_payload = next(payload for _kind, url, payload in calls if url.endswith("/checkout/update"))
+    checkout_payload = next(item[2] for item in calls if len(item) == 3 and item[0] == "chatgpt_post" and item[1].endswith("/payments/checkout"))
+    promo_payload = next(item[2] for item in calls if len(item) == 3 and item[0] == "chatgpt_post" and item[1].endswith("/checkout/update"))
     assert "promo_campaign" not in checkout_payload
     assert promo_payload["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+    assert ("approve", "cs_br_test") in calls
     assert result["fields"]["ba_token"] == "BA-BRLATE"
 
 
@@ -568,6 +584,12 @@ def test_generate_paypal_trial_uses_target_proxy_country_and_mapped_checkout_bil
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
     monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", lambda *args, **kwargs: calls.append(("approve", args[1])))
+    monkeypatch.setattr(us_paypal, "page_get", lambda *args, **kwargs: {
+        "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}},
+        "submission_attempt": {"state": "processing"},
+    })
+    monkeypatch.setattr(us_paypal, "resolve_external_redirect", lambda stripe, url: "https://www.paypal.com/agreements/approve?ba_token=BA-GB")
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
         "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
     })
@@ -582,15 +604,16 @@ def test_generate_paypal_trial_uses_target_proxy_country_and_mapped_checkout_bil
         )
     )
 
-    checkout_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout"))
-    promo_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
+    checkout_payload = next(item[2] for item in calls if len(item) == 3 and item[0] == "chatgpt_post" and item[1].endswith("/checkout"))
+    promo_payload = next(item[2] for item in calls if len(item) == 3 and item[0] == "chatgpt_post" and item[1].endswith("/checkout/update"))
     assert checkout_payload["billing_details"] == {"country": "DE", "currency": "EUR"}
     assert promo_payload["billing_details"] == {"country": "DE", "currency": "EUR"}
     assert len(proxy_stages) == 1
     assert "-custom-region-BA-session-" in proxy_stages[0]
+    assert ("approve", "cs_test") in calls
     assert result["fields"]["billing"]["country"] == "DE"
     assert result["fields"]["amount"] == "0"
-    assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
+    assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
 
 def test_generate_paypal_trial_stops_when_amount_is_not_zero(monkeypatch):
     class FakeChatgptSession:
@@ -669,9 +692,17 @@ def test_generate_paypal_trial_rechecks_promo_amount_after_tax_region(monkeypatc
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
     monkeypatch.setattr(us_paypal, "stripe_update_tax_region", lambda *args, **kwargs: None)
-    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: pytest.fail("should not confirm PayPal"))
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "page_get", lambda *args, **kwargs: {
+        "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}},
+        "submission_attempt": {"state": "processing"},
+    })
+    monkeypatch.setattr(us_paypal, "resolve_external_redirect", lambda stripe, url: "https://www.paypal.com/agreements/approve?ba_token=BA-RECHECK")
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-RECHECK",
+    })
 
-    with pytest.raises(RuntimeError, match="PayPal 金额必须为 0: 2000"):
+    with pytest.raises(RuntimeError, match="后注入 promo 后金额必须为 0: 2000"):
         us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True))
 
 
@@ -848,6 +879,12 @@ def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(mo
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
     monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", lambda *args, **kwargs: calls.append(("approve", args[1])))
+    monkeypatch.setattr(us_paypal, "page_get", lambda *args, **kwargs: {
+        "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}},
+        "submission_attempt": {"state": "processing"},
+    })
+    monkeypatch.setattr(us_paypal, "resolve_external_redirect", lambda stripe, url: "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL")
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
         "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
     })
@@ -856,6 +893,7 @@ def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(mo
         us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
     )
 
-    assert any(kind == "chatgpt_post" and url.endswith("/checkout/update") for kind, url, _payload in calls)
+    assert any(len(item) == 3 and item[0] == "chatgpt_post" and item[1].endswith("/checkout/update") for item in calls)
+    assert ("approve", "cs_test") in calls
     assert result["fields"]["ba_token"] == "BA-LATEPAYPAL"
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"

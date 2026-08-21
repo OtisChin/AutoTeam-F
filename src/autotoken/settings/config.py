@@ -44,6 +44,8 @@ def normalize_mail_provider(raw: str | None) -> str:
         return "generic-api"
     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
         return "luckmail"
+    if provider in ("mailu", "self-mailu"):
+        return "mailu"
     return provider
 
 
@@ -82,6 +84,11 @@ LUCKMAIL_EMAIL_TYPE = _first_env("LUCKMAIL_EMAIL_TYPE", default="ms_graph")
 LUCKMAIL_PREFERRED_DOMAIN = _first_env("LUCKMAIL_PREFERRED_DOMAIN", default="")
 LUCKMAIL_ACCOUNTS_FILE = _first_env("LUCKMAIL_ACCOUNTS_FILE", default="")
 LUCKMAIL_ACCOUNTS = _first_env("LUCKMAIL_ACCOUNTS", default="")
+
+# Mailu 自建 mail-api 网关 provider
+MAILU_BASE_URL = _first_env("MAILU_BASE_URL", "MAILU_API_URL")
+MAILU_API_KEY = _first_env("MAILU_API_KEY")
+MAILU_DOMAIN = _first_env("MAILU_DOMAIN")
 
 # Backward-compatible aliases used by existing code paths
 CLOUDMAIL_BASE_URL = CLOUDFLARE_TEMP_EMAIL_BASE_URL
@@ -205,16 +212,12 @@ def normalize_proxy_url(proxy_url: str | None, *, default_auth_scheme: str | Non
 
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https", "socks4", "socks5", "socks5h"} or not parsed.hostname:
-        raise ValueError(
-            "代理 URL 格式无效，请使用 http://user:pass@host:port 或 socks5h://user:pass@host:port"
-        )
+        raise ValueError("代理 URL 格式无效，请使用 http://user:pass@host:port 或 socks5h://user:pass@host:port")
     try:
         if parsed.port is None:
             raise ValueError
     except ValueError as exc:
-        raise ValueError(
-            "代理 URL 格式无效，请确认包含有效端口，例如 http://host:port"
-        ) from exc
+        raise ValueError("代理 URL 格式无效，请确认包含有效端口，例如 http://host:port") from exc
 
     host = _format_proxy_host(parsed.hostname)
     auth = ""

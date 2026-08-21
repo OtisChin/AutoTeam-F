@@ -99,9 +99,7 @@ POST_REGISTER_OAUTH_ENABLED = os.environ.get("POST_REGISTER_OAUTH_ENABLED", "fal
     "yes",
     "on",
 }
-TEAM_INVITE_REGISTER_DISABLED_MESSAGE = (
-    "Team invite / leave_workspace 注册链路已禁用；请改用独立直接注册，不再通过 Team 邀请或加入后退出 workspace 生产账号。"
-)
+TEAM_INVITE_REGISTER_DISABLED_MESSAGE = "Team invite / leave_workspace 注册链路已禁用；请改用独立直接注册，不再通过 Team 邀请或加入后退出 workspace 生产账号。"
 REGISTER_RISK_BREAKER_STATUSES = {
     "account_deactivated",
     "auth_session_exception",
@@ -162,8 +160,7 @@ def _is_risky_register_failure(item: dict | None) -> bool:
     if status in REGISTER_RISK_BREAKER_STATUSES:
         return True
     reason = " ".join(
-        str(item.get(key) or "")
-        for key in ("reason", "error", "message", "register_blocked_reason")
+        str(item.get(key) or "") for key in ("reason", "error", "message", "register_blocked_reason")
     ).lower()
     return any(keyword in reason for keyword in REGISTER_RISK_BREAKER_REASON_KEYWORDS)
 
@@ -264,7 +261,9 @@ class MailClientAuthRetryWrapper:
                     if "身份认证失效" not in message:
                         raise
                     step_name = name
-                    logger.warning("[%s] 邮箱服务步骤 %s 返回身份认证失效，10s 后自动重登并重试一次", self._log_prefix, step_name)
+                    logger.warning(
+                        "[%s] 邮箱服务步骤 %s 返回身份认证失效，10s 后自动重登并重试一次", self._log_prefix, step_name
+                    )
                     time.sleep(10)
                     self._inner.login()
                     try:
@@ -307,7 +306,11 @@ def _sync_provider_registered_email(
     refresh_token: str = "",
     source: str = "",
 ) -> None:
-    provider = (mail_provider or _mail_client_provider_name(mail_client)).strip().lower() if (mail_provider or mail_client) else ""
+    provider = (
+        (mail_provider or _mail_client_provider_name(mail_client)).strip().lower()
+        if (mail_provider or mail_client)
+        else ""
+    )
     if provider == "outlook":
         try:
             from autotoken.storage.outlook_pool import mark_registered_email
@@ -355,7 +358,9 @@ def _sync_provider_registered_email(
         return
 
 
-def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
+def _mark_outlook_email_registered(
+    email: str, mail_client=None, *, mail_provider: str | None = None, source: str = ""
+) -> None:
     _sync_provider_registered_email(email, mail_client, mail_provider=mail_provider, source=source)
 
 
@@ -1658,7 +1663,12 @@ def _run_post_register_oauth(
         auth_file = save_auth_file(bundle)
         # 注册后 Team bundle 成功拿到,说明 workspace 已同步:seat_type=chatgpt
         seat_label = registration.team_success_seat_label(bundle.get("plan_type"))
-        update_account(email, **registration.team_success_update_fields(plan_type=bundle.get("plan_type"), auth_file=auth_file, last_active_at=time.time()))
+        update_account(
+            email,
+            **registration.team_success_update_fields(
+                plan_type=bundle.get("plan_type"), auth_file=auth_file, last_active_at=time.time()
+            ),
+        )
         logger.info("[注册] 账号就绪: %s (seat=%s)", email, seat_label)
         _record_outcome("success", plan=bundle.get("plan_type"))
         return email
@@ -2012,6 +2022,7 @@ def _save_auth_from_session_page(
     enable_totp_mfa=False,
     email_code_provider=None,
     progress_callback=None,
+    proxy_url=None,
 ):
     """
     在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
@@ -2080,6 +2091,14 @@ def _save_auth_from_session_page(
     )
     logger.info("[注册] auth_session 已保存: %s", auth_file)
     update_account(email, **registration.auth_session_update_fields(last_active_at=time.time()))
+    _detect_registration_trial_eligibility(
+        email,
+        access_token,
+        account_id,
+        page=page,
+        proxy_url=proxy_url,
+        progress_callback=progress_callback,
+    )
     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
     _record_outcome(
         "success",
@@ -2106,6 +2125,115 @@ def _save_auth_from_session_page(
             session_data=data,
             progress_callback=progress_callback,
         )
+    return result
+
+
+def _detect_registration_trial_eligibility(
+    email: str,
+    access_token: str,
+    account_id: str,
+    *,
+    page=None,
+    proxy_url: str | None = None,
+    progress_callback=None,
+    timeout_seconds: float = 20.0,
+) -> dict:
+    """注册成功后检测该账号是否有 0 元试用资格并固化到账号记录。
+
+    优先在注册浏览器页面里直接 fetch 订阅接口（走注册代理 + 完整 cookie/sentinel 会话，
+    与注册时看到的优惠一致）；页面不可用时回退到 HTTP 订阅查询。
+    `available_plans` 非空 或 account_check 的 eligible_offers 存在即视为可试用。
+    检测失败不阻塞注册，返回空 dict。
+    """
+    result = {"trial_eligible": False, "trial_checked_at": time.time()}
+    try:
+        from autotoken.api_routes.account_overview import (
+            normalize_chatgpt_subscription,
+            query_chatgpt_subscription,
+        )
+
+        if not access_token or not account_id:
+            logger.debug("[注册] 试用资格检测跳过：缺少 access_token/account_id (%s)", email)
+            return result
+
+        raw = None
+        page_error = ""
+        used_browser = False
+        if page is not None:
+            try:
+                query = f"?account_id={account_id}"
+                fetch_script = (
+                    "async () => {"
+                    "  const resp = await fetch('https://chatgpt.com/backend-api/subscriptions"
+                    f"{query}', {{ credentials: 'include', cache: 'no-store', "
+                    "headers: { accept: 'application/json' } });"
+                    "  const text = await resp.text();"
+                    "  let data = {}; try { data = JSON.parse(text || '{}'); } catch {}"
+                    "  return { status: resp.status, data, raw: text.slice(0, 400) };"
+                    "}"
+                )
+                page_result = page.evaluate(fetch_script)
+                if isinstance(page_result, dict) and int(page_result.get("status") or 0) < 400:
+                    page_data = page_result.get("data")
+                    if isinstance(page_data, dict):
+                        raw = page_data
+                        used_browser = True
+            except Exception as exc:
+                page_error = str(exc)[:200]
+                logger.debug("[注册] 浏览器订阅查询失败，回退 HTTP: %s (%s)", email, page_error)
+
+        if raw is None:
+            try:
+                query_result = query_chatgpt_subscription(
+                    access_token, account_id=account_id, proxy_url=str(proxy_url or "").strip()
+                )
+                raw = query_result.get("raw") if isinstance(query_result, dict) else None
+            except Exception as exc:
+                logger.debug("[注册] 订阅查询失败，跳过试用资格检测 (%s): %s", email, exc)
+                return result
+
+        if not isinstance(raw, dict):
+            return result
+        normalized = normalize_chatgpt_subscription(raw, account_id=account_id)
+        available_plans = normalized.get("available_plans") if isinstance(normalized, dict) else []
+        if not isinstance(available_plans, list):
+            available_plans = []
+        available_plans = [str(item) for item in available_plans if str(item or "").strip()]
+        eligible = bool(available_plans)
+        result.update(
+            {
+                "trial_eligible": eligible,
+                "trial_available_plans": available_plans,
+                "trial_checked_at": time.time(),
+                "trial_detection_source": "browser" if used_browser else "http",
+            }
+        )
+        from autotoken.storage.accounts import update_account
+
+        update_account(
+            email,
+            trial_eligible=eligible,
+            trial_available_plans=available_plans,
+            trial_checked_at=result["trial_checked_at"],
+        )
+        logger.info("[注册] %s 试用资格检测完成: eligible=%s plans=%s", email, eligible, available_plans)
+        if callable(progress_callback):
+            try:
+                progress_callback(
+                    {
+                        "stage": "register_trial_detected",
+                        "message": (
+                            f"账号{'可' if eligible else '不可'} 0 元试用"
+                            + (f" ({', '.join(available_plans)})" if available_plans else "")
+                        ),
+                        "trial_eligible": eligible,
+                        "email": email,
+                    }
+                )
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.debug("[注册] 试用资格检测异常，忽略 (%s): %s", email, exc)
     return result
 
 
@@ -2190,7 +2318,9 @@ def _save_codex_oauth_bundle_for_account(
         refresh_token=str(bundle.get("refresh_token") or ""),
         source=source,
     )
-    update_account(email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time()))
+    update_account(
+        email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time())
+    )
     logger.info("[注册] 协议 Codex OAuth 已保存 CPA JSON: %s plan=%s auth_file=%s", email, plan_type, auth_file)
     _record_outcome(
         "success",
@@ -2398,7 +2528,9 @@ def _run_post_register_session_oauth(
         seat_type=seat_type,
         mail_provider=_mail_client_provider_name(mail_client) or None,
     )
-    update_account(email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time()))
+    update_account(
+        email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time())
+    )
     logger.info("[注册] Codex OAuth 成功: %s plan=%s auth_file=%s source=%s", email, plan_type, auth_file, oauth_source)
     _record_outcome("success", plan=plan_type, auth_file=auth_file, source=oauth_source)
     return registration.free_codex_oauth_result(email=email, auth_file=auth_file, source=oauth_source)
@@ -3092,8 +3224,8 @@ def _try_click_cloudflare_turnstile(page) -> bool:
             frame = page.frame_locator(frame_selector).first
             for selector in [
                 'input[type="checkbox"]',
-                'label',
-                'button',
+                "label",
+                "button",
                 '[role="checkbox"]',
             ]:
                 locator = frame.locator(selector).first
@@ -3736,11 +3868,18 @@ def _register_direct_once(
                     post_code_step = _wait_for_direct_step_change(page, "password", timeout=20)
                     logger.info("[直接注册] 验证码后提交密码状态: %s | URL: %s", post_code_step, page.url)
                 if post_code_step == "code":
-                    logger.warning("[直接注册] 验证码提交后页面未前进 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                    logger.warning(
+                        "[直接注册] 验证码提交后页面未前进 | URL: %s | body=%s", page.url, _page_excerpt(page)
+                    )
                     _safe_invite_screenshot(page, "direct_05_code_still_pending.png")
                     return _finish(False)
             else:
-                logger.error("[直接注册] %ss 内未收到验证码 provider=%s email=%s", code_timeout, provider_name or "<unknown>", email)
+                logger.error(
+                    "[直接注册] %ss 内未收到验证码 provider=%s email=%s",
+                    code_timeout,
+                    provider_name or "<unknown>",
+                    email,
+                )
                 if provider_name == "outlook":
                     raise DirectRegisterEmailCodeTimeout(f"Outlook 邮箱 {code_timeout}s 内未收到验证码")
                 return _finish(False)
@@ -3748,7 +3887,9 @@ def _register_direct_once(
             logger.warning("[直接注册] 验证码步骤误跳转到 Google 登录页")
             return _finish(False)
         elif code_step in {"email", "password"}:
-            logger.warning("[直接注册] 验证码前流程回退到 %s | URL: %s | body=%s", code_step, page.url, _page_excerpt(page))
+            logger.warning(
+                "[直接注册] 验证码前流程回退到 %s | URL: %s | body=%s", code_step, page.url, _page_excerpt(page)
+            )
             return _finish(False)
 
         _safe_invite_screenshot(page, "direct_05_after_code.png")
@@ -3805,6 +3946,7 @@ def _register_direct_once(
                     page=page,
                     enable_totp_mfa=True,
                     email_code_provider=_recent_auth_email_code_provider,
+                    proxy_url=proxy_url,
                     progress_callback=progress_callback,
                 )
                 if saved_auth:
@@ -3835,6 +3977,7 @@ def create_account_direct(
     oauth_phone_sms_max_price=None,
     oauth_oasis_sms_cdks=None,
     phone_only=False,
+    retry_attempts=3,
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
@@ -3939,18 +4082,24 @@ def create_account_direct(
                         session_data,
                         out_outcome=out_outcome,
                         mail_provider=_mail_client_provider_name(mail_client) or None,
+                        proxy_url=proxy_url,
                     )
                 if saved_session:
-                    _progress("phone_only_register_finished", f"纯手机号注册完成，已保存 auth_session: {email}", email=email)
+                    _progress(
+                        "phone_only_register_finished", f"纯手机号注册完成，已保存 auth_session: {email}", email=email
+                    )
                     return saved_session
                 # phone_only 注册成功但未获取到 Web 会话 cookie/accessToken 时，
                 # 保存 session-only 存根确保账号出现在仪表盘
                 if email:
                     from autotoken.services.account_session_stubs import session_only_account_stub
                     from autotoken.storage.accounts import ensure_session_only_account
+
                     ensure_session_only_account(email)
                     saved_stub = session_only_account_stub(email)
-                    _progress("phone_only_register_finished", f"纯手机号注册完成（已保存会话存根）: {email}", email=email)
+                    _progress(
+                        "phone_only_register_finished", f"纯手机号注册完成（已保存会话存根）: {email}", email=email
+                    )
                     return saved_stub
                 reason = str((out_outcome or {}).get("reason") or "phone-only 注册完成但未保存有效凭证")
                 record_failure(email, "phone_only_auth_failed", reason)
@@ -3972,7 +4121,9 @@ def create_account_direct(
 
             def _create_phone_first_mailbox():
                 nonlocal account_id, email
-                _progress("register_email_creating", f"手机号注册成功，正在创建绑定邮箱: domain=@{domain or '<default>'}")
+                _progress(
+                    "register_email_creating", f"手机号注册成功，正在创建绑定邮箱: domain=@{domain or '<default>'}"
+                )
                 account_id, email = _create_registration_mailbox(resolved_prefix)
                 _progress("register_email_created", f"已创建绑定邮箱: {email}", email=email)
                 return account_id, email
@@ -4000,7 +4151,12 @@ def create_account_direct(
                     reason = str((session_data or {}).get("raw") or "phone-first 注册未成功")
                     record_failure(email, "phone_first_failed", reason)
                     _record_outcome("phone_first_failed", reason=reason)
-                    _progress("phone_first_register_failed", f"手机号注册失败: {email or '<未创建邮箱>'}: {reason}", email=email, level="error")
+                    _progress(
+                        "phone_first_register_failed",
+                        f"手机号注册失败: {email or '<未创建邮箱>'}: {reason}",
+                        email=email,
+                        level="error",
+                    )
                     return None
 
                 saved_session = None
@@ -4013,13 +4169,22 @@ def create_account_direct(
                         session_data,
                         out_outcome=out_outcome,
                         mail_provider=_mail_client_provider_name(mail_client) or None,
+                        proxy_url=proxy_url,
                     )
                     if saved_session:
-                        _progress("phone_first_auth_session_saved", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                        _progress(
+                            "phone_first_auth_session_saved",
+                            f"手机号注册完成，已保存 auth_session: {email}",
+                            email=email,
+                        )
                     else:
-                        logger.warning("[phone-first] 注册结果包含 ChatGPT Web session，但 auth_session 未保存成功: %s", email)
+                        logger.warning(
+                            "[phone-first] 注册结果包含 ChatGPT Web session，但 auth_session 未保存成功: %s", email
+                        )
                 else:
-                    logger.warning("[phone-first] 注册结果未包含 ChatGPT Web session，跳过 auth_session 保存: %s", email)
+                    logger.warning(
+                        "[phone-first] 注册结果未包含 ChatGPT Web session，跳过 auth_session 保存: %s", email
+                    )
 
                 if bundle:
                     saved = _save_codex_oauth_bundle_for_account(
@@ -4036,27 +4201,36 @@ def create_account_direct(
                         return saved
 
                 if saved_session:
-                    _progress("phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                    _progress(
+                        "phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email
+                    )
                     return saved_session
 
                 reason = str((out_outcome or {}).get("reason") or "phone-first 注册完成但未保存有效凭证")
                 record_failure(email, "phone_first_auth_failed", reason)
                 _record_outcome("phone_first_auth_failed", reason=reason)
-                _progress("phone_first_register_failed", f"手机号注册完成但凭证保存失败: {email}", email=email, level="error")
+                _progress(
+                    "phone_first_register_failed", f"手机号注册完成但凭证保存失败: {email}", email=email, level="error"
+                )
                 return None
             except Exception as exc:
                 reason = str(exc)
                 record_failure(email, "phone_first_exception", reason)
                 _record_outcome("phone_first_exception", reason=reason)
-                _progress("phone_first_register_failed", f"手机号注册异常: {email}: {reason}", email=email, level="error")
+                _progress(
+                    "phone_first_register_failed", f"手机号注册异常: {email}: {reason}", email=email, level="error"
+                )
                 raise
 
     def _discard_email(reason):
         logger.info("[直接注册] %s，保留临时邮箱服务账号: %s id=%s", reason, email, account_id)
 
-    # 注册失败（非 duplicate）最多重试 3 次；duplicate 额外独立上限，防止临时邮箱服务异常导致无限换邮箱
+    # 注册失败（非 duplicate）最多重试 retry_attempts 次；duplicate 额外独立上限，防止临时邮箱服务异常导致无限换邮箱
     success = False
-    MAX_REGISTER_ATTEMPTS = 3
+    try:
+        MAX_REGISTER_ATTEMPTS = max(1, min(10, int(retry_attempts or 3)))
+    except Exception:
+        MAX_REGISTER_ATTEMPTS = 3
     MAX_DUPLICATE_SWAPS = 5
     while register_attempts < MAX_REGISTER_ATTEMPTS:
         precheck = _check_registration_email_registered(email, proxy_url=proxy_url, register_mode=register_mode)
@@ -4298,7 +4472,9 @@ def create_account_direct(
                 try:
                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
                     _progress("register_auth_session_fetch", f"正在保存 auth_session: {email}", email=email)
-                    session_auth = (session_data or {}).get("_saved_auth_result") if isinstance(session_data, dict) else None
+                    session_auth = (
+                        (session_data or {}).get("_saved_auth_result") if isinstance(session_data, dict) else None
+                    )
                     if not session_auth:
                         session_auth = _save_auth_from_session_page(
                             email,
@@ -4309,6 +4485,7 @@ def create_account_direct(
                             mail_provider=_mail_client_provider_name(mail_client) or None,
                             enable_totp_mfa=enable_totp_mfa,
                             progress_callback=progress_callback,
+                            proxy_url=proxy_url,
                         )
                     if session_auth:
                         if not post_register_oauth_enabled:
@@ -4337,7 +4514,9 @@ def create_account_direct(
                             _progress("register_oauth_saved", f"重新登录 OAuth 已完成: {email}", email=email)
                             return oauth_auth
                         if out_outcome is not None and out_outcome.get("status") == "phone_blocked":
-                            logger.info("[注册] OAuth 需要手机号验证，但注册已完成，保留 auth_session 供补登录: %s", email)
+                            logger.info(
+                                "[注册] OAuth 需要手机号验证，但注册已完成，保留 auth_session 供补登录: %s", email
+                            )
                             _progress(
                                 "register_auth_session_saved",
                                 f"auth_session 已保存，OAuth 需要手机号补登录: {email}",
@@ -4346,7 +4525,9 @@ def create_account_direct(
                             )
                             return session_auth
                         logger.info("[注册] auth_session 已保存，重新登录 OAuth 未完成，等待手动补登录: %s", email)
-                        _progress("register_auth_session_saved", f"auth_session 已保存，等待手动补登录: {email}", email=email)
+                        _progress(
+                            "register_auth_session_saved", f"auth_session 已保存，等待手动补登录: {email}", email=email
+                        )
                         return session_auth
                     last_failure_reason = "注册未完成：未生成可用 auth_session，无法确认 Platform organization"
                     logger.warning("[注册] %s: %s", email, last_failure_reason)
@@ -5155,6 +5336,7 @@ def cmd_register_accounts(
     *,
     count=1,
     concurrency=1,
+    retry_attempts=3,
     interval_seconds=12.0,
     jitter_min_seconds=8.0,
     jitter_max_seconds=20.0,
@@ -5171,6 +5353,7 @@ def cmd_register_accounts(
     register_mode="browser",
     registration_flow="standard",
     proxy_url=None,
+    proxy_pool=None,
     use_roxybrowser=False,
     register_proxy_selector=None,
     register_proxy_meta=None,
@@ -5188,6 +5371,10 @@ def cmd_register_accounts(
     """
     total = max(1, int(count))
     workers = max(1, min(int(concurrency or 1), total))
+    try:
+        max_register_attempts = max(1, min(10, int(retry_attempts or 3)))
+    except Exception:
+        max_register_attempts = 3
     spacing = max(0.0, float(interval_seconds or 0.0))
     jitter_min = max(0.0, float(jitter_min_seconds or 0.0))
     jitter_max = max(0.0, float(jitter_max_seconds or 0.0))
@@ -5202,7 +5389,9 @@ def cmd_register_accounts(
     selected_fallback_domain = domain_pool[0] if domain_pool else domain
     luckmail_domain_pool = []
     seen_luckmail_domains = set()
-    for raw_domain in list(luckmail_preferred_domains or []) + ([luckmail_preferred_domain] if luckmail_preferred_domain is not None else []):
+    for raw_domain in list(luckmail_preferred_domains or []) + (
+        [luckmail_preferred_domain] if luckmail_preferred_domain is not None else []
+    ):
         value = str(raw_domain or "").strip().lstrip("@").strip()
         key = value.lower()
         if key in seen_luckmail_domains:
@@ -5236,6 +5425,7 @@ def cmd_register_accounts(
     if registration_flow not in {"standard", "phone_cpa"}:
         registration_flow = "standard"
     fixed_proxy_url = str(proxy_url or "").strip()
+    proxy_pool_list = [str(item).strip() for item in (proxy_pool or []) if str(item or "").strip()]
     register_proxy_meta = register_proxy_meta or {}
     oauth_provider = str(oauth_phone_sms_provider or "").strip().lower().replace("-", "_")
     oauth_max_price = str(oauth_phone_sms_max_price or "").strip()
@@ -5283,8 +5473,84 @@ def cmd_register_accounts(
         except Exception as exc:
             return False, str(exc)
 
+    def _select_working_proxy_from_pool(job_index: int, total: int) -> str:
+        pool_size = len(proxy_pool_list)
+        start = job_index % pool_size
+        try:
+            max_attempts = max(1, min(10, int(os.environ.get("REGISTER_PROXY_PROBE_ATTEMPTS", "5") or 5)))
+        except Exception:
+            max_attempts = 5
+        max_attempts = min(max_attempts, pool_size)
+        if use_roxybrowser:
+            selected_pool_proxy = proxy_pool_list[start]
+            if progress_callback:
+                progress_callback(
+                    {
+                        "stage": "register_proxy_selected",
+                        "message": (
+                            f"已为第 {job_index + 1}/{total} 个账号使用代理池第 "
+                            f"{start + 1}/{pool_size} 条（RoxyBrowser 跳过 HTTP 预探测）"
+                        ),
+                        "proxy_url_present": True,
+                        "proxy_pool_size": pool_size,
+                        "email_index": job_index + 1,
+                        "probe_skipped": True,
+                    }
+                )
+            return selected_pool_proxy
+        last_error = ""
+        for proxy_attempt in range(1, max_attempts + 1):
+            pool_index = (start + proxy_attempt - 1) % pool_size
+            candidate = proxy_pool_list[pool_index]
+            ok, probe_error = _probe_register_proxy(candidate)
+            if ok:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "register_proxy_selected",
+                            "message": (
+                                f"已为第 {job_index + 1}/{total} 个账号使用代理池第 {pool_index + 1}/{pool_size} 条"
+                            ),
+                            "proxy_url_present": True,
+                            "proxy_pool_size": pool_size,
+                            "email_index": job_index + 1,
+                            "proxy_attempt": proxy_attempt,
+                            "max_proxy_attempts": max_attempts,
+                        }
+                    )
+                return candidate
+            last_error = probe_error or "代理连通性探测失败"
+            logger.warning(
+                "[注册账号] 第 %d/%d 个代理池第 %d/%d 条预探测失败 %d/%d: %s",
+                job_index + 1,
+                total,
+                pool_index + 1,
+                pool_size,
+                proxy_attempt,
+                max_attempts,
+                last_error,
+            )
+            if progress_callback:
+                progress_callback(
+                    {
+                        "stage": "register_proxy_api_probe_failed",
+                        "message": (
+                            f"代理池第 {pool_index + 1}/{pool_size} 条预探测失败，"
+                            f"准备换下一条重试 {proxy_attempt}/{max_attempts}: {last_error[:180]}"
+                        ),
+                        "level": "warn",
+                        "proxy_pool_size": pool_size,
+                        "email_index": job_index + 1,
+                        "proxy_attempt": proxy_attempt,
+                        "max_proxy_attempts": max_attempts,
+                    }
+                )
+        raise RuntimeError(f"代理池预探测全部失败: {last_error or '代理连通性探测失败'}")
+
     def _select_working_register_proxy(job_index: int, total: int) -> str:
         if not callable(register_proxy_selector):
+            if proxy_pool_list:
+                return _select_working_proxy_from_pool(job_index, total)
             if fixed_proxy_url and progress_callback:
                 progress_callback(
                     {
@@ -5400,7 +5666,9 @@ def cmd_register_accounts(
             if str(mail_provider or "").strip().lower() == "luckmail" and luckmail_domain_pool:
                 job_domain = luckmail_domain_pool[job_index % len(luckmail_domain_pool)]
             outcome = {}
-            provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
+            provider_label = (
+                _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
+            )
             register_target = (
                 f"provider={provider_label}"
                 if provider_label in {"luckmail", "outlook", "icloud", "generic-api", "mail.com"}
@@ -5434,6 +5702,7 @@ def cmd_register_accounts(
                     oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",
                     oauth_oasis_sms_cdks=oauth_oasis_sms_cdks if oauth_provider in {"oasis", "tujie"} else None,
                     phone_only=phone_only,
+                    retry_attempts=max_register_attempts,
                     progress_callback=progress_callback,
                 )
                 if isinstance(raw_result, str):
@@ -5459,10 +5728,7 @@ def cmd_register_accounts(
                         progress["failed"] += 1
                         if risk_breaker_enabled and _is_risky_register_failure(item):
                             risk_state["consecutive"] += 1
-                            if (
-                                not risk_state["triggered"]
-                                and risk_state["consecutive"] >= risk_breaker_threshold
-                            ):
+                            if not risk_state["triggered"] and risk_state["consecutive"] >= risk_breaker_threshold:
                                 risk_state["triggered"] = True
                                 risk_state["reason"] = str(
                                     item.get("reason")
@@ -5481,8 +5747,7 @@ def cmd_register_accounts(
                                         {
                                             "stage": "register_circuit_breaker_opened",
                                             "message": (
-                                                f"连续 {risk_state['consecutive']} 个高风险注册失败，"
-                                                "已停止提交后续账号"
+                                                f"连续 {risk_state['consecutive']} 个高风险注册失败，已停止提交后续账号"
                                             ),
                                             "level": "error",
                                             "consecutive_risky_failures": risk_state["consecutive"],
@@ -5526,7 +5791,11 @@ def cmd_register_accounts(
                 }
 
     normalized_results = [item or {"status": "failed", "reason": "unknown"} for item in results]
-    ok = [item for item in normalized_results if isinstance(item, dict) and item.get("status") in ("registered", "success")]
+    ok = [
+        item
+        for item in normalized_results
+        if isinstance(item, dict) and item.get("status") in ("registered", "success")
+    ]
     logger.info(
         "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs, 风控熔断=%s)",
         len(ok),

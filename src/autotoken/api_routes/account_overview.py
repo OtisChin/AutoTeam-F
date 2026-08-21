@@ -1,5 +1,6 @@
 """Account overview, access token, and ChatGPT subscription HTTP routes."""
 
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,7 +77,6 @@ def _extract_jwt_plan_type(access_token: str) -> str:
     if isinstance(auth_claims, dict):
         return str(auth_claims.get("chatgpt_plan_type") or "").strip()
     return ""
-
 
 
 def _truthy(value: Any) -> bool:
@@ -199,10 +199,18 @@ def _normalize_discount(item: Any) -> dict[str, Any] | None:
         return None
     return {
         "id": str(_first_present(item, "id", "coupon_id", "promotion_id", "promo_campaign_id", default="")).strip(),
-        "percent_off": _first_present(item, "percent_off", "percentage_off", "discount_percent", "amount", default=None),
-        "duration_in_months": _first_present(item, "duration_in_months", "duration_num_periods", "months", default=None),
-        "ends_at": _coerce_datetime(_first_present(item, "end_date", "discount_expires_at", "ends_at", "term_end", default="")),
-        "end_behavior": str(_first_present(item, "end_behavior", "cancellation_policy", "ends_when", default="")).strip(),
+        "percent_off": _first_present(
+            item, "percent_off", "percentage_off", "discount_percent", "amount", default=None
+        ),
+        "duration_in_months": _first_present(
+            item, "duration_in_months", "duration_num_periods", "months", default=None
+        ),
+        "ends_at": _coerce_datetime(
+            _first_present(item, "end_date", "discount_expires_at", "ends_at", "term_end", default="")
+        ),
+        "end_behavior": str(
+            _first_present(item, "end_behavior", "cancellation_policy", "ends_when", default="")
+        ).strip(),
     }
 
 
@@ -231,7 +239,9 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
 
     plan_key = str(_first_present(plan, "subscription_plan", "plan", "plan_key", "product_id", default="")).strip()
     if not plan_key:
-        plan_key = str(_first_present(entitlement, "subscription_plan", "plan", "plan_key", "product_id", default="")).strip()
+        plan_key = str(
+            _first_present(entitlement, "subscription_plan", "plan", "plan_key", "product_id", default="")
+        ).strip()
     plan_type = str(_first_present(plan, "account_plan_type", "plan_type", "tier", default="")).strip()
     if not plan_type:
         plan_type = str(_first_present(account_details, "plan_type", default="")).strip()
@@ -265,7 +275,9 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
     if not available_plans and isinstance(account.get("eligible_offers"), dict):
         offers = account["eligible_offers"].get("offers")
         if isinstance(offers, list):
-            available_plans = [str(item.get("id") or "").strip() for item in offers if isinstance(item, dict) and item.get("id")]
+            available_plans = [
+                str(item.get("id") or "").strip() for item in offers if isinstance(item, dict) and item.get("id")
+            ]
     if not isinstance(available_plans, list):
         available_plans = []
     total_seats = _seat_value(plan, "total_seats", "seats_entitled", "seats", "quantity", "seat_count", "max_seats")
@@ -279,9 +291,7 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
         discounts = [discounts]
     if not isinstance(discounts, list):
         discounts = []
-    applied_discounts = [
-        normalized for normalized in (_normalize_discount(item) for item in discounts) if normalized
-    ]
+    applied_discounts = [normalized for normalized in (_normalize_discount(item) for item in discounts) if normalized]
 
     if not ends_at:
         ends_at = _first_present(plan, "active_until", default="")
@@ -290,12 +300,12 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
     normalized_plan_key = _plan_key(plan_key, plan_type)
     active_value = _first_present(
         plan,
-                "is_active_subscription",
-                "is_paid_subscription_active",
-                "has_active_subscription",
-                "active",
-                "has_paid_subscription",
-                default=None,
+        "is_active_subscription",
+        "is_paid_subscription_active",
+        "has_active_subscription",
+        "active",
+        "has_paid_subscription",
+        default=None,
     )
     if active_value is None and ends_at:
         active_value = _remaining_days(ends_at) is not None and (_remaining_days(ends_at) or 0) > 0
@@ -304,7 +314,9 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
         payment_processor = "Stripe"
     channel_label = _channel_label(purchase_origin)
     if channel_label == "-" and isinstance(account.get("last_active_subscription"), dict):
-        purchase_origin = str(_first_present(account["last_active_subscription"], "purchase_origin_platform", default="")).strip()
+        purchase_origin = str(
+            _first_present(account["last_active_subscription"], "purchase_origin_platform", default="")
+        ).strip()
         channel_label = _channel_label(purchase_origin)
     if channel_label == "-" and payment_processor:
         channel_label = "网页 (Web)"
@@ -313,7 +325,9 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
         "plan_label": _plan_label(plan_key, plan_type),
         "plan_key": normalized_plan_key,
         "plan_type": plan_type,
-        "billing_period": str(_first_present(plan, "billing_period", "scheduled_billing_period", "billing_cycle", "interval", default="")).strip(),
+        "billing_period": str(
+            _first_present(plan, "billing_period", "scheduled_billing_period", "billing_cycle", "interval", default="")
+        ).strip(),
         "currency": str(_first_present(plan, "currency", "billing_currency", "currency_code", default="")).strip(),
         "active": _truthy(active_value),
         "renewing": _truthy(_first_present(plan, "is_renewing", "will_renew", "auto_renews", default=False)),
@@ -351,11 +365,11 @@ def _browser_timezone_offset_min() -> int:
     return int(-local_utc_offset_seconds / 60)
 
 
-def _new_chatgpt_subscription_session(access_token: str):
+def _new_chatgpt_subscription_session(access_token: str, proxy_url: str = ""):
     try:
         from autotoken.payments.us_paypal import build_chatgpt_session
 
-        return build_chatgpt_session(access_token)
+        return build_chatgpt_session(access_token, proxy_url=proxy_url)
     except Exception:
         import requests
 
@@ -369,6 +383,8 @@ def _new_chatgpt_subscription_session(access_token: str):
                 "Referer": "https://chatgpt.com/",
             }
         )
+        if str(proxy_url or "").strip():
+            session.proxies.update({"http": proxy_url, "https": proxy_url})
         return session
 
 
@@ -390,11 +406,11 @@ def _warmup_chatgpt_subscription_session(session: Any) -> None:
             continue
 
 
-def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[str, Any]:
+def query_chatgpt_subscription(access_token: str, account_id: str = "", proxy_url: str = "") -> dict[str, Any]:
     account_id = str(account_id or "").strip()
     if not account_id:
         raise HTTPException(status_code=400, detail="缺少 ChatGPT account_id，无法查询订阅")
-    session = _new_chatgpt_subscription_session(access_token)
+    session = _new_chatgpt_subscription_session(access_token, proxy_url=proxy_url)
     target_path = CHATGPT_SUBSCRIPTIONS_PATH
     query = f"?account_id={quote(account_id)}"
     extra_headers = {
@@ -447,7 +463,9 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
             raw = {}
             queried_url = urls[0]
         elif auth_errors:
-            raise HTTPException(status_code=403, detail="ChatGPT 订阅接口临时拒绝，请稍后重试；如果持续失败再刷新该账号 auth_session")
+            raise HTTPException(
+                status_code=403, detail="ChatGPT 订阅接口临时拒绝，请稍后重试；如果持续失败再刷新该账号 auth_session"
+            )
         else:
             detail = f"ChatGPT 订阅接口请求失败: {last_error or f'HTTP {last_status}'}"
             raise HTTPException(status_code=502, detail=detail)
@@ -495,6 +513,8 @@ def _normalize_mail_provider_name(value: Any) -> str:
         "genericapi": "generic-api",
         "通用api": "generic-api",
         "通用-api": "generic-api",
+        "mailu": "mailu",
+        "self-mailu": "mailu",
     }
     return aliases.get(raw, raw)
 
@@ -535,8 +555,12 @@ def _normalize_latest_mail(message: dict[str, Any]) -> dict[str, Any]:
         "text": text,
         "html": html,
         "content": html or content or text,
-        "createTime": _first_present(message, "createTime", "createdAt", "received_at", "receivedAt", "date", "time", default=""),
-        "createdAt": _first_present(message, "createdAt", "createTime", "received_at", "receivedAt", "date", "time", default=""),
+        "createTime": _first_present(
+            message, "createTime", "createdAt", "received_at", "receivedAt", "date", "time", default=""
+        ),
+        "createdAt": _first_present(
+            message, "createdAt", "createTime", "received_at", "receivedAt", "date", "time", default=""
+        ),
         "raw": message.get("raw", {}),
     }
 
@@ -577,7 +601,9 @@ def _provider_order(provider: str, account: dict[str, Any] | None, recipients: l
     return order
 
 
-def _fetch_latest_mail_with_provider(provider: str, recipient: str, account: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _fetch_latest_mail_with_provider(
+    provider: str, recipient: str, account: dict[str, Any] | None
+) -> list[dict[str, Any]]:
     provider = _normalize_mail_provider_name(provider)
     account_id = str((account or {}).get("cloudmail_account_id") or "").strip() or None
     if provider == "mail.com":
@@ -612,6 +638,10 @@ def _fetch_latest_mail_with_provider(provider: str, recipient: str, account: dic
             return messages
         cached = get_cached_mail_message(recipient)
         return [cached] if cached else []
+    if provider == "mailu":
+        from autotoken.mail.mailu import MailuMailProvider
+
+        return MailuMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
     if provider == "cloud-mail":
         from autotoken.mail.cloud_mail import CloudMailProviderClient
 
@@ -822,11 +852,25 @@ def create_account_overview_router(
         raw = result.get("raw") if isinstance(result, dict) else {}
         if not isinstance(raw, dict):
             raise HTTPException(status_code=502, detail="ChatGPT 订阅接口返回格式异常")
+        normalized = normalize_chatgpt_subscription(raw, account_id=account_id)
+        available_plans = normalized.get("available_plans") if isinstance(normalized, dict) else []
+        if isinstance(available_plans, list) and available_plans:
+            try:
+                from autotoken.storage.accounts import update_account
+
+                update_account(
+                    email,
+                    trial_eligible=True,
+                    trial_available_plans=[str(item) for item in available_plans if str(item or "").strip()],
+                    trial_checked_at=time.time(),
+                )
+            except Exception:
+                pass
         return {
             "email": email,
             "account_id": account_id,
             "subscription": {
-                **normalize_chatgpt_subscription(raw, account_id=account_id),
+                **normalized,
                 "jwt_plan_type": _extract_jwt_plan_type(access_token),
             },
             "raw": raw,
@@ -853,7 +897,11 @@ def create_account_overview_router(
                 try:
                     messages = _fetch_latest_mail_with_provider(provider, recipient, account)
                 except Exception as exc:
-                    errors.append(f"{provider}/{recipient}: {safe_error}" if (safe_error := str(exc).strip()) else f"{provider}/{recipient}: 失败")
+                    errors.append(
+                        f"{provider}/{recipient}: {safe_error}"
+                        if (safe_error := str(exc).strip())
+                        else f"{provider}/{recipient}: 失败"
+                    )
                     continue
                 if messages:
                     return {

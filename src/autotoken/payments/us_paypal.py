@@ -1794,31 +1794,18 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         if not has_paypal and not cfg.apply_promo:
             raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
 
-        if cfg.apply_promo:
-            log(
-                f"[3/6] 同代理/同账单后注入试用 promo "
-                f"billing={checkout_create_country}/{checkout_currency} sticky={sticky_sid}"
-            )
-            update_payload = chatgpt_update_trial_promo(
-                token,
-                cs_id=cs_id,
-                processor=processor,
-                proxy_url=proxy_url,
-                device_id=device_id,
-                country=checkout_create_country,
-                currency=checkout_currency,
-                log=log,
-            )
-            log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
+        def finish_fields(fields: dict[str, Any], *, final_amount: str, post_pmt: list[str], post_ordered: list[str]) -> dict[str, Any]:
+            fields["amount"] = final_amount
+            fields["pre_promo_amount"] = pre_promo_amount
+            fields["pre_promo_payment_method_types"] = pre_promo_pmt
+            fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
+            fields["post_promo_payment_method_types"] = post_pmt
+            fields["post_promo_ordered_payment_method_types"] = post_ordered
+            fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+            fields["billing"] = billing
+            return fields
 
-            log(f"[4/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal sticky={sticky_sid}")
-            init_payload = stripe_init(stripe, cs_id, pk, ctx)
-            amount = amount_info(init_payload)
-            pmt, ordered, has_paypal = pmt_info(init_payload)
-            log(f"后注入金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
-            if not has_paypal:
-                raise RuntimeError(f"后注入 promo 后未出现 PayPal，pmt={pmt}")
-        else:
+        if not cfg.apply_promo:
             log("[3/6] 跳过 promo update")
             if not is_zero_amount(amount):
                 raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
@@ -1831,11 +1818,48 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             if not has_paypal:
                 raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
 
-        if not is_zero_amount(amount):
-            raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
-        hosted = str(init_payload.get("stripe_hosted_url") or "")
+            if not is_zero_amount(amount):
+                raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
+            hosted = str(init_payload.get("stripe_hosted_url") or "")
 
-        log("[5/6] inline confirm PayPal（只接受绑定当前 checkout session 的 BA redirect）")
+            log("[5/6] inline confirm PayPal（只接受绑定当前 checkout session 的 BA redirect）")
+            confirm_payload = _confirm_paypal_inline(
+                stripe,
+                cs_id=cs_id,
+                stripe_pk=pk,
+                ctx=ctx,
+                billing=billing,
+                amount=amount,
+                return_url=paypal_return_url(cs_id, processor, hosted),
+            )
+            fields = extract_paypal_result(confirm_payload, cs_id)
+            sub = find_submission_attempt(confirm_payload)
+            log(f"confirm submission={sub.get('state')} redirect={bool(fields.get('stripe_redirect_url') or fields.get('paypal_link'))}")
+            if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_payment_pages_confirm"):
+                fields = finish_fields(fields, final_amount=amount, post_pmt=pmt, post_ordered=ordered)
+                return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+
+            log("[6/6] approve + poll PayPal")
+            chatgpt_approve(token, cs_id, processor, proxy_url, device_id, log, country=checkout_create_country)
+            last_err: dict[str, Any] = {}
+            for i in range(1, 11):
+                page_data = page_get(stripe, cs_id, pk, ctx)
+                fields = extract_paypal_result(page_data, cs_id)
+                sub = find_submission_attempt(page_data)
+                err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
+                log(f"poll {i}/10 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
+                if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
+                    fields = finish_fields(fields, final_amount=amount, post_pmt=pmt, post_ordered=ordered)
+                    return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+                if sub.get("state") == "failed":
+                    last_err = err or {}
+                time.sleep(1.0)
+            if last_err.get("code"):
+                raise RuntimeError(f"轮询超时，未拿到 PayPal 链接，最后错误: {last_err.get('code')}")
+            raise RuntimeError("轮询超时，未拿到 PayPal 链接")
+
+        hosted = str(init_payload.get("stripe_hosted_url") or "")
+        log("[3/6] inline confirm PayPal（全价 session，暂不要求 0 元）")
         confirm_payload = _confirm_paypal_inline(
             stripe,
             cs_id=cs_id,
@@ -1848,20 +1872,11 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         fields = extract_paypal_result(confirm_payload, cs_id)
         sub = find_submission_attempt(confirm_payload)
         log(f"confirm submission={sub.get('state')} redirect={bool(fields.get('stripe_redirect_url') or fields.get('paypal_link'))}")
-        if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_payment_pages_confirm"):
-            fields["amount"] = amount
-            fields["pre_promo_amount"] = pre_promo_amount
-            fields["pre_promo_payment_method_types"] = pre_promo_pmt
-            fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
-            fields["post_promo_payment_method_types"] = pmt
-            fields["post_promo_ordered_payment_method_types"] = ordered
-            fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
-            fields["billing"] = billing
-            return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
-        log("[6/6] approve + poll PayPal")
+        log("[4/6] approve + poll PayPal（全价 session）")
         chatgpt_approve(token, cs_id, processor, proxy_url, device_id, log, country=checkout_create_country)
         last_err: dict[str, Any] = {}
+        bound_fields: dict[str, Any] | None = None
         for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)
             fields = extract_paypal_result(page_data, cs_id)
@@ -1869,18 +1884,40 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
             log(f"poll {i}/10 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
             if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
-                fields["amount"] = amount
-                fields["pre_promo_amount"] = pre_promo_amount
-                fields["pre_promo_payment_method_types"] = pre_promo_pmt
-                fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
-                fields["post_promo_payment_method_types"] = pmt
-                fields["post_promo_ordered_payment_method_types"] = ordered
-                fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
-                fields["billing"] = billing
-                return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+                bound_fields = fields
+                break
             if sub.get("state") == "failed":
                 last_err = err or {}
             time.sleep(1.0)
-        if last_err.get("code"):
-            raise RuntimeError(f"轮询超时，未拿到 PayPal 链接，最后错误: {last_err.get('code')}")
-        raise RuntimeError("轮询超时，未拿到 PayPal 链接")
+        if bound_fields is None:
+            if last_err.get("code"):
+                raise RuntimeError(f"轮询超时，未拿到 PayPal 链接，最后错误: {last_err.get('code')}")
+            raise RuntimeError("轮询超时，未拿到 PayPal 链接")
+
+        log(
+            f"[5/6] 同代理/同账单后注入试用 promo "
+            f"billing={checkout_create_country}/{checkout_currency} sticky={sticky_sid}"
+        )
+        update_payload = chatgpt_update_trial_promo(
+            token,
+            cs_id=cs_id,
+            processor=processor,
+            proxy_url=proxy_url,
+            device_id=device_id,
+            country=checkout_create_country,
+            currency=checkout_currency,
+            log=log,
+        )
+        log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
+
+        log(f"[6/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal sticky={sticky_sid}")
+        init_payload = stripe_init(stripe, cs_id, pk, ctx)
+        amount = amount_info(init_payload)
+        pmt, ordered, has_paypal = pmt_info(init_payload)
+        log(f"后注入金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
+        if not has_paypal:
+            raise RuntimeError(f"后注入 promo 后未出现 PayPal，pmt={pmt}")
+        if not is_zero_amount(amount):
+            raise RuntimeError(f"后注入 promo 后金额必须为 0: {amount}")
+        bound_fields = finish_fields(bound_fields, final_amount=amount, post_pmt=pmt, post_ordered=ordered)
+        return {"ok": True, "amount": amount, "fields": bound_fields, "billing": billing}

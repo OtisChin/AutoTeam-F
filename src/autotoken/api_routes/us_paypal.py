@@ -171,6 +171,7 @@ class UsPaypalStartRequest(BaseModel):
 class UsPaypalBatchStartRequest(UsPaypalStartRequest):
     account_emails: list[str] = Field(default_factory=list, alias="accountEmails")
     access_tokens: list[str] = Field(default_factory=list, alias="accessTokens")
+    access_token_items: list[dict[str, str]] = Field(default_factory=list, alias="accessTokenItems")
     max_accounts: int | None = Field(None, alias="maxAccounts")
 
     @field_validator("account_emails", mode="before")
@@ -214,6 +215,35 @@ class UsPaypalBatchStartRequest(UsPaypalStartRequest):
                         seen.add(token)
                         tokens.append(token)
         return tokens
+
+    @field_validator("access_token_items", mode="before")
+    @classmethod
+    def _clean_access_token_items(cls, value: Any) -> list[dict[str, str]]:
+        if value is None:
+            return []
+        raw_items = value if isinstance(value, list) else [value]
+        seen_tokens: set[str] = set()
+        items: list[dict[str, str]] = []
+        for index, raw_item in enumerate(raw_items, start=1):
+            if isinstance(raw_item, dict):
+                token = normalize_access_token(
+                    raw_item.get("accessToken")
+                    or raw_item.get("access_token")
+                    or raw_item.get("token")
+                    or raw_item.get("at")
+                    or ""
+                )
+                label = str(raw_item.get("label") or raw_item.get("email") or raw_item.get("id") or "").strip()
+            else:
+                token = normalize_access_token(raw_item)
+                label = ""
+            if not token or token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+            if not label:
+                label = email_from_access_token(token) or f"access-token-{index:03d}"
+            items.append({"label": label, "access_token": token})
+        return items
 
 
 
@@ -617,15 +647,23 @@ def _load_token_for_email(email: str) -> str:
     return pix_routes._load_token_for_email(email)
 
 
-def _direct_access_token_accounts(tokens: list[str]) -> list[dict[str, Any]]:
+def _direct_access_token_accounts(tokens: list[str], token_items: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
     accounts: list[dict[str, Any]] = []
     seen_labels: set[str] = set()
-    for index, token in enumerate(tokens, start=1):
+    source_items: list[dict[str, str]] = []
+    for item in token_items or []:
+        token = normalize_access_token(item.get("access_token") or item.get("accessToken") or item.get("token"))
+        if token:
+            source_items.append({"label": str(item.get("label") or item.get("email") or "").strip(), "access_token": token})
+    if not source_items:
+        source_items = [{"label": "", "access_token": str(token or "")} for token in tokens]
+    for index, item in enumerate(source_items, start=1):
+        token = item.get("access_token") or ""
         clean_token = normalize_access_token(token)
         if not clean_token:
             continue
         decoded_email = email_from_access_token(clean_token)
-        base_label = decoded_email or f"access-token-{index:03d}"
+        base_label = str(item.get("label") or "").strip() or decoded_email or f"access-token-{index:03d}"
         label = base_label
         suffix = 2
         while label.strip().lower() in seen_labels:
@@ -715,7 +753,7 @@ def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log, max_attem
 
 
 def _select_batch_accounts(req: UsPaypalBatchStartRequest) -> list[dict[str, Any]]:
-    direct_accounts = _direct_access_token_accounts(req.access_tokens)
+    direct_accounts = _direct_access_token_accounts(req.access_tokens, req.access_token_items)
     if direct_accounts:
         selected = direct_accounts
         if req.max_accounts and req.max_accounts > 0:
@@ -1000,7 +1038,12 @@ def _run_batch_account(
                 if pix_routes._is_already_paid_error(last_error):
                     if not direct_access_token:
                         _mark_account_plus_paypal(email, last_error)
-                    status = _set_account_status(email, PAYPAL_STATUS_SUCCESS, error=last_error, job_id=job_id)
+                    status = _set_account_status(
+                        email,
+                        PAYPAL_STATUS_PAID if direct_access_token else PAYPAL_STATUS_SUCCESS,
+                        error=last_error,
+                        job_id=job_id,
+                    )
                     reason = "账号已是 Plus" + ("" if direct_access_token else "，已标记绑定渠道 PayPal")
                     _append_log(job_id, f"[{index}/{total}] {reason}：{email}")
                     return {"skipped": True, "email": email, "reason": reason, "status": status}
@@ -1102,7 +1145,7 @@ def _run_batch_job(job_id: str, req: UsPaypalBatchStartRequest) -> None:
         log(
             f"PayPal 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，"
             f"目标国家={req.region}，优惠区={req.promo_region}，重试={_account_attempt_limit(req)}，promo={req.promo_mode}"
-            f"{'，输入源=accessToken' if req.access_tokens else ''}"
+            f"{'，输入源=accessToken' if (req.access_tokens or req.access_token_items) else ''}"
         )
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -2893,7 +2936,7 @@ def create_us_paypal_router() -> APIRouter:
 
     @router.post("/api/us-paypal/batch/start")
     def start_us_paypal_batch(req: UsPaypalBatchStartRequest) -> dict[str, str]:
-        direct_accounts = _direct_access_token_accounts(req.access_tokens)
+        direct_accounts = _direct_access_token_accounts(req.access_tokens, req.access_token_items)
         emails = [str(item.get("email") or "").strip() for item in direct_accounts] if direct_accounts else list(req.account_emails)
         if req.max_accounts and req.max_accounts > 0:
             emails = emails[: int(req.max_accounts)]

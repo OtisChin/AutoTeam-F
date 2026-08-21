@@ -33,6 +33,9 @@ class SetupConfig(BaseModel):
     LUCKMAIL_PREFERRED_DOMAIN: str = ""
     LUCKMAIL_ACCOUNTS_FILE: str = ""
     LUCKMAIL_ACCOUNTS: str = ""
+    MAILU_BASE_URL: str = ""
+    MAILU_API_KEY: str = ""
+    MAILU_DOMAIN: str = ""
     CPA_URL: str = ""
     CPA_KEY: str = ""
     PLAYWRIGHT_PROXY_URL: str = ""
@@ -121,6 +124,11 @@ def create_setup_router(
                 "LUCKMAIL_PREFERRED_DOMAIN",
                 "LUCKMAIL_ACCOUNTS_FILE",
                 "LUCKMAIL_ACCOUNTS",
+            },
+            "mailu": {
+                "MAILU_BASE_URL",
+                "MAILU_API_KEY",
+                "MAILU_DOMAIN",
             },
         }
         allowed_keys = {

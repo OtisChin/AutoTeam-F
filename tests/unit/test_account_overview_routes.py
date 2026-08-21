@@ -68,9 +68,7 @@ def test_account_overview_list_returns_full_pool_for_frontend_pagination():
 
     result = _endpoint(app, "/api/accounts", "GET")()
 
-    assert [account["email"] for account in result] == [
-        f"user-{index:03d}@example.com" for index in range(250)
-    ]
+    assert [account["email"] for account in result] == [f"user-{index:03d}@example.com" for index in range(250)]
     assert _captured["sanitized_count"] == 250
 
 
@@ -80,12 +78,8 @@ def test_account_overview_active_and_standby_routes_sanitize_accounts(monkeypatc
     monkeypatch.setattr(accounts, "get_active_accounts", lambda: [{"email": "active@example.com"}])
     monkeypatch.setattr(accounts, "get_standby_accounts", lambda: [{"email": "standby@example.com"}])
 
-    assert _endpoint(app, "/api/accounts/active", "GET")() == [
-        {"email": "active@example.com", "sanitized": True}
-    ]
-    assert _endpoint(app, "/api/accounts/standby", "GET")() == [
-        {"email": "standby@example.com", "sanitized": True}
-    ]
+    assert _endpoint(app, "/api/accounts/active", "GET")() == [{"email": "active@example.com", "sanitized": True}]
+    assert _endpoint(app, "/api/accounts/standby", "GET")() == [{"email": "standby@example.com", "sanitized": True}]
 
 
 def test_account_overview_codex_auth_exports_account_auth_file(monkeypatch, tmp_path):
@@ -108,7 +102,9 @@ def test_account_overview_codex_auth_exports_account_auth_file(monkeypatch, tmp_
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
 
     result = _endpoint(app, "/api/accounts/{email}/codex-auth", "GET")(" User@example.com ")
 
@@ -131,7 +127,9 @@ def test_account_overview_codex_auth_rejects_oversized_auth_file(monkeypatch, tm
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
 
     try:
         _endpoint(app, "/api/accounts/{email}/codex-auth", "GET")("user@example.com")
@@ -150,8 +148,12 @@ def test_account_overview_codex_auth_ignores_account_auth_file_outside_auth_dir(
     app, _captured = _app()
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
-    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(outside_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(outside_file)}]
+    )
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
     monkeypatch.setattr("autotoken.auth_session_store.get_auth_session_file", lambda _email: "")
 
     try:
@@ -175,7 +177,9 @@ def test_account_overview_codex_auth_ignores_session_file_outside_session_dir(mo
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": ""}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
     monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(outside_file))
 
     try:
@@ -228,6 +232,7 @@ def test_account_overview_access_token_copies_from_auth_session(monkeypatch, tmp
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+
     def fail_load_accounts():
         raise AssertionError("access-token route should not scan account pool when auth_session has accessToken")
 
@@ -263,7 +268,9 @@ def test_account_overview_access_token_reads_nested_auth_session_data(monkeypatc
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": ""}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
     monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(session_file))
 
     result = _endpoint(app, "/api/accounts/{email}/access-token", "GET")("User@example.com")
@@ -489,7 +496,9 @@ def test_account_overview_latest_mail_falls_back_to_generic_api_cache(monkeypatc
     }
 
     monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
-    monkeypatch.setattr("autotoken.mail.generic_api.GenericApiMailProvider.search_emails_by_recipient", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "autotoken.mail.generic_api.GenericApiMailProvider.search_emails_by_recipient", lambda *args, **kwargs: []
+    )
 
     from autotoken.storage.generic_api_pool import cache_mail_message
 
@@ -551,7 +560,9 @@ def test_account_overview_subscription_queries_chatgpt_with_access_token(monkeyp
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
     monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
     monkeypatch.setattr(account_overview, "query_chatgpt_subscription", fake_query, raising=False)
 
@@ -576,6 +587,87 @@ def test_account_overview_subscription_queries_chatgpt_with_access_token(monkeyp
     assert result["raw"]["accounts"]["account-1"]["account_plan"]["subscription_plan"] == "chatgptplusplan"
 
 
+def test_account_overview_subscription_backfills_trial_eligible_when_available_plans(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    session_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    session_dir.mkdir()
+    auth_file = auth_dir / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "account-auth-token"}), encoding="utf-8")
+    app, _captured = _app()
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
+
+    updated = {}
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.update_account", lambda email, **payload: updated.update(payload) or {}
+    )
+    monkeypatch.setattr(
+        account_overview,
+        "query_chatgpt_subscription",
+        lambda token, account_id="", **kwargs: {
+            "raw": {
+                "accounts": {
+                    "account-1": {
+                        "account_plan": {
+                            "available_plans": ["chatgptfreeplan", "chatgptplusplan"],
+                        }
+                    }
+                }
+            },
+            "queried_url": "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+        },
+        raising=False,
+    )
+
+    result = _endpoint(app, "/api/accounts/{email}/subscription", "GET")("user@example.com")
+
+    assert result["subscription"]["available_plans"] == ["chatgptfreeplan", "chatgptplusplan"]
+    assert updated["trial_eligible"] is True
+    assert "chatgptplusplan" in updated["trial_available_plans"]
+    assert updated["trial_checked_at"] > 0
+
+
+def test_account_overview_subscription_does_not_backfill_when_no_available_plans(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    session_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    session_dir.mkdir()
+    auth_file = auth_dir / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "account-auth-token"}), encoding="utf-8")
+    app, _captured = _app()
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
+
+    updated = {}
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.update_account", lambda email, **payload: updated.update(payload) or {}
+    )
+    monkeypatch.setattr(
+        account_overview,
+        "query_chatgpt_subscription",
+        lambda token, account_id="", **kwargs: {"raw": {"subscription": {"plan_type": "free"}}},
+        raising=False,
+    )
+
+    result = _endpoint(app, "/api/accounts/{email}/subscription", "GET")("user@example.com")
+
+    assert result["subscription"]["available_plans"] == []
+    assert updated == {}
+
+
 def test_account_overview_access_token_falls_back_to_auth_file_when_session_has_no_token(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auths"
     session_dir = tmp_path / "auth_session"
@@ -590,7 +682,9 @@ def test_account_overview_access_token_falls_back_to_auth_file_when_session_has_
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
     monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(session_file))
 
     result = _endpoint(app, "/api/accounts/{email}/access-token", "GET")("user@example.com")
@@ -643,7 +737,9 @@ def test_account_overview_subscription_uses_auth_account_id_and_real_account_che
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None
+    )
     monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
     monkeypatch.setattr(account_overview, "query_chatgpt_subscription", fake_query, raising=False)
 
@@ -682,10 +778,14 @@ def test_query_chatgpt_subscription_uses_subscriptions_endpoint_with_account_id(
             self.headers = {}
 
         def get(self, url, **kwargs):
-            calls.append({"url": url, "headers": dict(kwargs.get("headers") or {}), "session_headers": dict(self.headers)})
+            calls.append(
+                {"url": url, "headers": dict(kwargs.get("headers") or {}), "session_headers": dict(self.headers)}
+            )
             return FakeResponse()
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
 
     result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
 
@@ -748,7 +848,9 @@ def test_query_chatgpt_subscription_merges_account_check_discounts(monkeypatch):
                 }
             )
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
     monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
 
     result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
@@ -817,7 +919,9 @@ def test_query_chatgpt_subscription_handles_no_subscription_404_with_account_che
                 },
             )
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
     monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
 
     result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-free")
@@ -882,7 +986,9 @@ def test_query_chatgpt_subscription_uses_account_check_when_primary_404_and_fall
                 )
             return FakeResponse(200, {})
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
     monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
 
     result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-plus")
@@ -933,7 +1039,9 @@ def test_query_chatgpt_subscription_falls_back_to_chat_openai_when_chatgpt_forbi
                 return FakeResponse(403, {"detail": "forbidden"})
             return FakeResponse(200, {"plan_type": "plus"})
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
 
     result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
 
@@ -975,7 +1083,9 @@ def test_query_chatgpt_subscription_retries_temporary_forbidden(monkeypatch):
                 return FakeResponse(200, {"plan_type": "plus"})
             return FakeResponse(200, {"accounts": {}})
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
     monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
 
     result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
@@ -1007,7 +1117,9 @@ def test_query_chatgpt_subscription_reports_persistent_forbidden_as_temporary(mo
             calls.append(url)
             return FakeResponse()
 
-    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(
+        account_overview, "_new_chatgpt_subscription_session", lambda token, **kwargs: FakeSession(), raising=False
+    )
 
     try:
         account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")

@@ -283,3 +283,36 @@ def test_direct_registration_failure_retries_after_30_seconds(monkeypatch, caplo
     ]
     assert "注册失败，30 秒后重试: retry@icloud.com" in caplog.text
     assert "60 秒后重试" not in caplog.text
+
+
+def test_direct_registration_honors_custom_retry_attempts(monkeypatch):
+    sleeps = []
+    register_calls = []
+
+    class FakeMailClient:
+        provider_name = "icloud"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mail-2", "custom@icloud.com"
+
+    def fake_register_once(_mail_client, email, *_args, **_kwargs):
+        register_calls.append(email)
+        return False, {"raw": "still failing"}
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False})
+    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = manager.create_account_direct(
+        FakeMailClient(),
+        password="pw",
+        check_team_membership=False,
+        retry_attempts=2,
+    )
+
+    assert result is None
+    assert register_calls == ["custom@icloud.com", "custom@icloud.com"]
+    assert sleeps == [30]

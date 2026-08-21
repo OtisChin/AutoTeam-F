@@ -43,6 +43,11 @@ def mail_provider_field_keys(provider: str) -> set[str]:
             "LUCKMAIL_ACCOUNTS_FILE",
             "LUCKMAIL_ACCOUNTS",
         },
+        "mailu": {
+            "MAILU_BASE_URL",
+            "MAILU_API_KEY",
+            "MAILU_DOMAIN",
+        },
     }
     if provider not in fields:
         raise HTTPException(status_code=400, detail=f"未知 MAIL_PROVIDER={provider}")

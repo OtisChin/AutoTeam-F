@@ -47,7 +47,9 @@ def test_post_add_single_uses_default_domain_and_random_password(monkeypatch):
     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
-    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
 
     routes = _routes(started)
     result = routes["post_add"](ManualRegisterParams(prefix=" demo ", password=""))
@@ -74,7 +76,9 @@ def test_post_add_batch_deduplicates_and_validates_domains(monkeypatch):
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
 
     routes = _routes(started)
-    result = routes["post_add"](ManualRegisterParams(mode="batch", count=4, concurrency=9, domains=["@a.com", "b.com", "a.com"]))
+    result = routes["post_add"](
+        ManualRegisterParams(mode="batch", count=4, concurrency=9, domains=["@a.com", "b.com", "a.com"])
+    )
 
     assert result["params"]["mode"] == "batch"
     assert result["params"]["count"] == 4
@@ -89,6 +93,25 @@ def test_post_add_batch_deduplicates_and_validates_domains(monkeypatch):
     assert exc_info.value.detail == "域名 @missing.com 不在可选列表中"
 
 
+def test_post_add_passes_retry_attempts_to_register_command(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(retry_attempts=5))
+
+    assert result["params"]["retry_attempts"] == 5
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["retry_attempts"] == 5
+
+
 @pytest.mark.parametrize("country", ["BR", "TH", "TR", "KR"])
 def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch, country):
     started = []
@@ -99,9 +122,7 @@ def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch, country):
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
 
     routes = _routes(started, proxy_selector_calls=proxy_selector_calls)
-    result = routes["post_add"](
-        ManualRegisterParams(proxy_api_provider="cliproxy", proxy_api_country=country.lower())
-    )
+    result = routes["post_add"](ManualRegisterParams(proxy_api_provider="cliproxy", proxy_api_country=country.lower()))
 
     assert result["params"]["proxy_api_provider"] == "cliproxy"
     assert result["params"]["proxy_api_country"] == country
@@ -116,7 +137,9 @@ def test_post_add_passes_use_roxybrowser_to_register_worker(monkeypatch):
     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
-    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
 
     class AvailableRoxyClient:
         def __init__(self, *_args, **_kwargs):
@@ -125,7 +148,10 @@ def test_post_add_passes_use_roxybrowser_to_register_worker(monkeypatch):
         def list_workspaces(self):
             return [{"id": "workspace-1", "name": "Default"}]
 
-    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr(
+        "autotoken.settings.config.get_roxybrowser_config",
+        lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"},
+    )
     monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", AvailableRoxyClient)
 
     routes = _routes(started)
@@ -150,7 +176,10 @@ def test_post_add_rejects_unavailable_roxybrowser_before_starting_task(monkeypat
         def list_workspaces(self):
             raise RuntimeError("HTTPConnectionPool(host='127.0.0.1', port=50000): Failed to establish a new connection")
 
-    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr(
+        "autotoken.settings.config.get_roxybrowser_config",
+        lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"},
+    )
     monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", FailingRoxyClient)
 
     routes = _routes(started)
@@ -283,7 +312,9 @@ def test_post_add_mailcom_does_not_require_register_domain(monkeypatch):
     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "")
     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "mail.com")
-    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
 
     routes = _routes(started)
     result = routes["post_add"](ManualRegisterParams(mail_provider="mail.com", domain="", domains=[]))
@@ -303,7 +334,9 @@ def test_post_add_enable_totp_mfa_flag_passes_to_register_command(monkeypatch):
     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
-    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
 
     routes = _routes(started)
     result = routes["post_add"](ManualRegisterParams(enable2fa=True))
@@ -321,7 +354,9 @@ def test_post_add_passes_use_roxybrowser_and_enable_totp_to_register_worker(monk
     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
-    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
 
     class AvailableRoxyClient:
         def __init__(self, *_args, **_kwargs):
@@ -330,7 +365,10 @@ def test_post_add_passes_use_roxybrowser_and_enable_totp_to_register_worker(monk
         def list_workspaces(self):
             return [{"id": "workspace-1", "name": "Default"}]
 
-    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr(
+        "autotoken.settings.config.get_roxybrowser_config",
+        lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"},
+    )
     monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", AvailableRoxyClient)
 
     routes = _routes(started)
@@ -344,3 +382,65 @@ def test_post_add_passes_use_roxybrowser_and_enable_totp_to_register_worker(monk
     assert started[0]["func"]("task-register") == {"created": 1}
     assert calls[0]["use_roxybrowser"] is True
     assert calls[0]["enable_totp_mfa"] is True
+
+
+def test_post_add_passes_proxy_pool_to_register_command(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
+
+    routes = _routes(started)
+    result = routes["post_add"](
+        ManualRegisterParams(
+            proxy_pool=("http://user:pass@host1:8080\nsocks5://host2:1080, user:pass@host3:3128\nhost4:4444")
+        )
+    )
+
+    assert result["params"]["proxy_pool_size"] == 4
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["proxy_pool"] == [
+        "normalized:http://user:pass@host1:8080",
+        "normalized:socks5://host2:1080",
+        "normalized:user:pass@host3:3128",
+        "normalized:host4:4444",
+    ]
+
+
+def test_post_add_rejects_bad_proxy_pool_entry(monkeypatch):
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    def strict_normalize(value):
+        if "bad" in value:
+            raise ValueError("bad proxy")
+        return f"normalized:{value}"
+
+    router = create_account_register_task_router(
+        start_task=lambda *args, **kwargs: {"task_id": "task-1"},
+        normalize_proxy_url=strict_normalize,
+        normalize_proxy_api_provider=lambda value: str(value or "").strip().lower(),
+        build_oauth_proxy_selector=lambda **kwargs: (lambda: "http://proxy.example:8080", {}),
+        normalize_oauth_phone_sms_provider=lambda value: str(value or "").strip().lower(),
+        normalize_oauth_smsbower_country=lambda value: str(value or "").strip().upper(),
+        normalize_oauth_smscloud_country=lambda value: f"cloud:{str(value or '').strip()}",
+        normalize_oauth_hero_sms_country=lambda value: str(value or "").strip().lower(),
+        oauth_phone_sms_env=lambda: {},
+        append_task_progress=lambda task_id, item: None,
+        task_group_register=TASK_GROUP_REGISTER,
+        logger=_logger(),
+    )
+    routes = {route.endpoint.__name__: route.endpoint for route in router.routes}
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(proxy_pool="http://good:1\nbad:2"))
+
+    assert exc_info.value.status_code == 400
+    assert "代理池条目格式错误" in str(exc_info.value.detail)

@@ -131,10 +131,7 @@ def create_account_refresh_quota_router(
                 if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
                     return False
                 message = str(acc.get("last_bind_message") or "").strip().lower()
-                return (
-                    "token_revoked" in message
-                    or "invalidated oauth token" in message
-                )
+                return "token_revoked" in message or "invalidated oauth token" in message
 
             def _clear_quota_401_discard_marker(update_payload: dict, acc: dict | None) -> None:
                 if not isinstance(acc, dict):
@@ -224,7 +221,11 @@ def create_account_refresh_quota_router(
                 return plan_type, True
 
             def _quota_with_subscription_plan(info: dict | None, plan_type: str) -> dict | None:
-                if not isinstance(info, dict) or plan_type not in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}:
+                if not isinstance(info, dict) or plan_type not in {
+                    ACCOUNT_TYPE_PLUS,
+                    ACCOUNT_TYPE_PRO,
+                    ACCOUNT_TYPE_TEAM,
+                }:
                     return info
                 patched = deepcopy(info)
                 patched["plan_type"] = plan_type
@@ -280,9 +281,11 @@ def create_account_refresh_quota_router(
                 )
                 if retry_status == "ok" and isinstance(retry_info, dict):
                     retry_plan = _quota_plan_type(retry_info)
-                    if retry_plan in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM} or _has_primary_or_weekly_quota_window(
-                        retry_info
-                    ):
+                    if retry_plan in {
+                        ACCOUNT_TYPE_PLUS,
+                        ACCOUNT_TYPE_PRO,
+                        ACCOUNT_TYPE_TEAM,
+                    } or _has_primary_or_weekly_quota_window(retry_info):
                         return _quota_with_subscription_plan(retry_info, retry_plan or subscription_plan), False
 
                 return _quota_with_subscription_plan(info, subscription_plan), False
@@ -452,7 +455,14 @@ def create_account_refresh_quota_router(
 
                 current_status = str(acc.get("status") or "").strip().lower()
                 account_type = str(acc.get("account_type") or "").strip().lower()
-                recoverable_free_statuses = {"", STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PERSONAL, "pending", "session_only"}
+                recoverable_free_statuses = {
+                    "",
+                    STATUS_ACTIVE,
+                    STATUS_EXHAUSTED,
+                    STATUS_PERSONAL,
+                    "pending",
+                    "session_only",
+                }
                 quota_preserved_statuses = {STATUS_PLUS, STATUS_STANDBY, STATUS_STASHED}
 
                 if status == "ok":
@@ -711,7 +721,9 @@ def create_account_refresh_quota_router(
                     stage = "refresh_quota_done"
                     level = "info"
                 elif kind == "exhausted":
-                    exhausted.append({"email": item["email"], "quota": item.get("quota") or {}, "info": item.get("info")})
+                    exhausted.append(
+                        {"email": item["email"], "quota": item.get("quota") or {}, "info": item.get("info")}
+                    )
                     stage = "refresh_quota_exhausted"
                     level = "warn"
                 elif kind == "failed":
@@ -732,7 +744,9 @@ def create_account_refresh_quota_router(
                     stage = "refresh_quota_skipped"
                     level = "warn"
                 else:
-                    network_error.append({"email": item.get("email") or email, "reason": item.get("reason") or "network_error"})
+                    network_error.append(
+                        {"email": item.get("email") or email, "reason": item.get("reason") or "network_error"}
+                    )
                     stage = "refresh_quota_network_error"
                     level = "warn"
 

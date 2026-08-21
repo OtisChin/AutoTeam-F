@@ -1334,7 +1334,9 @@ const mailProviderFieldTitle = computed(() =>
         ? 'iCloud 配置'
         : mailProvider.value === 'luckmail'
           ? 'LuckMail 配置'
-          : 'cloudflare_temp_email 配置'
+          : mailProvider.value === 'mailu'
+            ? 'Mailu (自建) 配置'
+            : 'cloudflare_temp_email 配置'
 )
 
 const parsedRegisterDomains = computed(() =>

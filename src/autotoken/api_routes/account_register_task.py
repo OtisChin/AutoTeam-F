@@ -7,6 +7,34 @@ from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
 
+def _parse_proxy_pool(raw: str, *, normalize_proxy_url: Callable[[str], str]) -> list[str]:
+    """把代理池文本解析成规范化代理列表。
+
+    支持换行 / 逗号 / 分号 / 空格分隔，每行（条目）支持四种格式：
+      - http://user:pass@host:port
+      - socks5://host:port
+      - user:pass@host:port
+      - host:port
+    """
+    import re as _re
+
+    values = _re.split(r"[\s,;]+", str(raw or ""))
+    proxies: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value or "").strip()
+        if not item:
+            continue
+        try:
+            normalized = normalize_proxy_url(item)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"代理池条目格式错误: {item} ({exc})") from exc
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            proxies.append(normalized)
+    return proxies
+
+
 def _assert_roxybrowser_available() -> None:
     """Fail fast when RoxyBrowser mode is selected but the local API is unavailable."""
 
@@ -37,6 +65,7 @@ class ManualRegisterParams(BaseModel):
     registration_flow: str = Field("standard", validation_alias=AliasChoices("registration_flow", "registrationFlow"))
     count: int = 1
     concurrency: int = 3
+    retry_attempts: int = Field(3, validation_alias=AliasChoices("retry_attempts", "retryAttempts"))
     interval_seconds: float = 12.0
     jitter_min_seconds: float = 8.0
     jitter_max_seconds: float = 20.0
@@ -57,7 +86,9 @@ class ManualRegisterParams(BaseModel):
         validation_alias=AliasChoices("luckmail_preferred_domains", "luckmailPreferredDomains"),
     )
     post_register_oauth: bool = False
-    enable_totp_mfa: bool = Field(False, validation_alias=AliasChoices("enable_totp_mfa", "enableTotpMfa", "enable2fa", "enable2FA"))
+    enable_totp_mfa: bool = Field(
+        False, validation_alias=AliasChoices("enable_totp_mfa", "enableTotpMfa", "enable2fa", "enable2FA")
+    )
     phone_only: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
     use_roxybrowser: bool = Field(False, validation_alias=AliasChoices("use_roxybrowser", "useRoxyBrowser"))
@@ -78,6 +109,7 @@ class ManualRegisterParams(BaseModel):
         validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
     proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
+    proxy_pool: str | None = Field(None, validation_alias=AliasChoices("proxy_pool", "proxyPool"))
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_country: str = Field("JP", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
@@ -129,6 +161,10 @@ def create_account_register_task_router(
         mode = (params.mode or "single").strip().lower()
         count = max(1, int(params.count or 1))
         concurrency = max(1, min(20, int(params.concurrency or 1)))
+        try:
+            retry_attempts = max(1, min(10, int(params.retry_attempts or 3)))
+        except Exception:
+            retry_attempts = 3
         interval_seconds = max(0.0, float(params.interval_seconds or 0.0))
         jitter_min_seconds = max(0.0, float(params.jitter_min_seconds or 0.0))
         jitter_max_seconds = max(0.0, float(params.jitter_max_seconds or 0.0))
@@ -170,7 +206,9 @@ def create_account_register_task_router(
             )
         if post_register_oauth and oauth_phone_sms_provider in {"hero_sms", "smsbower", "smscloud"}:
             oauth_sms_cfg = oauth_phone_sms_env()
-            key_field = "hero_sms_api_key" if oauth_phone_sms_provider == "hero_sms" else f"{oauth_phone_sms_provider}_api_key"
+            key_field = (
+                "hero_sms_api_key" if oauth_phone_sms_provider == "hero_sms" else f"{oauth_phone_sms_provider}_api_key"
+            )
             key_present = bool(oauth_sms_cfg.get(key_field))
             if not key_present:
                 raise HTTPException(
@@ -206,7 +244,9 @@ def create_account_register_task_router(
             raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
         configured_domains = get_register_domains()
-        domain_required = mail_provider not in {"luckmail", "outlook", "icloud", "generic-api", "mail.com"} and not phone_only
+        domain_required = (
+            mail_provider not in {"luckmail", "outlook", "icloud", "generic-api", "mail.com"} and not phone_only
+        )
 
         def _clean_domain(value) -> str:
             return str(value or "").strip().lstrip("@").strip()
@@ -255,14 +295,16 @@ def create_account_register_task_router(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"注册代理格式错误: {raw_proxy_url} ({exc})") from exc
 
+        proxy_pool = _parse_proxy_pool(params.proxy_pool or "", normalize_proxy_url=normalize_proxy_url)
+
         register_proxy_selector = None
         register_proxy_meta = {}
         proxy_api_provider = (
             normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
         )
-        proxy_api_country = "".join(
-            ch for ch in str(params.proxy_api_country or "JP").strip().upper() if ch.isalpha()
-        )[:2] or "JP"
+        proxy_api_country = (
+            "".join(ch for ch in str(params.proxy_api_country or "JP").strip().upper() if ch.isalpha())[:2] or "JP"
+        )
         proxy_api_url = str(params.proxy_api_url or "").strip()
         if proxy_api_provider or proxy_api_url:
             register_proxy_selector, register_proxy_meta = build_oauth_proxy_selector(
@@ -277,6 +319,7 @@ def create_account_register_task_router(
             "registration_flow": registration_flow,
             "count": count,
             "concurrency": concurrency,
+            "retry_attempts": retry_attempts,
             "interval_seconds": interval_seconds,
             "jitter_min_seconds": jitter_min_seconds,
             "jitter_max_seconds": jitter_max_seconds,
@@ -295,11 +338,16 @@ def create_account_register_task_router(
             "oauth_phone_sms_country": oauth_phone_sms_country or "",
             "oauth_phone_sms_max_price": oauth_phone_sms_max_price,
             "oauth_oasis_sms_cdk_count": len(
-                [item for item in oauth_oasis_sms_cdks.replace(",", "\n").replace(";", "\n").splitlines() if item.strip()]
+                [
+                    item
+                    for item in oauth_oasis_sms_cdks.replace(",", "\n").replace(";", "\n").splitlines()
+                    if item.strip()
+                ]
             ),
             "register_mode": register_mode,
             "use_roxybrowser": use_roxybrowser,
             "proxy_url_present": bool(normalized_proxy_url),
+            "proxy_pool_size": len(proxy_pool),
             "proxy_api_provider": proxy_api_provider,
             "proxy_api_country": proxy_api_country if (proxy_api_provider or proxy_api_url) else "",
             "proxy_api_url_present": bool(proxy_api_url),
@@ -313,6 +361,7 @@ def create_account_register_task_router(
             return cmd_register_accounts(
                 count=count,
                 concurrency=concurrency,
+                retry_attempts=retry_attempts,
                 interval_seconds=interval_seconds,
                 jitter_min_seconds=jitter_min_seconds,
                 jitter_max_seconds=jitter_max_seconds,
@@ -330,13 +379,16 @@ def create_account_register_task_router(
                 registration_flow=registration_flow,
                 register_mode=register_mode,
                 proxy_url=normalized_proxy_url,
+                proxy_pool=proxy_pool,
                 use_roxybrowser=use_roxybrowser,
                 register_proxy_selector=register_proxy_selector,
                 register_proxy_meta=register_proxy_meta,
                 oauth_phone_sms_provider=oauth_phone_sms_provider or None,
                 oauth_phone_sms_country=oauth_phone_sms_country or None,
                 oauth_phone_sms_max_price=oauth_phone_sms_max_price,
-                oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider in {"oasis", "tujie"} else None,
+                oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None)
+                if oauth_phone_sms_provider in {"oasis", "tujie"}
+                else None,
                 progress_callback=_register_progress,
             )
 
@@ -367,7 +419,9 @@ def create_account_register_task_router(
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,
             oauth_phone_sms_max_price=oauth_phone_sms_max_price,
-            oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider in {"oasis", "tujie"} else None,
+            oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None)
+            if oauth_phone_sms_provider in {"oasis", "tujie"}
+            else None,
             task_group=task_group_register,
             pass_task_id=True,
         )

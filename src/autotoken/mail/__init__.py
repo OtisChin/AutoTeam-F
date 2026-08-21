@@ -35,6 +35,7 @@ def get_mail_client() -> MailProvider:
       - icloud
       - generic-api
       - luckmail
+      - mailu
       - `cf_temp_email` / `maillab` 为历史别名
 
     任何拼写错误都会抛 ValueError 并列出可选值,避免静默走默认。
@@ -68,8 +69,12 @@ def get_mail_client() -> MailProvider:
         from autotoken.mail.luckmail import LuckMailProvider
 
         return LuckMailProvider()
+    if raw in ("mailu", "self-mailu"):
+        from autotoken.mail.mailu import MailuMailProvider
+
+        return MailuMailProvider()
     raise ValueError(
-        f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | icloud | generic-api | mail.com | luckmail)"
+        f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | icloud | generic-api | mail.com | luckmail | mailu)"
     )
 
 

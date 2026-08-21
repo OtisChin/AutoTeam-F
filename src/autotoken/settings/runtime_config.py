@@ -61,10 +61,10 @@ def get_register_domain():
     """返回用于子号注册的临时邮箱域名。
 
     优先级：runtime_config.json 的 register_domain → register_domains[0] →
-    环境变量 CLOUD_MAIL_DOMAIN / CLOUDFLARE_TEMP_EMAIL_DOMAIN（向后兼容）。
+    环境变量 CLOUD_MAIL_DOMAIN / CLOUDFLARE_TEMP_EMAIL_DOMAIN / MAILU_DOMAIN（向后兼容）。
     返回值已 lstrip "@"。
     """
-    from autotoken.settings.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN
+    from autotoken.settings.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN, MAILU_DOMAIN
 
     override = (get("register_domain") or "").strip()
     if override:
@@ -72,7 +72,7 @@ def get_register_domain():
     domains = get_register_domains()
     if domains:
         return domains[0]
-    return (CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or "").lstrip("@").strip()
+    return (CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or MAILU_DOMAIN or "").lstrip("@").strip()
 
 
 def set_register_domain(domain):
@@ -112,13 +112,13 @@ def get_register_domains():
     支持 runtime_config.json 的 register_domains 数组 / 字符串，以及环境变量里
     逗号、空格、分号分隔的多域名写法。
     """
-    from autotoken.settings.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN
+    from autotoken.settings.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN, MAILU_DOMAIN
 
     runtime_domains = _split_domains(get("register_domains"))
     if runtime_domains:
         return runtime_domains
 
-    return _split_domains(CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or "")
+    return _split_domains(CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or MAILU_DOMAIN or "")
 
 
 def set_register_domains(domains):

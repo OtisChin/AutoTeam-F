@@ -421,7 +421,10 @@ def test_format_oauth_phone_for_input_strips_us_country_when_page_is_us():
         def input_value(self, timeout=0):
             return "+1"
 
-    assert _format_oauth_phone_for_input(FakePage(), FakeInput(), "12125551234", force_us=True, country_id="187") == "2125551234"
+    assert (
+        _format_oauth_phone_for_input(FakePage(), FakeInput(), "12125551234", force_us=True, country_id="187")
+        == "2125551234"
+    )
 
 
 def test_native_browser_oauth_uses_simple_email_code_flow(monkeypatch):
@@ -482,7 +485,10 @@ def test_roxy_oauth_browser_context_uses_roxybrowser_cdp(monkeypatch):
             calls.append(("cdp", endpoint_url))
             return FakeBrowser()
 
-    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr(
+        "autotoken.settings.config.get_roxybrowser_config",
+        lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"},
+    )
     monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", FakeRoxyClient)
 
     browser, context, cleanup = _launch_codex_oauth_browser_context(
@@ -566,7 +572,9 @@ def test_oauth_cloudflare_wait_clicks_turnstile_until_challenge_clears(monkeypat
 
         def content(self):
             if self.challenge:
-                return '<iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform"></iframe>请验证您是真人'
+                return (
+                    '<iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform"></iframe>请验证您是真人'
+                )
             return "<html>ok</html>"
 
         def frame_locator(self, _selector):
@@ -579,10 +587,6 @@ def test_oauth_cloudflare_wait_clicks_turnstile_until_challenge_clears(monkeypat
 
     assert _wait_for_oauth_cloudflare_challenge(page, stage="提交验证码后", timeout=5) is True
     assert page.clicked == 1
-
-
-
-
 
 
 def test_add_phone_submit_html_json_error_is_returned_as_page_error(monkeypatch):
@@ -672,6 +676,7 @@ def test_add_phone_html_json_error_retries_whole_oauth_without_marking_phone_inv
     assert releases[0].get("cancel") is not True
     assert "not valid JSON" in releases[0]["reason"]
 
+
 def test_add_phone_otp_route_error_400_is_not_treated_as_success(monkeypatch):
     monkeypatch.setattr(codex_auth_module.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(codex_auth_module, "_screenshot", lambda *_args, **_kwargs: None)
@@ -680,7 +685,11 @@ def test_add_phone_otp_route_error_400_is_not_treated_as_success(monkeypatch):
     monkeypatch.setattr(codex_auth_module, "_fill_oauth_phone_field", lambda *_args, **_kwargs: (True, ""))
     monkeypatch.setattr(codex_auth_module, "_true_oauth_phone_has_digits", lambda *_args, **_kwargs: (True, {}))
     monkeypatch.setattr(codex_auth_module, "_click_primary_auth_button", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(codex_auth_module, "_phone_otp_input_locator", lambda page: page.otp_input if page.stage == "phone_otp" else None)
+    monkeypatch.setattr(
+        codex_auth_module,
+        "_phone_otp_input_locator",
+        lambda page: page.otp_input if page.stage == "phone_otp" else None,
+    )
     monkeypatch.setattr(codex_auth_module, "_detect_phone_rate_limited", lambda _page: "")
     monkeypatch.setattr(codex_auth_module, "_detect_phone_whatsapp_fallback", lambda _page: "")
     monkeypatch.setattr(codex_auth_module, "_detect_phone_rejected", lambda _page: "")
@@ -748,7 +757,6 @@ def test_add_phone_otp_route_error_400_is_not_treated_as_success(monkeypatch):
     assert "400" in error or "Route Error" in error
 
 
-
 def test_auth_retry_does_not_click_retry_for_auth_400_invalid_state():
     class FakeBody:
         def inner_text(self, timeout=0):
@@ -781,6 +789,7 @@ def test_auth_retry_does_not_click_retry_for_auth_400_invalid_state():
 
     assert _click_auth_retry_if_timed_out(page) is False
     assert page.clicked == 0
+
 
 def test_auth_retry_clicks_japanese_route_error_retry_button():
     class FakeBody:
@@ -982,7 +991,9 @@ def test_simple_oauth_retries_initial_auth_page_navigation_once(monkeypatch):
 
         def click(self, *args, **kwargs):
             if "button" in self.selector and self.page.handlers.get("request"):
-                self.page.handlers["request"](type("Request", (), {"url": "http://localhost:1455/auth/callback?code=abc"})())
+                self.page.handlers["request"](
+                    type("Request", (), {"url": "http://localhost:1455/auth/callback?code=abc"})()
+                )
 
         def input_value(self, timeout=0):
             return self.value
@@ -1276,7 +1287,9 @@ def test_fill_auth_email_does_not_write_on_email_verification_page(monkeypatch):
 
         def __init__(self):
             self.field = FakeField()
-            self.keyboard = type("Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)})()
+            self.keyboard = type(
+                "Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)}
+            )()
 
         def locator(self, selector):
             return self.field
@@ -1335,7 +1348,9 @@ def test_fill_auth_email_does_not_match_username_autocomplete_on_code_page(monke
         def __init__(self):
             self.field = FakeField()
             self.locator_obj = FakeLocator(self.field)
-            self.keyboard = type("Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)})()
+            self.keyboard = type(
+                "Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)}
+            )()
 
         def locator(self, selector):
             return self.locator_obj
@@ -1377,7 +1392,9 @@ def test_fill_auth_email_does_not_run_on_visible_password_page(monkeypatch):
         def __init__(self):
             self.field = FakeField()
             self.password = FakePasswordLocator()
-            self.keyboard = type("Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)})()
+            self.keyboard = type(
+                "Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)}
+            )()
 
         def locator(self, selector):
             return self.password
@@ -1626,8 +1643,7 @@ def test_manual_account_flow_polls_mail_like_registration(monkeypatch):
 
 def test_extract_session_token_from_split_cookie_header():
     token = _extract_session_token_from_cookie_header(
-        "a=1; __Secure-next-auth.session-token.1=bbb; "
-        "__Secure-next-auth.session-token.0=aaa; oai-did=device"
+        "a=1; __Secure-next-auth.session-token.1=bbb; __Secure-next-auth.session-token.0=aaa; oai-did=device"
     )
 
     assert token == "aaabbb"
@@ -1739,7 +1755,9 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
     }
 
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
-    monkeypatch.setattr("autotoken.accounts.find_account", lambda items, email: account if email == account["email"] else None)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account", lambda items, email: account if email == account["email"] else None
+    )
 
     def fake_start_task(command, func, params, *args, **kwargs):
         captured["command"] = command
@@ -1780,8 +1798,12 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
     monkeypatch.setattr(api, "_start_task", fake_start_task)
     monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
     monkeypatch.setattr("autotoken.codex_auth.login_codex_via_browser", fake_login)
-    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/codex-{bundle['email']}-plus.json")
-    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {"primary_pct": 1}))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/codex-{bundle['email']}-plus.json"
+    )
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {"primary_pct": 1})
+    )
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: updates.append((email, kwargs)))
     monkeypatch.setattr("autotoken.cpa_sync.sync_to_cpa", lambda: captured.setdefault("synced", True))
 
@@ -1821,7 +1843,16 @@ def test_account_login_skips_protocol_oauth_by_default(monkeypatch):
     def fail_protocol(*_args, **_kwargs):
         raise AssertionError("protocol OAuth should be disabled by default")
 
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+    def fake_login(
+        email,
+        password,
+        mail_client=None,
+        *,
+        use_personal=False,
+        native_oauth=False,
+        headless=False,
+        mail_account_id=None,
+    ):
         captured["login"] = {
             "email": email,
             "native_oauth": native_oauth,
@@ -1853,8 +1884,6 @@ def test_account_login_skips_protocol_oauth_by_default(monkeypatch):
         "native_oauth": True,
         "mail_account_id": 956,
     }
-
-
 
 
 def test_browser_oauth_refresh_auth_session_saves_bundle_token_without_session_fetch(monkeypatch):
@@ -1934,6 +1963,7 @@ def test_browser_oauth_refresh_auth_session_saves_bundle_token_without_session_f
     ]
     assert any(update.get("auth_file") == "auths/plus@example.com.json" for _email, update in updates)
 
+
 def test_browser_oauth_success_updates_auth_session_from_bundle_without_page_session(monkeypatch):
     captured = {}
     updates = []
@@ -1993,6 +2023,7 @@ def test_browser_oauth_success_updates_auth_session_from_bundle_without_page_ses
     assert saved_sessions[0][1]["refreshToken"] == "codex-refresh"
     assert any(update.get("auth_file") == "auths/plus@example.com.json" for _email, update in updates)
 
+
 def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
     captured = {}
     account = {
@@ -2010,7 +2041,16 @@ def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
         def login(self):
             pass
 
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+    def fake_login(
+        email,
+        password,
+        mail_client=None,
+        *,
+        use_personal=False,
+        native_oauth=False,
+        headless=False,
+        mail_account_id=None,
+    ):
         captured["login"] = {
             "email": email,
             "native_oauth": native_oauth,
@@ -2059,7 +2099,16 @@ def test_account_login_keeps_account_mail_provider_over_request_provider(monkeyp
         def login(self):
             pass
 
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+    def fake_login(
+        email,
+        password,
+        mail_client=None,
+        *,
+        use_personal=False,
+        native_oauth=False,
+        headless=False,
+        mail_account_id=None,
+    ):
         captured["login"] = {
             "email": email,
             "native_oauth": native_oauth,
@@ -2259,7 +2308,10 @@ def test_protocol_account_login_refresh_auth_session_saves_protocol_session(monk
 
     monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
     monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
-    monkeypatch.setattr("autotoken.auth_session_store.save_auth_session", lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json")
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.save_auth_session",
+        lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json",
+    )
     monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_protocol_login)
     monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
     monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
@@ -2309,7 +2361,10 @@ def test_protocol_account_login_auth_session_only_does_not_require_codex_bundle(
         "autotoken.codex_auth.login_codex_via_browser",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("auth_session-only 不应打开浏览器 OAuth")),
     )
-    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda _bundle: (_ for _ in ()).throw(AssertionError("auth_session-only 不应保存 Codex auth_file")))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.save_auth_file",
+        lambda _bundle: (_ for _ in ()).throw(AssertionError("auth_session-only 不应保存 Codex auth_file")),
+    )
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
 
     result = api._run_account_codex_login_once(
@@ -2458,7 +2513,16 @@ def test_account_login_restores_missing_luckmail_token_before_browser_oauth(monk
     def fake_update(email, **kwargs):
         captured.setdefault("updates", []).append((email, kwargs))
 
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+    def fake_login(
+        email,
+        password,
+        mail_client=None,
+        *,
+        use_personal=False,
+        native_oauth=False,
+        headless=False,
+        mail_account_id=None,
+    ):
         captured["login"] = {
             "email": email,
             "native_oauth": native_oauth,
@@ -2504,8 +2568,12 @@ def test_team_account_login_keeps_team_oauth(monkeypatch):
     }
 
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
-    monkeypatch.setattr("autotoken.accounts.find_account", lambda items, email: account if email == account["email"] else None)
-    monkeypatch.setattr(api, "_start_task", lambda command, func, params, *args, **kwargs: captured.setdefault("func", func) or {})
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account", lambda items, email: account if email == account["email"] else None
+    )
+    monkeypatch.setattr(
+        api, "_start_task", lambda command, func, params, *args, **kwargs: captured.setdefault("func", func) or {}
+    )
 
     class FakeMailClient:
         def login(self):
@@ -2575,6 +2643,107 @@ def test_register_accounts_skips_post_register_oauth(monkeypatch):
     assert captured["kwargs"]["check_team_membership"] is False
     assert result["ok"] == 1
     assert result["failed"] == 0
+
+
+def test_register_accounts_honors_retry_attempts_for_single_account(monkeypatch):
+    calls = []
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_create_account_direct(mail_client, **kwargs):
+        calls.append(kwargs)
+        kwargs["out_outcome"].update(status="failed", reason="temporary failure")
+        return None
+
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+    monkeypatch.setattr(
+        manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False}
+    )
+    monkeypatch.setattr(manager, "_is_email_in_team", lambda _email: False)
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+
+    result = manager.cmd_register_accounts(
+        count=1,
+        concurrency=1,
+        retry_attempts=2,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["retry_attempts"] == 2
+    assert result["ok"] == 0
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "failed"
+
+
+def test_register_accounts_rotates_proxy_pool_per_account(monkeypatch):
+    selected_proxies = []
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_create_account_direct(mail_client, **kwargs):
+        selected_proxies.append(kwargs.get("proxy_url"))
+        kwargs["out_outcome"].update(status="success", email=f"rot-{len(selected_proxies)}@example.com")
+        return {"status": "success", "email": f"rot-{len(selected_proxies)}@example.com"}
+
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+    monkeypatch.setattr(
+        manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False}
+    )
+    monkeypatch.setattr(manager, "_is_email_in_team", lambda _email: False)
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+    monkeypatch.setenv("REGISTER_PROXY_PROBE_ATTEMPTS", "3")
+
+    probed = []
+
+    class FakeProbeSession:
+        def __init__(self, proxy):
+            self.proxy = proxy
+
+        def get(self, url, **kwargs):
+            probed.append(self.proxy)
+            if self.proxy == "socks5://proxy2:1080":
+                return FakeProbeResponse(403)
+            return FakeProbeResponse(200)
+
+    class FakeProbeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def json(self):
+            return {"csrfToken": "fake-token"}
+
+    import autotoken._protocol_register.http_client as probe_http_client
+
+    monkeypatch.setattr(probe_http_client, "create_http_session", lambda proxy, **kwargs: FakeProbeSession(proxy))
+
+    proxy_pool = ["http://proxy1:8080", "socks5://proxy2:1080", "user:pass@proxy3:3128"]
+
+    result = manager.cmd_register_accounts(
+        count=5,
+        concurrency=1,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+        proxy_pool=proxy_pool,
+    )
+
+    assert selected_proxies == [
+        "http://proxy1:8080",
+        "user:pass@proxy3:3128",
+        "user:pass@proxy3:3128",
+        "http://proxy1:8080",
+        "user:pass@proxy3:3128",
+    ]
+    assert result["ok"] == 5
 
 
 def test_register_accounts_can_enable_post_register_oauth(monkeypatch):
@@ -2661,6 +2830,7 @@ def test_register_accounts_retries_dynamic_proxy_when_probe_fails(monkeypatch):
     captured = {}
     progress_events = []
     proxies = iter(["http://bad-proxy.example:7001", "http://good-proxy.example:7002"])
+
     class ProbeResp:
         status_code = 200
 
@@ -2704,7 +2874,9 @@ def test_register_accounts_retries_dynamic_proxy_when_probe_fails(monkeypatch):
     assert result["ok"] == 1
     assert captured["kwargs"]["proxy_url"] == "http://good-proxy.example:7002"
     assert [event["stage"] for event in progress_events].count("register_proxy_api_probe_failed") == 1
-    assert any(event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 2 for event in progress_events)
+    assert any(
+        event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 2 for event in progress_events
+    )
 
 
 def test_direct_register_continue_labels_include_japanese_locale():
@@ -2812,7 +2984,9 @@ def test_roxybrowser_register_dynamic_proxy_skips_http_csrf_probe(monkeypatch):
     assert captured["kwargs"]["proxy_url"] == "http://proxy-roxy.example:7001"
     assert captured["kwargs"]["use_roxybrowser"] is True
     assert not any(event["stage"] == "register_proxy_api_probe_failed" for event in progress_events)
-    assert any(event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 1 for event in progress_events)
+    assert any(
+        event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 1 for event in progress_events
+    )
 
 
 def test_register_accounts_stops_after_risky_failure_burst(monkeypatch):

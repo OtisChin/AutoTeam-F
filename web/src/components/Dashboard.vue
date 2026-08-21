@@ -766,6 +766,13 @@
             </option>
           </select>
           <select
+            v-model="trialFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
+            <option value="">全部试用资格</option>
+            <option value="eligible">可试用 ({{ trialEligibleCount }})</option>
+            <option value="not_eligible">不可试用</option>
+          </select>
+          <select
             v-model="bindProviderFilter"
             class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
             <option value="">全部绑定渠道</option>
@@ -870,7 +877,7 @@
             </option>
           </select>
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || bindProviderFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || trialFilter || bindProviderFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -961,6 +968,12 @@
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
                   :class="accountTypeClass(acc.account_type)">
                   {{ accountTypeLabel(acc.account_type) }}
+                </span>
+                <span
+                  v-if="acc.trial_eligible"
+                  class="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                  title="注册时检测到该账号可 0 元试用（available_plans 非空）">
+                  可试用
                 </span>
               </td>
               <td class="px-4 py-3">
@@ -1798,6 +1811,7 @@ const messageClass = ref('')
 const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
+const trialFilter = ref('')
 const bindProviderFilter = ref('')
 const registerDateFilter = ref('')
 const registerStartTimeFilter = ref('')
@@ -2682,6 +2696,7 @@ watch(
     emailFilter,
     statusFilter,
     accountTypeFilter,
+    trialFilter,
     bindProviderFilter,
     registerDateFilter,
     registerStartTimeFilter,
@@ -2705,6 +2720,7 @@ const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
+  const trialNeedle = trialFilter.value
   const bindProviderNeedle = bindProviderFilter.value
   const registerRange = registerTimeRange.value
   const exportNeedle = credentialExportFilter.value
@@ -2724,6 +2740,8 @@ const filteredAccounts = computed(() => {
       if (emailNeedle && !email.includes(emailNeedle)) return false
       if (statusNeedle && status !== statusNeedle) return false
       if (typeNeedle && accountType !== typeNeedle) return false
+      if (trialNeedle === 'eligible' && !Boolean(acc.trial_eligible)) return false
+      if (trialNeedle === 'not_eligible' && Boolean(acc.trial_eligible)) return false
       if (bindProviderNeedle && accountBindProviderFilterValue(acc) !== bindProviderNeedle) return false
       if (registerRange.start || registerRange.end) {
         const registerTs = accountRegisterTs(acc)
@@ -2805,6 +2823,7 @@ const accountTypeOptions = computed(() => {
     .sort((a, b) => accountTypeLabel(a[0]).localeCompare(accountTypeLabel(b[0]), 'zh-Hans-CN'))
     .map(([value, count]) => ({ value, label: accountTypeLabel(value), count }))
 })
+const trialEligibleCount = computed(() => allAccounts.value.filter(acc => Boolean(acc.trial_eligible)).length)
 const accountBindProviderFilterOptions = computed(() => {
   const counts = new Map()
   for (const acc of allAccounts.value) {
@@ -3261,6 +3280,7 @@ function clearFilters() {
   emailFilter.value = ''
   statusFilter.value = ''
   accountTypeFilter.value = ''
+  trialFilter.value = ''
   bindProviderFilter.value = ''
   registerDateFilter.value = ''
   registerStartTimeFilter.value = ''
@@ -3974,6 +3994,7 @@ function exportAccounts() {
       email: emailFilter.value || '',
       status: statusFilter.value || '',
       account_type: accountTypeFilter.value || '',
+      trial_eligible: trialFilter.value || '',
       register_date: registerDateFilter.value || '',
       register_start_time: registerStartTimeFilter.value || '',
       register_end_time: registerEndTimeFilter.value || '',

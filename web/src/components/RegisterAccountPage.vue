@@ -306,17 +306,18 @@
 
           <div class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300 space-y-3">
             <div v-if="!registerForm.proxyApiEnabled">
-              <label class="block text-xs text-gray-500 mb-1">代理 URL</label>
-              <input
-                v-model.trim="registerForm.proxyUrl"
+              <label class="block text-xs text-gray-500 mb-1">代理池（每行一条，可混合格式）</label>
+              <textarea
+                v-model.trim="registerForm.proxyPool"
                 :disabled="registeringBusy"
-                type="text"
+                rows="4"
+                spellcheck="false"
                 autocomplete="off"
-                placeholder="例如 http://user:pass@host:port 或 socks5://host:port"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
-              />
+                placeholder="支持四种格式，每行一条：&#10;http://user:pass@host:port&#10;socks5://host:port&#10;user:pass@host:port&#10;host:port"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+              ></textarea>
               <div class="mt-1 text-xs text-gray-500">
-                本次注册流程共用该代理；启用动态代理 API 时，动态代理优先。
+                每个账号按序使用池中的一条代理，用完后从头循环；预检失败自动换池中下一条重试；启用动态代理 API 时，动态代理优先。
               </div>
             </div>
             <label class="flex items-start gap-2">
@@ -631,6 +632,17 @@
 
           <div v-if="registerForm.mode === 'batch'" class="grid grid-cols-2 gap-3">
             <div>
+              <label class="block text-sm text-gray-400 mb-1">重试次数</label>
+              <input
+                v-model.number="registerForm.retryAttempts"
+                type="number"
+                min="1"
+                max="10"
+                :disabled="registeringBusy"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
               <label class="block text-sm text-gray-400 mb-1">随机抖动最小值</label>
               <input
                 v-model.number="registerForm.jitterMinSeconds"
@@ -692,7 +704,7 @@
             </div>
             <div>代理：<span class="text-gray-200">{{ registerProxyLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch' && registerProviderUsesDomains">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
-            <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
+            <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，重试 {{ validRetryAttempts }} 次，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
           </div>
 
         </div>
@@ -1208,6 +1220,7 @@ const registerForm = ref({
   registrationFlow: 'standard',
   count: 1,
   concurrency: 3,
+  retryAttempts: 3,
   intervalSeconds: 12,
   jitterMinSeconds: 8,
   jitterMaxSeconds: 20,
@@ -1229,6 +1242,7 @@ const registerForm = ref({
   oauthPhoneSmsMaxPrice: '',
   oauthOasisSmsCdks: '',
   proxyUrl: '',
+  proxyPool: '',
   proxyApiEnabled: false,
   proxyApiProvider: '1024proxy',
   proxyApiCountry: 'JP',
@@ -1310,6 +1324,10 @@ const validBatchCount = computed(() => {
 const validConcurrency = computed(() => {
   const value = Number(registerForm.value.concurrency || 0)
   return Math.max(1, Math.min(20, value || 3))
+})
+const validRetryAttempts = computed(() => {
+  const value = Number(registerForm.value.retryAttempts || 0)
+  return Math.max(1, Math.min(10, value || 3))
 })
 const validIntervalSeconds = computed(() => {
   const value = Number(registerForm.value.intervalSeconds ?? 12)
@@ -1473,6 +1491,11 @@ const registerProxyLabel = computed(() => {
     const country = normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)
     return `动态 API / ${registerForm.value.proxyApiProvider || '1024proxy'} / ${country}`
   }
+  const poolLines = String(registerForm.value.proxyPool || '')
+    .split(/[\s,;]+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  if (poolLines.length) return `代理池 (${poolLines.length} 条)`
   return fixedProxy ? '指定代理' : '未启用'
 })
 const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
@@ -2044,6 +2067,7 @@ function loadSavedRegisterForm() {
       registrationFlow: saved.registrationFlow === 'phone_cpa' ? 'phone_cpa' : 'standard',
       count: Number(saved.count || registerForm.value.count),
       concurrency: Number(saved.concurrency || registerForm.value.concurrency),
+      retryAttempts: Number(saved.retryAttempts ?? registerForm.value.retryAttempts),
       intervalSeconds: Number(saved.intervalSeconds ?? registerForm.value.intervalSeconds),
       jitterMinSeconds: Number(saved.jitterMinSeconds ?? registerForm.value.jitterMinSeconds),
       jitterMaxSeconds: Number(saved.jitterMaxSeconds ?? registerForm.value.jitterMaxSeconds),
@@ -2076,6 +2100,7 @@ function loadSavedRegisterForm() {
       oauthPhoneSmsMaxPrice: savedOauthPhoneSmsMaxPrice,
       oauthOasisSmsCdks: '',
       proxyUrl: String(saved.proxyUrl || ''),
+      proxyPool: String(saved.proxyPool || ''),
       proxyApiEnabled: Boolean(saved.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
         ? String(saved.proxyApiProvider)
@@ -2109,6 +2134,7 @@ function saveRegisterForm() {
         registrationFlow: registerForm.value.registrationFlow,
         count: registerForm.value.count,
         concurrency: registerForm.value.concurrency,
+        retryAttempts: registerForm.value.retryAttempts,
         intervalSeconds: registerForm.value.intervalSeconds,
         jitterMinSeconds: registerForm.value.jitterMinSeconds,
         jitterMaxSeconds: registerForm.value.jitterMaxSeconds,
@@ -2130,6 +2156,7 @@ function saveRegisterForm() {
       oauthPhoneSmsMaxPrice: oauthMaxPrice,
       oauthPhoneSmsMaxPriceByProvider: savedOauthPhoneSmsMaxPrices,
       proxyUrl: String(registerForm.value.proxyUrl || '').trim(),
+      proxyPool: String(registerForm.value.proxyPool || '').trim(),
       proxyApiEnabled: Boolean(registerForm.value.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(registerForm.value.proxyApiProvider || ''))
         ? registerForm.value.proxyApiProvider
@@ -2444,6 +2471,7 @@ async function submitManualRegister() {
       registration_flow: registerForm.value.registrationFlow,
       count: registerForm.value.mode === 'batch' ? Number(registerForm.value.count || 1) : 1,
       concurrency: registerForm.value.mode === 'batch' ? validConcurrency.value : 1,
+      retry_attempts: registerForm.value.mode === 'batch' ? validRetryAttempts.value : 1,
       interval_seconds: registerForm.value.mode === 'batch' ? validIntervalSeconds.value : 0,
       jitter_min_seconds: registerForm.value.mode === 'batch' ? validJitterMinSeconds.value : 0,
       jitter_max_seconds: registerForm.value.mode === 'batch' ? validJitterMaxSeconds.value : 0,
@@ -2465,6 +2493,7 @@ async function submitManualRegister() {
       oauth_phone_sms_max_price: oauthUsesProvider && OAUTH_PHONE_DYNAMIC_PRICE_PROVIDERS.includes(oauthProvider) ? registerForm.value.oauthPhoneSmsMaxPrice : '',
       oauth_oasis_sms_cdks: oauthUsesProvider && isCdkOAuthPhoneProvider(oauthProvider) ? registerForm.value.oauthOasisSmsCdks : '',
       proxy_url: registerForm.value.proxyApiEnabled ? '' : (registerForm.value.proxyUrl || ''),
+      proxy_pool: registerForm.value.proxyApiEnabled ? '' : (registerForm.value.proxyPool || ''),
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
       proxy_api_country: registerForm.value.proxyApiEnabled
         ? normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)

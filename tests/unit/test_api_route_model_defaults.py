@@ -35,6 +35,7 @@ def test_api_route_model_collection_defaults_are_instance_local():
         getattr(first, field_name).append(sample_value)
 
         assert getattr(second, field_name) == []
+    assert ManualRegisterParams().retry_attempts == 3
 
 
 def test_api_route_functions_do_not_construct_defaults_at_definition_time():

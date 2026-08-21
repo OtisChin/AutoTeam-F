@@ -51,6 +51,11 @@ MAIL_PROVIDER_OPTIONS = [
         "label": "LuckMail",
         "description": "LuckMail 已购邮箱 token 接码",
     },
+    {
+        "value": "mailu",
+        "label": "Mailu (自建)",
+        "description": "自建 Mailu mail-api 网关，支持指定前缀/域名随机生成邮箱",
+    },
 ]
 
 COMMON_SETUP_FIELDS = [
@@ -129,6 +134,11 @@ PROVIDER_SETUP_FIELDS = {
             True,
         ),
     ],
+    "mailu": [
+        ("MAILU_BASE_URL", "Mailu mail-api 根地址（如 https://mail.example.com/mail-api/）", "", False),
+        ("MAILU_API_KEY", "Mailu mail-api API Key", "", False),
+        ("MAILU_DOMAIN", "Mailu 邮箱域名（如 example.com，注册任务指定域名时可不填）", "", True),
+    ],
 }
 
 REQUIRED_CONFIGS = [
@@ -198,6 +208,8 @@ def get_mail_provider(raw: str | None = None) -> str:
         return "mail.com"
     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
         return "luckmail"
+    if provider in ("mailu", "self-mailu"):
+        return "mailu"
     return provider
 
 
@@ -407,6 +419,7 @@ def _verify_temporary_email():
       - icloud:需要 ICLOUD_ACCOUNTS_FILE 或 ICLOUD_ACCOUNTS 提供 iCloud 账号池
       - generic-api:需要 GENERIC_API_ACCOUNTS_FILE 或 GENERIC_API_ACCOUNTS 提供邮箱+收码链接账号池
       - luckmail:需要 LUCKMAIL_ACCOUNTS_FILE / LUCKMAIL_ACCOUNTS，或 LUCKMAIL_API_KEY 自动购买
+      - mailu:需要 MAILU_BASE_URL / MAILU_API_KEY（可选用 MAILU_DOMAIN 指定默认域名）
     """
     provider = get_mail_provider()
 
@@ -474,9 +487,17 @@ def _verify_temporary_email():
         check_keys = "LUCKMAIL_ACCOUNTS_FILE / LUCKMAIL_ACCOUNTS 或 LUCKMAIL_API_KEY"
         domain_key = "LUCKMAIL_ACCOUNTS_FILE"
         label = "luckmail"
+    elif provider == "mailu":
+        base_url = os.environ.get("MAILU_BASE_URL") or os.environ.get("MAILU_API_URL", "")
+        api_key = os.environ.get("MAILU_API_KEY", "")
+        if not all([base_url, api_key]):
+            return
+        check_keys = "MAILU_BASE_URL、MAILU_API_KEY"
+        domain_key = "MAILU_DOMAIN"
+        label = "mailu"
     else:
         logger.error(
-            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | icloud | generic-api | mail.com | luckmail",
+            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | icloud | generic-api | mail.com | luckmail | mailu",
             provider,
         )
         return False

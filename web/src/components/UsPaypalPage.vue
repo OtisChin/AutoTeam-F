@@ -98,12 +98,68 @@
           </label>
 
           <label class="block">
-            <span class="mb-2 block text-sm font-semibold text-gray-300">Access Token 输入（优先于账号池）</span>
-            <textarea v-model.trim="form.accessTokens" rows="4" spellcheck="false" placeholder="每行一个 ChatGPT access token；也支持 Bearer xxx。填写后运行时会忽略账号池勾选。" class="w-full rounded-xl border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 font-mono text-xs text-emerald-50 placeholder:text-emerald-900/60 focus:border-emerald-400 focus:outline-none" :disabled="busy"></textarea>
+            <span class="mb-2 block text-sm font-semibold text-gray-300">Access Token 池（优先于账号池）</span>
+            <textarea v-model.trim="form.accessTokens" rows="4" spellcheck="false" placeholder="每行一个 ChatGPT access token；也支持 Bearer xxx。先导入到池，再选择运行。" class="w-full rounded-xl border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 font-mono text-xs text-emerald-50 placeholder:text-emerald-900/60 focus:border-emerald-400 focus:outline-none" :disabled="busy"></textarea>
             <span class="mt-1 block text-xs" :class="directAccessTokens.length ? 'text-emerald-300' : 'text-gray-500'">
-              已识别 {{ directAccessTokens.length }} 个 access token；填写后以 token 列表为准，不读取账号池 accessToken。
+              待导入 {{ directAccessTokens.length }} 个；池内 {{ accessTokenPool.length }} 个，已选 {{ selectedAccessTokenItems.length }} 个。只要选中 token，运行会忽略账号池。
             </span>
           </label>
+
+          <section class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <button @click="importAccessTokensToPool" :disabled="busy || !directAccessTokens.length" class="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-50">导入/追加到池</button>
+              <button @click="selectAllAccessTokenPool" :disabled="busy || !filteredAccessTokenPool.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
+              <button @click="clearSelectedAccessTokens" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
+              <button @click="retryFailedAccessTokens" :disabled="busy || !failedAccessTokenItems.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-50">重试失败{{ failedAccessTokenItems.length ? ` (${failedAccessTokenItems.length})` : '' }}</button>
+              <button @click="removeSelectedAccessTokens" :disabled="busy || !selectedAccessTokenItems.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button>
+              <button @click="resetSelectedAccessTokenStatus" :disabled="busy || !selectedAccessTokenItems.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">重置状态</button>
+              <select v-model="accessTokenStatusFilter" class="ml-auto rounded-lg border border-gray-700 bg-gray-950 px-2 py-2 text-xs text-white focus:border-blue-500 focus:outline-none">
+                <option value="all">全部状态</option>
+                <option value="pending">未提链</option>
+                <option value="running">提链中</option>
+                <option value="success">成功</option>
+                <option value="failed">失败</option>
+                <option value="paid">已支付</option>
+                <option value="no_promo">无优惠</option>
+                <option value="non_oaics">非Oaics</option>
+              </select>
+            </div>
+            <div class="mt-3 grid grid-cols-5 gap-2 text-xs">
+              <div v-for="item in accessTokenPoolStats" :key="item.label" class="rounded-lg border border-gray-800 bg-gray-950/70 p-2">
+                <div class="text-gray-500">{{ item.label }}</div>
+                <div class="mt-1 font-bold" :class="item.class">{{ item.value }}</div>
+              </div>
+            </div>
+            <div class="mt-3 max-h-52 overflow-y-auto rounded-lg border border-gray-800">
+              <table class="w-full text-left text-xs">
+                <thead class="sticky top-0 bg-gray-900 text-gray-500">
+                  <tr>
+                    <th class="w-8 px-2 py-2"></th>
+                    <th class="px-2 py-2">账号/标签</th>
+                    <th class="px-2 py-2">Token</th>
+                    <th class="px-2 py-2">状态</th>
+                    <th class="px-2 py-2">失败原因</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-900">
+                  <tr v-if="!filteredAccessTokenPool.length">
+                    <td colspan="5" class="px-2 py-6 text-center text-gray-500">暂无 token，先粘贴并导入</td>
+                  </tr>
+                  <tr v-for="item in filteredAccessTokenPool" :key="item.id" class="hover:bg-gray-900/50">
+                    <td class="px-2 py-2">
+                      <input :checked="selectedAccessTokenIds.has(item.id)" type="checkbox" class="accent-emerald-500" :disabled="busy || item.status === 'paid'" @change="toggleAccessToken(item.id)" />
+                    </td>
+                    <td class="px-2 py-2 font-mono text-emerald-100">{{ item.label }}</td>
+                    <td class="px-2 py-2 font-mono text-gray-500">{{ item.masked }}</td>
+                    <td class="px-2 py-2">
+                      <span class="rounded-full border px-2 py-1 font-semibold" :class="accessTokenStatusClass(item.status)">{{ accessTokenStatusText(item.status) }}</span>
+                    </td>
+                    <td class="max-w-[180px] truncate px-2 py-2 text-gray-500" :title="item.error">{{ item.error || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
@@ -444,8 +500,50 @@
               <label class="block">
                 <span class="mb-1.5 block text-sm font-semibold text-gray-300">BA 链接 / BA token</span>
                 <textarea v-model.trim="protocolForm.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-...&#10;https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
-                <span class="mt-1 block text-xs text-gray-500">每行一条，可粘贴多条 BA 链接；未勾选已提链账号时会按并发数批量协议支付。</span>
+                <span class="mt-1 block text-xs" :class="directProtocolBaLinks.length ? 'text-indigo-300' : 'text-gray-500'">待导入 {{ directProtocolBaLinks.length }} 条；池内 {{ protocolBaPool.length }} 条，已选 {{ selectedProtocolBaItems.length }} 条。未勾选已提链账号时优先使用 BA 链池。</span>
               </label>
+
+              <section class="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <button @click="importBaLinksToPool('protocol')" :disabled="protocolBusy || !directProtocolBaLinks.length" class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/20 disabled:opacity-50">导入/追加到 BA 池</button>
+                  <button @click="selectAllBaPool('protocol')" :disabled="protocolBusy || !filteredProtocolBaPool.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
+                  <button @click="clearSelectedBaPool('protocol')" :disabled="protocolBusy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
+                  <button @click="retryFailedBaPool('protocol')" :disabled="protocolBusy || !failedProtocolBaItems.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-50">重试失败{{ failedProtocolBaItems.length ? ` (${failedProtocolBaItems.length})` : '' }}</button>
+                  <button @click="removeSelectedBaPool('protocol')" :disabled="protocolBusy || !selectedProtocolBaItems.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button>
+                  <button @click="resetSelectedBaPoolStatus('protocol')" :disabled="protocolBusy || !selectedProtocolBaItems.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">重置状态</button>
+                  <select v-model="protocolBaStatusFilter" class="ml-auto rounded-lg border border-gray-700 bg-gray-950 px-2 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none">
+                    <option value="all">全部状态</option>
+                    <option value="pending">未支付</option>
+                    <option value="running">支付中</option>
+                    <option value="paid">已支付</option>
+                    <option value="failed">失败</option>
+                    <option value="cancelled">已取消</option>
+                  </select>
+                </div>
+                <div class="mt-3 grid grid-cols-4 gap-2 text-xs">
+                  <div v-for="item in protocolBaPoolStats" :key="item.label" class="rounded-lg border border-gray-800 bg-gray-950/70 p-2">
+                    <div class="text-gray-500">{{ item.label }}</div>
+                    <div class="mt-1 font-bold" :class="item.class">{{ item.value }}</div>
+                  </div>
+                </div>
+                <div class="mt-3 max-h-44 overflow-y-auto rounded-lg border border-gray-800">
+                  <table class="w-full text-left text-xs">
+                    <thead class="sticky top-0 bg-gray-900 text-gray-500">
+                      <tr><th class="w-8 px-2 py-2"></th><th class="px-2 py-2">BA</th><th class="px-2 py-2">国家</th><th class="px-2 py-2">状态</th><th class="px-2 py-2">失败原因</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-900">
+                      <tr v-if="!filteredProtocolBaPool.length"><td colspan="5" class="px-2 py-6 text-center text-gray-500">暂无 BA 链，先粘贴并导入</td></tr>
+                      <tr v-for="item in filteredProtocolBaPool" :key="item.id" class="hover:bg-gray-900/50">
+                        <td class="px-2 py-2"><input :checked="selectedProtocolBaIds.has(item.id)" type="checkbox" class="accent-indigo-500" :disabled="protocolBusy || ['paid','success'].includes(item.status)" @change="toggleBaPoolItem('protocol', item.id)" /></td>
+                        <td class="px-2 py-2 font-mono text-indigo-100">{{ item.baToken }}</td>
+                        <td class="px-2 py-2 text-gray-400">{{ item.country }}</td>
+                        <td class="px-2 py-2"><span class="rounded-full border px-2 py-1 font-semibold" :class="baPoolStatusClass(item.status)">{{ baPoolStatusText(item.status) }}</span></td>
+                        <td class="max-w-[180px] truncate px-2 py-2 text-gray-500" :title="item.error">{{ item.error || '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
 
               <div class="grid gap-4 md:grid-cols-2">
                 <label class="block">
@@ -689,8 +787,50 @@
               <label class="block">
                 <span class="mb-1.5 block text-sm font-semibold text-gray-300">BA 链接 / BA token</span>
                 <textarea v-model.trim="pay153Form.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-...&#10;https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-cyan-500 focus:outline-none" :disabled="pay153Busy"></textarea>
-                <span class="mt-1 block text-xs text-gray-500">每行一条，可粘贴多条 BA 链接；未选择已提链账号时会直接按这些链接并发提交 153支付。</span>
+                <span class="mt-1 block text-xs" :class="directPay153BaLinks.length ? 'text-cyan-300' : 'text-gray-500'">待导入 {{ directPay153BaLinks.length }} 条；池内 {{ pay153BaPool.length }} 条，已选 {{ selectedPay153BaItems.length }} 条。未选择已提链账号时优先使用 BA 链池。</span>
               </label>
+
+              <section class="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <button @click="importBaLinksToPool('pay153')" :disabled="pay153Busy || !directPay153BaLinks.length" class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-50">导入/追加到 BA 池</button>
+                  <button @click="selectAllBaPool('pay153')" :disabled="pay153Busy || !filteredPay153BaPool.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
+                  <button @click="clearSelectedBaPool('pay153')" :disabled="pay153Busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
+                  <button @click="retryFailedBaPool('pay153')" :disabled="pay153Busy || !failedPay153BaItems.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-50">重试失败{{ failedPay153BaItems.length ? ` (${failedPay153BaItems.length})` : '' }}</button>
+                  <button @click="removeSelectedBaPool('pay153')" :disabled="pay153Busy || !selectedPay153BaItems.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button>
+                  <button @click="resetSelectedBaPoolStatus('pay153')" :disabled="pay153Busy || !selectedPay153BaItems.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">重置状态</button>
+                  <select v-model="pay153BaStatusFilter" class="ml-auto rounded-lg border border-gray-700 bg-gray-950 px-2 py-2 text-xs text-white focus:border-cyan-500 focus:outline-none">
+                    <option value="all">全部状态</option>
+                    <option value="pending">未支付</option>
+                    <option value="running">支付中</option>
+                    <option value="paid">已支付</option>
+                    <option value="failed">失败</option>
+                    <option value="cancelled">已取消</option>
+                  </select>
+                </div>
+                <div class="mt-3 grid grid-cols-4 gap-2 text-xs">
+                  <div v-for="item in pay153BaPoolStats" :key="item.label" class="rounded-lg border border-gray-800 bg-gray-950/70 p-2">
+                    <div class="text-gray-500">{{ item.label }}</div>
+                    <div class="mt-1 font-bold" :class="item.class">{{ item.value }}</div>
+                  </div>
+                </div>
+                <div class="mt-3 max-h-44 overflow-y-auto rounded-lg border border-gray-800">
+                  <table class="w-full text-left text-xs">
+                    <thead class="sticky top-0 bg-gray-900 text-gray-500">
+                      <tr><th class="w-8 px-2 py-2"></th><th class="px-2 py-2">BA</th><th class="px-2 py-2">国家</th><th class="px-2 py-2">状态</th><th class="px-2 py-2">失败原因</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-900">
+                      <tr v-if="!filteredPay153BaPool.length"><td colspan="5" class="px-2 py-6 text-center text-gray-500">暂无 BA 链，先粘贴并导入</td></tr>
+                      <tr v-for="item in filteredPay153BaPool" :key="item.id" class="hover:bg-gray-900/50">
+                        <td class="px-2 py-2"><input :checked="selectedPay153BaIds.has(item.id)" type="checkbox" class="accent-cyan-500" :disabled="pay153Busy || ['paid','success'].includes(item.status)" @change="toggleBaPoolItem('pay153', item.id)" /></td>
+                        <td class="px-2 py-2 font-mono text-cyan-100">{{ item.baToken }}</td>
+                        <td class="px-2 py-2 text-gray-400">{{ item.country }}</td>
+                        <td class="px-2 py-2"><span class="rounded-full border px-2 py-1 font-semibold" :class="baPoolStatusClass(item.status)">{{ baPoolStatusText(item.status) }}</span></td>
+                        <td class="max-w-[180px] truncate px-2 py-2 text-gray-500" :title="item.error">{{ item.error || '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
 
               <div class="grid gap-4 md:grid-cols-2">
                 <label class="block">
@@ -867,6 +1007,9 @@ import { PAYPAL_LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notific
 const FORM_STORAGE_KEY = 'autotoken_us_paypal_form'
 const JOB_STORAGE_KEY = 'autotoken_us_paypal_job'
 const ACTIVE_TAB_STORAGE_KEY = 'autotoken_us_paypal_active_tab'
+const ACCESS_TOKEN_POOL_STORAGE_KEY = 'autotoken_us_paypal_access_token_pool'
+const PROTOCOL_BA_POOL_STORAGE_KEY = 'autotoken_us_paypal_protocol_ba_pool'
+const PAY153_BA_POOL_STORAGE_KEY = 'autotoken_us_paypal_153_ba_pool'
 const PROTOCOL_FORM_STORAGE_KEY = 'autotoken_us_paypal_protocol_form'
 const PROTOCOL_JOB_STORAGE_KEY = 'autotoken_us_paypal_protocol_job'
 const PAY153_FORM_STORAGE_KEY = 'autotoken_us_paypal_153_form'
@@ -943,6 +1086,9 @@ const accounts = ref([])
 const links = ref([])
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
+const accessTokenPool = ref([])
+const selectedAccessTokenIds = ref(new Set())
+const accessTokenStatusFilter = ref('all')
 const busy = ref(false)
 const canceling = ref(false)
 const currentJob = ref(null)
@@ -965,6 +1111,12 @@ const recentResultFilter = ref('all')
 const selectedProtocolAccountEmail = ref('')
 const selectedProtocolAccountEmails = ref(new Set())
 const selectedPay153AccountEmails = ref(new Set())
+const protocolBaPool = ref([])
+const pay153BaPool = ref([])
+const selectedProtocolBaIds = ref(new Set())
+const selectedPay153BaIds = ref(new Set())
+const protocolBaStatusFilter = ref('all')
+const pay153BaStatusFilter = ref('all')
 const PHONE_POOL_REUSE_STORAGE_KEY = 'autotoken-us-paypal-phone-pool-reuse'
 const phonePoolReuseEnabled = ref(false)
 const phonePoolStatusMap = ref({})
@@ -1047,9 +1199,33 @@ const pay153ClaimedPhonePoolKeysByJob = new Map()
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const directAccessTokens = computed(() => parseAccessTokens(form.value.accessTokens))
-const linkInputCount = computed(() => directAccessTokens.value.length || selectedEmails.value.length)
+const selectedAccessTokenItems = computed(() => accessTokenPool.value.filter(item => selectedAccessTokenIds.value.has(item.id) && item.status !== 'paid'))
+const failedAccessTokenItems = computed(() => accessTokenPool.value.filter(item => item.status === 'failed'))
+const filteredAccessTokenPool = computed(() => {
+  const target = String(accessTokenStatusFilter.value || 'all').trim().toLowerCase()
+  if (!target || target === 'all') return accessTokenPool.value
+  return accessTokenPool.value.filter(item => String(item.status || 'pending').toLowerCase() === target)
+})
+const accessTokenPoolStats = computed(() => [
+  { label: '池内', value: accessTokenPool.value.length, class: 'text-gray-200' },
+  { label: '已选', value: selectedAccessTokenItems.value.length, class: 'text-white' },
+  { label: '成功', value: accessTokenPool.value.filter(item => item.status === 'success').length, class: 'text-emerald-300' },
+  { label: '失败', value: accessTokenPool.value.filter(item => item.status === 'failed').length, class: 'text-rose-300' },
+  { label: '已支付', value: accessTokenPool.value.filter(item => item.status === 'paid').length, class: 'text-amber-300' },
+])
+const linkInputCount = computed(() => selectedAccessTokenItems.value.length || directAccessTokens.value.length || selectedEmails.value.length)
 const protocolSelectedEmails = computed(() => Array.from(selectedProtocolAccountEmails.value))
 const pay153SelectedEmails = computed(() => Array.from(selectedPay153AccountEmails.value))
+const directProtocolBaLinks = computed(() => parseManualPaypalLinks(protocolForm.value.paypalLink))
+const directPay153BaLinks = computed(() => parseManualPaypalLinks(pay153Form.value.paypalLink))
+const selectedProtocolBaItems = computed(() => protocolBaPool.value.filter(item => selectedProtocolBaIds.value.has(item.id) && !['paid', 'success'].includes(item.status)))
+const selectedPay153BaItems = computed(() => pay153BaPool.value.filter(item => selectedPay153BaIds.value.has(item.id) && !['paid', 'success'].includes(item.status)))
+const failedProtocolBaItems = computed(() => protocolBaPool.value.filter(item => item.status === 'failed'))
+const failedPay153BaItems = computed(() => pay153BaPool.value.filter(item => item.status === 'failed'))
+const filteredProtocolBaPool = computed(() => filterBaPool(protocolBaPool.value, protocolBaStatusFilter.value))
+const filteredPay153BaPool = computed(() => filterBaPool(pay153BaPool.value, pay153BaStatusFilter.value))
+const protocolBaPoolStats = computed(() => baPoolStats(protocolBaPool.value, selectedProtocolBaItems.value.length))
+const pay153BaPoolStats = computed(() => baPoolStats(pay153BaPool.value, selectedPay153BaItems.value.length))
 const retryFailedEmails = computed(() => Array.from(retryFailedEmailSet.value).filter(email => accounts.value.some(account => account.email === email && accountSelectable(account))))
 function linkCountry(link) {
   const billing = link?.billing && typeof link.billing === 'object' ? link.billing : {}
@@ -1554,9 +1730,145 @@ function parseAccessTokens(value) {
   return tokens
 }
 
-function validateStart(emails = selectedEmails.value) {
+function accessTokenFingerprint(token) {
+  const text = String(token || '')
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0
+  return `${Math.abs(hash).toString(36)}-${text.slice(-8)}`
+}
+function maskAccessToken(token) {
+  const text = String(token || '')
+  if (text.length <= 16) return text ? `${text.slice(0, 4)}…` : ''
+  return `${text.slice(0, 8)}…${text.slice(-6)}`
+}
+function decodeAccessTokenEmail(token) {
+  try {
+    const part = String(token || '').split('.')[1] || ''
+    if (!part) return ''
+    const json = JSON.parse(decodeURIComponent(Array.from(atob(part.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - part.length % 4) % 4))).map(char => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')))
+    const profile = json?.['https://api.openai.com/profile']
+    return String(profile?.email || '').trim()
+  } catch {
+    return ''
+  }
+}
+function makeAccessTokenPoolItem(token, index = 1) {
+  const clean = cleanAccessToken(token)
+  const id = accessTokenFingerprint(clean)
+  return {
+    id,
+    token: clean,
+    label: decodeAccessTokenEmail(clean) || `access-token-${String(index).padStart(3, '0')}`,
+    masked: maskAccessToken(clean),
+    status: 'pending',
+    error: '',
+    updatedAt: '',
+  }
+}
+function saveAccessTokenPool() {
+  localStorage.setItem(ACCESS_TOKEN_POOL_STORAGE_KEY, JSON.stringify(accessTokenPool.value))
+}
+function importAccessTokensToPool(options = {}) {
   const tokens = directAccessTokens.value
-  if (!tokens.length && !emails.length) {
+  if (!tokens.length) {
+    if (!options.silent) setStatus('没有可导入的 access token。', true)
+    return []
+  }
+  const existingIds = new Set(accessTokenPool.value.map(item => item.id))
+  const imported = []
+  const next = [...accessTokenPool.value]
+  tokens.forEach((token, index) => {
+    const item = makeAccessTokenPoolItem(token, accessTokenPool.value.length + index + 1)
+    if (existingIds.has(item.id)) return
+    existingIds.add(item.id)
+    imported.push(item)
+    next.push(item)
+  })
+  accessTokenPool.value = next
+  if (options.select !== false && imported.length) selectedAccessTokenIds.value = new Set([...selectedAccessTokenIds.value, ...imported.map(item => item.id)])
+  if (imported.length) form.value.accessTokens = ''
+  saveAccessTokenPool()
+  if (!options.silent) setStatus(imported.length ? `已导入 ${imported.length} 个 access token。` : '这些 access token 已在池中。')
+  return imported
+}
+function accessTokenStatusText(status) { return ACCOUNT_STATUS_TEXT[String(status || 'pending').toLowerCase()] || '未提链' }
+function accessTokenStatusClass(status) {
+  return ({
+    pending: 'border-gray-700 bg-gray-900 text-gray-400',
+    running: 'border-blue-500/30 bg-blue-500/10 text-blue-300',
+    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+    no_promo: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+    non_oaics: 'border-gray-600 bg-gray-800 text-gray-300',
+    paid: 'border-purple-500/30 bg-purple-500/10 text-purple-300',
+  })[String(status || 'pending').toLowerCase()] || 'border-gray-700 bg-gray-900 text-gray-400'
+}
+function toggleAccessToken(id) {
+  const item = accessTokenPool.value.find(entry => entry.id === id)
+  if (!item || item.status === 'paid') return
+  const next = new Set(selectedAccessTokenIds.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  selectedAccessTokenIds.value = next
+}
+function selectAllAccessTokenPool() {
+  selectedAccessTokenIds.value = new Set(filteredAccessTokenPool.value.filter(item => item.status !== 'paid').map(item => item.id))
+}
+function clearSelectedAccessTokens() { selectedAccessTokenIds.value = new Set() }
+function removeSelectedAccessTokens() {
+  const selected = selectedAccessTokenIds.value
+  accessTokenPool.value = accessTokenPool.value.filter(item => !selected.has(item.id))
+  selectedAccessTokenIds.value = new Set()
+  saveAccessTokenPool()
+}
+function resetSelectedAccessTokenStatus() {
+  const selected = selectedAccessTokenIds.value
+  accessTokenPool.value = accessTokenPool.value.map(item => selected.has(item.id) ? { ...item, status: 'pending', error: '', updatedAt: '' } : item)
+  saveAccessTokenPool()
+}
+function setAccessTokenPoolStatus(ids, status, error = '') {
+  const targets = new Set(ids)
+  const updatedAt = new Date().toLocaleString()
+  accessTokenPool.value = accessTokenPool.value.map(item => targets.has(item.id) ? { ...item, status, error: String(error || ''), updatedAt } : item)
+  saveAccessTokenPool()
+}
+function syncAccessTokenPoolFromJob(job) {
+  if (!job || !accessTokenPool.value.length) return
+  const byLabel = new Map(accessTokenPool.value.map(item => [String(item.label || '').toLowerCase(), item]))
+  const updates = new Map()
+  const statuses = job.account_statuses && typeof job.account_statuses === 'object' ? job.account_statuses : {}
+  for (const [label, statusItem] of Object.entries(statuses)) {
+    const item = byLabel.get(String(label || '').toLowerCase())
+    if (item && statusItem) updates.set(item.id, { status: String(statusItem.status || 'pending'), error: String(statusItem.error || '') })
+  }
+  for (const item of job.result?.successes || []) {
+    const row = byLabel.get(String(item.email || '').toLowerCase())
+    if (row) updates.set(row.id, { status: 'success', error: '' })
+  }
+  for (const item of job.result?.errors || []) {
+    const row = byLabel.get(String(item.email || '').toLowerCase())
+    if (row) updates.set(row.id, { status: 'failed', error: String(item.error || '') })
+  }
+  for (const item of job.result?.skipped || []) {
+    const row = byLabel.get(String(item.email || '').toLowerCase())
+    if (row && !updates.has(row.id)) updates.set(row.id, { status: 'failed', error: String(item.reason || '已跳过') })
+  }
+  if (!updates.size) return
+  const updatedAt = new Date().toLocaleString()
+  accessTokenPool.value = accessTokenPool.value.map(item => updates.has(item.id) ? { ...item, ...updates.get(item.id), updatedAt } : item)
+  saveAccessTokenPool()
+}
+async function retryFailedAccessTokens() {
+  const ids = failedAccessTokenItems.value.map(item => item.id)
+  if (!ids.length) {
+    setStatus('没有失败的 access token 可重试。', true)
+    return
+  }
+  selectedAccessTokenIds.value = new Set(ids)
+  await startWithEmails([], '重试提取')
+}
+
+function validateStart(emails = selectedEmails.value, accessTokenItems = selectedAccessTokenItems.value) {
+  if (!accessTokenItems.length && !emails.length) {
     setStatus('请在账号池中选择至少一个账号，或粘贴 access token。', true)
     return false
   }
@@ -1573,22 +1885,26 @@ function validateStart(emails = selectedEmails.value) {
 }
 
 async function startWithEmails(emails, actionText = '提取') {
-  const accessTokens = directAccessTokens.value
-  const accountEmails = accessTokens.length ? [] : Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
-  if (!validateStart(accountEmails)) return
-  const inputCount = accessTokens.length || accountEmails.length
-  const inputSource = accessTokens.length ? 'access token' : '账号'
+  if (!selectedAccessTokenItems.value.length && directAccessTokens.value.length) {
+    importAccessTokensToPool({ silent: true, select: true })
+  }
+  const accessTokenItems = selectedAccessTokenItems.value
+  const accountEmails = accessTokenItems.length ? [] : Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
+  if (!validateStart(accountEmails, accessTokenItems)) return
+  const inputCount = accessTokenItems.length || accountEmails.length
+  const inputSource = accessTokenItems.length ? 'access token' : '账号'
   busy.value = true
   canceling.value = false
   logs.value = []
   currentResult.value = null
   currentJob.value = null
+  if (accessTokenItems.length) setAccessTokenPoolStatus(accessTokenItems.map(item => item.id), 'running')
   setStatus(`任务已提交，正在为 ${inputCount} 个${inputSource}${actionText} PayPal，目标国家 ${form.value.region}，优惠区 ${form.value.promoRegion}，并发 ${form.value.concurrency}，重试 ${form.value.maxAttempts}${form.value.onlyOaics ? '，仅 OAICS' : ''}。`)
   try {
     saveProxy({ silent: true })
     const payload = {
       proxies: form.value.proxies,
-      accessTokens,
+      accessTokenItems: accessTokenItems.map(item => ({ label: item.label, accessToken: item.token })),
       concurrency: form.value.concurrency,
       maxAttempts: form.value.maxAttempts,
       proxyPreflightAttempts: form.value.proxyPreflightAttempts,
@@ -1603,6 +1919,7 @@ async function startWithEmails(emails, actionText = '提取') {
     persistLinkJobState({ jobId: data.job_id, accountCount: inputCount, concurrency: form.value.concurrency, startedAt: Date.now() })
     await pollJob(data.job_id)
   } catch (error) {
+    if (accessTokenItems.length) setAccessTokenPoolStatus(accessTokenItems.map(item => item.id), 'failed', cleanError(error))
     setStatus(cleanError(error), true)
     persistLinkJobState()
   } finally {
@@ -1638,6 +1955,7 @@ async function pollJob(jobId) {
     currentJob.value = job
     logs.value = Array.isArray(job.logs) ? job.logs : []
     currentResult.value = job.result || null
+    syncAccessTokenPoolFromJob(job)
     persistLinkJobState({ jobId, accountCount: total, concurrency: job.concurrency || form.value.concurrency })
     await nextTick()
     if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
@@ -2197,6 +2515,191 @@ function parseManualPaypalLinks(value) {
   }
   return links
 }
+function baPoolId(value) {
+  const token = displayBaToken(value).toUpperCase()
+  return token || String(value || '').trim()
+}
+function baPoolLink(value) {
+  const text = String(value || '').trim()
+  const token = displayBaToken(text)
+  if (!token) return ''
+  return /^https?:\/\//i.test(text) ? text : `https://www.paypal.com/agreements/approve?ba_token=${token}`
+}
+function makeBaPoolItem(value, country = 'US') {
+  const token = displayBaToken(value)
+  const link = baPoolLink(value)
+  if (!token || !link) return null
+  return {
+    id: baPoolId(token),
+    label: token,
+    baToken: token,
+    paypalLink: link,
+    country: String(country || 'US').trim().toUpperCase() || 'US',
+    status: 'pending',
+    error: '',
+    updatedAt: '',
+  }
+}
+function baPoolStatusText(status) {
+  return ({
+    pending: '未支付',
+    running: '支付中',
+    success: '支付成功',
+    paid: '已支付',
+    failed: '支付失败',
+    cancelled: '已取消',
+  })[String(status || 'pending').toLowerCase()] || '未支付'
+}
+function baPoolStatusClass(status) {
+  return ({
+    pending: 'border-gray-700 bg-gray-900 text-gray-400',
+    running: 'border-blue-500/30 bg-blue-500/10 text-blue-300',
+    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    paid: 'border-purple-500/30 bg-purple-500/10 text-purple-300',
+    failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+    cancelled: 'border-gray-600 bg-gray-800 text-gray-300',
+  })[String(status || 'pending').toLowerCase()] || 'border-gray-700 bg-gray-900 text-gray-400'
+}
+function filterBaPool(pool, statusFilter) {
+  const target = String(statusFilter || 'all').trim().toLowerCase()
+  if (!target || target === 'all') return pool
+  return pool.filter(item => String(item.status || 'pending').toLowerCase() === target)
+}
+function baPoolStats(pool, selectedCount) {
+  return [
+    { label: '池内', value: pool.length, class: 'text-gray-200' },
+    { label: '已选', value: selectedCount, class: 'text-white' },
+    { label: '已支付', value: pool.filter(item => ['paid', 'success'].includes(item.status)).length, class: 'text-emerald-300' },
+    { label: '失败', value: pool.filter(item => item.status === 'failed').length, class: 'text-rose-300' },
+  ]
+}
+function saveBaPool(kind) {
+  const key = kind === 'pay153' ? PAY153_BA_POOL_STORAGE_KEY : PROTOCOL_BA_POOL_STORAGE_KEY
+  const pool = kind === 'pay153' ? pay153BaPool.value : protocolBaPool.value
+  localStorage.setItem(key, JSON.stringify(pool))
+}
+function importBaLinksToPool(kind, options = {}) {
+  const isPay153 = kind === 'pay153'
+  const sourceLinks = isPay153 ? directPay153BaLinks.value : directProtocolBaLinks.value
+  const poolRef = isPay153 ? pay153BaPool : protocolBaPool
+  const selectedRef = isPay153 ? selectedPay153BaIds : selectedProtocolBaIds
+  const formRef = isPay153 ? pay153Form : protocolForm
+  const country = isPay153 && formRef.value.country === 'AUTO' ? 'US' : formRef.value.country
+  const setStatusFn = isPay153 ? setPay153Status : setProtocolStatus
+  if (!sourceLinks.length) {
+    if (!options.silent) setStatusFn('没有可导入的 BA 链接。', true)
+    return []
+  }
+  const existingIds = new Set(poolRef.value.map(item => item.id))
+  const imported = []
+  const next = [...poolRef.value]
+  for (const link of sourceLinks) {
+    const item = makeBaPoolItem(link, country)
+    if (!item || existingIds.has(item.id)) continue
+    existingIds.add(item.id)
+    imported.push(item)
+    next.push(item)
+  }
+  poolRef.value = next
+  if (options.select !== false && imported.length) selectedRef.value = new Set([...selectedRef.value, ...imported.map(item => item.id)])
+  if (imported.length) formRef.value.paypalLink = ''
+  saveBaPool(kind)
+  if (!options.silent) setStatusFn(imported.length ? `已导入 ${imported.length} 条 BA 链到池。` : '这些 BA 链已在池中。')
+  return imported
+}
+function toggleBaPoolItem(kind, id) {
+  const pool = kind === 'pay153' ? pay153BaPool.value : protocolBaPool.value
+  const selectedRef = kind === 'pay153' ? selectedPay153BaIds : selectedProtocolBaIds
+  const item = pool.find(entry => entry.id === id)
+  if (!item || item.status === 'paid' || item.status === 'success') return
+  const next = new Set(selectedRef.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  selectedRef.value = next
+}
+function selectAllBaPool(kind) {
+  const pool = kind === 'pay153' ? filteredPay153BaPool.value : filteredProtocolBaPool.value
+  const selectedRef = kind === 'pay153' ? selectedPay153BaIds : selectedProtocolBaIds
+  selectedRef.value = new Set(pool.filter(item => !['paid', 'success'].includes(item.status)).map(item => item.id))
+}
+function clearSelectedBaPool(kind) {
+  const selectedRef = kind === 'pay153' ? selectedPay153BaIds : selectedProtocolBaIds
+  selectedRef.value = new Set()
+}
+function removeSelectedBaPool(kind) {
+  const selectedRef = kind === 'pay153' ? selectedPay153BaIds : selectedProtocolBaIds
+  const selected = selectedRef.value
+  if (kind === 'pay153') pay153BaPool.value = pay153BaPool.value.filter(item => !selected.has(item.id))
+  else protocolBaPool.value = protocolBaPool.value.filter(item => !selected.has(item.id))
+  selectedRef.value = new Set()
+  saveBaPool(kind)
+}
+function resetSelectedBaPoolStatus(kind) {
+  const selected = kind === 'pay153' ? selectedPay153BaIds.value : selectedProtocolBaIds.value
+  const reset = item => selected.has(item.id) ? { ...item, status: 'pending', error: '', updatedAt: '' } : item
+  if (kind === 'pay153') pay153BaPool.value = pay153BaPool.value.map(reset)
+  else protocolBaPool.value = protocolBaPool.value.map(reset)
+  saveBaPool(kind)
+}
+function setBaPoolStatus(kind, ids, status, error = '') {
+  const targets = new Set(ids)
+  const updatedAt = new Date().toLocaleString()
+  const update = item => targets.has(item.id) ? { ...item, status, error: String(error || ''), updatedAt } : item
+  if (kind === 'pay153') pay153BaPool.value = pay153BaPool.value.map(update)
+  else protocolBaPool.value = protocolBaPool.value.map(update)
+  saveBaPool(kind)
+}
+function syncBaPoolFromJob(kind, job) {
+  if (!job) return
+  const poolRef = kind === 'pay153' ? pay153BaPool : protocolBaPool
+  if (!poolRef.value.length) return
+  const byToken = new Map(poolRef.value.map(item => [String(item.baToken || item.label || '').toUpperCase(), item]))
+  const updates = new Map()
+  const statuses = job.account_statuses && typeof job.account_statuses === 'object' ? job.account_statuses : {}
+  for (const [label, statusItem] of Object.entries(statuses)) {
+    const row = byToken.get(displayBaToken(label).toUpperCase() || String(label || '').toUpperCase())
+    if (row && statusItem) updates.set(row.id, { status: String(statusItem.status || 'pending'), error: String(statusItem.error || '') })
+  }
+  for (const item of job.result?.successes || []) {
+    const row = byToken.get(displayBaToken(item.email || item.ba_token || item.baToken || '').toUpperCase())
+    if (row) updates.set(row.id, { status: 'paid', error: '' })
+  }
+  for (const item of job.result?.errors || []) {
+    const row = byToken.get(displayBaToken(item.email || item.ba_token || item.baToken || '').toUpperCase())
+    if (row) updates.set(row.id, { status: 'failed', error: String(item.error || item.message || '') })
+  }
+  for (const item of job.result?.skipped || []) {
+    const row = byToken.get(displayBaToken(item.email || item.ba_token || item.baToken || '').toUpperCase())
+    if (row) updates.set(row.id, { status: 'cancelled', error: String(item.reason || '已跳过') })
+  }
+  for (const child of Object.values(job.children || {})) {
+    const row = byToken.get(displayBaToken(child?.ba_token || child?.baToken || child?.email || '').toUpperCase())
+    if (!row) continue
+    const childStatus = String(child?.status || '').toLowerCase()
+    if (childStatus === 'completed') updates.set(row.id, { status: 'paid', error: '' })
+    else if (childStatus === 'failed') updates.set(row.id, { status: 'failed', error: String(child?.error || child?.stage || '') })
+    else if (childStatus === 'cancelled') updates.set(row.id, { status: 'cancelled', error: String(child?.error || '已取消') })
+    else if (childStatus) updates.set(row.id, { status: 'running', error: String(child?.stage || '') })
+  }
+  if (!updates.size) return
+  const updatedAt = new Date().toLocaleString()
+  poolRef.value = poolRef.value.map(item => updates.has(item.id) ? { ...item, ...updates.get(item.id), updatedAt } : item)
+  saveBaPool(kind)
+}
+async function retryFailedBaPool(kind) {
+  const isPay153 = kind === 'pay153'
+  const failed = isPay153 ? failedPay153BaItems.value : failedProtocolBaItems.value
+  const selectedRef = isPay153 ? selectedPay153BaIds : selectedProtocolBaIds
+  const selectedAccountRef = isPay153 ? selectedPay153AccountEmails : selectedProtocolAccountEmails
+  const startFn = isPay153 ? startPay153Payment : startProtocolPayment
+  const setStatusFn = isPay153 ? setPay153Status : setProtocolStatus
+  if (!failed.length) {
+    setStatusFn('没有失败的 BA 链可重试。', true)
+    return
+  }
+  selectedAccountRef.value = new Set()
+  selectedRef.value = new Set(failed.map(item => item.id))
+  await startFn()
+}
 function parseSmsRecordPhonePoolLines(value) {
   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(line => /^\S+\s*-{4,}\s*https?:\/\//i.test(line))
 }
@@ -2208,7 +2711,10 @@ function validateProtocolPayment(targetEmails = protocolSelectedEmails.value) {
   protocolForm.value.smsProvider = String(protocolForm.value.smsProvider || 'sms_record').trim().toLowerCase().replace(/-/g, '_')
   if (!['sms_record', 'hero_sms', 'hero_sms_rent', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
   const batchCount = Array.isArray(targetEmails) ? targetEmails.length : 0
-  const manualPaypalLinks = batchCount ? [] : parseManualPaypalLinks(protocolForm.value.paypalLink)
+  if (!batchCount && !selectedProtocolBaItems.value.length && directProtocolBaLinks.value.length) {
+    importBaLinksToPool('protocol', { silent: true, select: true })
+  }
+  const manualPaypalLinks = batchCount ? [] : selectedProtocolBaItems.value.map(item => item.paypalLink)
   const manualLinkCount = manualPaypalLinks.length
   if (!batchCount && !manualLinkCount) { setProtocolStatus('请填写有效 BA 链接或 BA token，或多选已成功提链账号。', true); return false }
   if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付支持 AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US。', true); return false }
@@ -2233,7 +2739,8 @@ async function startProtocolPayment(options = {}) {
   const selectedEmails = Array.isArray(options.autoBatchEmails) ? options.autoBatchEmails : protocolSelectedEmails.value
   if (Array.isArray(options.autoBatchEmails)) selectedProtocolAccountEmails.value = new Set(options.autoBatchEmails)
   if (!validateProtocolPayment(selectedEmails)) return false
-  const manualPaypalLinks = selectedEmails.length ? [] : parseManualPaypalLinks(protocolForm.value.paypalLink)
+  const protocolBaItems = selectedEmails.length ? [] : selectedProtocolBaItems.value
+  const manualPaypalLinks = protocolBaItems.map(item => item.paypalLink)
   const paymentCount = manualPaypalLinks.length || selectedEmails.length || 1
   protocolBusy.value = true
   protocolCanceling.value = false
@@ -2241,6 +2748,7 @@ async function startProtocolPayment(options = {}) {
   protocolResult.value = null
   protocolJob.value = null
   activeTab.value = 'protocol'
+  if (protocolBaItems.length) setBaPoolStatus('protocol', protocolBaItems.map(item => item.id), 'running')
   setProtocolStatus('协议支付任务已提交，正在启动本地 PayPal 引擎。')
   const claimedPhonePoolEntries = protocolForm.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(protocolForm.value.phonePool, paymentCount, 'protocol') : []
   const claimedPhonePoolKeys = claimedPhonePoolEntries.map(item => item.key).filter(Boolean)
@@ -2271,6 +2779,7 @@ async function startProtocolPayment(options = {}) {
     await pollProtocolJob(data.job_id)
     return true
   } catch (error) {
+    if (protocolBaItems.length) setBaPoolStatus('protocol', protocolBaItems.map(item => item.id), 'failed', cleanError(error))
     releaseClaimedPhonePoolEntriesAfterJob({}, 'protocol', claimedPhonePoolKeys, protocolForm.value.phonePool)
     setProtocolStatus(cleanError(error), true)
     persistProtocolJobState()
@@ -2290,6 +2799,7 @@ async function pollProtocolJob(jobId) {
     protocolJob.value = job
     protocolLogs.value = Array.isArray(job.logs) ? job.logs : []
     protocolResult.value = job.result || null
+    syncBaPoolFromJob('protocol', job)
     await nextTick()
     if (protocolLogRef.value) protocolLogRef.value.scrollTop = protocolLogRef.value.scrollHeight
     if (job.status === 'success') {
@@ -2414,7 +2924,7 @@ function clearSelectedPay153Accounts() {
 function currentPay153BaPayload() {
   const selectedEmail = pay153SelectedEmails.value[0] || ''
   const selected = selectedEmail ? pay153LinkAccountOptions.value.find(item => item.email === selectedEmail) : null
-  const manualPaypalLinks = parseManualPaypalLinks(pay153Form.value.paypalLink)
+  const manualPaypalLinks = selectedPay153BaItems.value.length ? selectedPay153BaItems.value.map(item => item.paypalLink) : parseManualPaypalLinks(pay153Form.value.paypalLink)
   return {
     paypalLink: selected?.paypalLink || manualPaypalLinks[0] || '',
     baToken: displayBaToken(selected?.paypalLink || manualPaypalLinks[0] || ''),
@@ -2422,7 +2932,10 @@ function currentPay153BaPayload() {
 }
 function validatePay153Payment(targetEmails = pay153SelectedEmails.value) {
   const batchCount = Array.isArray(targetEmails) ? targetEmails.length : 0
-  const manualPaypalLinks = batchCount ? [] : parseManualPaypalLinks(pay153Form.value.paypalLink)
+  if (!batchCount && !selectedPay153BaItems.value.length && directPay153BaLinks.value.length) {
+    importBaLinksToPool('pay153', { silent: true, select: true })
+  }
+  const manualPaypalLinks = batchCount ? [] : selectedPay153BaItems.value.map(item => item.paypalLink)
   const manualLinkCount = manualPaypalLinks.length
   const phoneCount = splitProtocolLines(pay153Form.value.phone).length
   const phonePoolCount = phonePoolReuseEnabled.value ? parsePay153PhonePoolLines(pay153Form.value.phonePool).length : usablePhonePoolEntriesFromText(pay153Form.value.phonePool, 'pay153').length
@@ -2450,7 +2963,8 @@ async function startPay153Payment(options = {}) {
   const selectedEmails = Array.isArray(options.autoBatchEmails) ? options.autoBatchEmails : pay153SelectedEmails.value
   if (Array.isArray(options.autoBatchEmails)) selectedPay153AccountEmails.value = new Set(options.autoBatchEmails)
   if (!validatePay153Payment(selectedEmails)) return false
-  const manualPaypalLinks = selectedEmails.length ? [] : parseManualPaypalLinks(pay153Form.value.paypalLink)
+  const pay153BaItems = selectedEmails.length ? [] : selectedPay153BaItems.value
+  const manualPaypalLinks = pay153BaItems.map(item => item.paypalLink)
   const paymentCount = manualPaypalLinks.length || selectedEmails.length
   pay153Busy.value = true
   pay153Canceling.value = false
@@ -2458,6 +2972,7 @@ async function startPay153Payment(options = {}) {
   pay153Result.value = null
   pay153Job.value = null
   activeTab.value = 'pay153'
+  if (pay153BaItems.length) setBaPoolStatus('pay153', pay153BaItems.map(item => item.id), 'running')
   setPay153Status('153支付任务已提交，正在创建远端任务。')
   const claimedPhonePoolEntries = pay153Form.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(pay153Form.value.phonePool, paymentCount, 'pay153') : []
   const claimedPhonePoolKeys = claimedPhonePoolEntries.map(item => item.key).filter(Boolean)
@@ -2485,6 +3000,7 @@ async function startPay153Payment(options = {}) {
     await pollPay153Job(data.job_id)
     return true
   } catch (error) {
+    if (pay153BaItems.length) setBaPoolStatus('pay153', pay153BaItems.map(item => item.id), 'failed', cleanError(error))
     releaseClaimedPhonePoolEntriesAfterJob({}, 'pay153', claimedPhonePoolKeys, pay153Form.value.phonePool)
     setPay153Status(cleanError(error), true)
     persistPay153JobState()
@@ -2538,6 +3054,7 @@ async function pollPay153Job(jobId) {
     pay153Job.value = job
     pay153Logs.value = Array.isArray(job.logs) ? job.logs : []
     pay153Result.value = job.result || null
+    syncBaPoolFromJob('pay153', job)
     await nextTick()
     if (pay153LogRef.value) pay153LogRef.value.scrollTop = pay153LogRef.value.scrollHeight
     if (job.status === 'success') {
@@ -2625,6 +3142,47 @@ onMounted(async () => {
     form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   } catch { /* ignore malformed local state */ }
   try {
+    const savedPool = JSON.parse(localStorage.getItem(ACCESS_TOKEN_POOL_STORAGE_KEY) || '[]')
+    accessTokenPool.value = Array.isArray(savedPool)
+      ? savedPool.map((item, index) => {
+        const token = cleanAccessToken(item?.token || '')
+        if (!token) return null
+        return {
+          id: String(item?.id || accessTokenFingerprint(token)),
+          token,
+          label: String(item?.label || decodeAccessTokenEmail(token) || `access-token-${String(index + 1).padStart(3, '0')}`).trim(),
+          masked: String(item?.masked || maskAccessToken(token)),
+          status: String(item?.status || 'pending').trim().toLowerCase(),
+          error: String(item?.error || ''),
+          updatedAt: String(item?.updatedAt || ''),
+        }
+      }).filter(Boolean)
+      : []
+  } catch { /* ignore malformed token pool */ }
+  try {
+    const loadBaPool = (storageKey, fallbackCountry) => {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || '[]')
+      if (!Array.isArray(saved)) return []
+      return saved.map((item) => {
+        const token = displayBaToken(item?.baToken || item?.label || item?.paypalLink || '')
+        const link = baPoolLink(item?.paypalLink || token)
+        if (!token || !link) return null
+        return {
+          id: String(item?.id || baPoolId(token)),
+          label: token,
+          baToken: token,
+          paypalLink: link,
+          country: String(item?.country || fallbackCountry || 'US').trim().toUpperCase(),
+          status: String(item?.status || 'pending').trim().toLowerCase(),
+          error: String(item?.error || ''),
+          updatedAt: String(item?.updatedAt || ''),
+        }
+      }).filter(Boolean)
+    }
+    protocolBaPool.value = loadBaPool(PROTOCOL_BA_POOL_STORAGE_KEY, protocolForm.value.country)
+    pay153BaPool.value = loadBaPool(PAY153_BA_POOL_STORAGE_KEY, pay153Form.value.country === 'AUTO' ? 'US' : pay153Form.value.country)
+  } catch { /* ignore malformed BA pool */ }
+  try {
     const savedReuse = localStorage.getItem(PHONE_POOL_REUSE_STORAGE_KEY)
     if (savedReuse !== null) phonePoolReuseEnabled.value = savedReuse === '1' || savedReuse === 'true'
   } catch { /* ignore malformed reuse state */ }
@@ -2700,6 +3258,9 @@ onMounted(async () => {
 })
 
 watch(form, () => localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value)), { deep: true })
+watch(accessTokenPool, () => saveAccessTokenPool(), { deep: true })
+watch(protocolBaPool, () => saveBaPool('protocol'), { deep: true })
+watch(pay153BaPool, () => saveBaPool('pay153'), { deep: true })
 watch(activeTab, value => localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, value))
 watch(phonePoolReuseEnabled, value => localStorage.setItem(PHONE_POOL_REUSE_STORAGE_KEY, value ? '1' : '0'))
 watch(protocolForm, () => localStorage.setItem(PROTOCOL_FORM_STORAGE_KEY, JSON.stringify(protocolForm.value)), { deep: true })

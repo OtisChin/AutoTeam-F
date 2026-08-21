@@ -148,7 +148,11 @@ def test_paypal_batch_access_tokens_take_priority_over_account_pool(monkeypatch)
 
     req = us_paypal.UsPaypalBatchStartRequest.model_validate({
         "accountEmails": ["pool@example.com"],
-        "accessTokens": "Bearer direct-token\nsecond-token\ndirect-token",
+        "accessTokenItems": [
+            {"label": "token-row-1", "accessToken": "direct-token"},
+            {"label": "token-row-2", "accessToken": "second-token"},
+            {"label": "duplicate", "accessToken": "direct-token"},
+        ],
         "proxies": "host:1000:user:pass",
         "concurrency": 1,
         "promoMode": "skip",
@@ -159,7 +163,7 @@ def test_paypal_batch_access_tokens_take_priority_over_account_pool(monkeypatch)
     assert job["status"] == "success"
     assert job["completed"] == 2
     assert captured["tokens"] == ["direct-token", "second-token"]
-    assert [item["email"] for item in job["result"]["successes"]] == ["access-token-001", "access-token-002"]
+    assert [item["email"] for item in job["result"]["successes"]] == ["token-row-1", "token-row-2"]
     assert any("输入源=accessToken" in line for line in job["logs"])
 
 
@@ -190,6 +194,29 @@ def test_paypal_batch_start_accepts_access_tokens_without_selected_accounts(monk
     assert captured["target"] is us_paypal._run_batch_job
     assert captured["args"][1] is req
     assert captured["started"] is True
+
+
+def test_paypal_direct_access_token_already_paid_marks_paid_status(monkeypatch):
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", lambda cfg, log: (_ for _ in ()).throw(RuntimeError("User is already paid")))
+    job_id = "paypal-direct-token-paid-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accessTokenItems": [{"label": "paid-token-row", "accessToken": "direct-token"}],
+        "proxies": "host:1000:user:pass",
+        "promoMode": "skip",
+    })
+    result = us_paypal._run_batch_account(job_id, req, {"email": "paid-token-row", "access_token": "direct-token", "direct_access_token": True}, 1, 1, us_paypal._parse_proxies(req.proxies))
+
+    assert result["skipped"] is True
+    assert result["status"]["status"] == "paid"
+    statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert statuses["paid-token-row"]["status"] == "paid"
 
 
 def test_paypal_link_batch_concurrency_allows_thirty():
