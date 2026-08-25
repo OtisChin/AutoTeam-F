@@ -111,3 +111,47 @@ func TestHTTPRegisterEngineRejectsFailedOpenAIOAuthSignin(t *testing.T) {
 		t.Fatalf("error leaked response body: %q", resp.Error.Message)
 	}
 }
+
+func TestHTTPRegisterEngineSanitizesOAuthURLErrors(t *testing.T) {
+	secret := "state=oauth-state-secret"
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/csrf":
+			_ = json.NewEncoder(w).Encode(map[string]any{"csrfToken": "csrf-1"})
+		case "/api/auth/signin/openai":
+			_ = json.NewEncoder(w).Encode(map[string]any{"url": "http://[::1?" + secret})
+		default:
+			t.Fatalf("unexpected request to %s", r.URL.Path)
+		}
+	}))
+	defer openaiSrv.Close()
+
+	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL})
+	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
+		Email:   "user@example.com",
+		Options: model.RegisterOptions{TimeoutSeconds: 2},
+	})
+	assertSanitizedFailure(t, resp, "signin_openai", secret)
+}
+
+func TestHTTPRegisterEngineSanitizesProxyURLErrors(t *testing.T) {
+	secret := "proxy-password"
+	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: "http://127.0.0.1:1", ChatGPTBaseURL: "http://127.0.0.1:1"})
+	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
+		Email:    "user@example.com",
+		ProxyURL: "http://proxy-user:" + secret + "@[::1",
+		Options:  model.RegisterOptions{TimeoutSeconds: 2},
+	})
+	assertSanitizedFailure(t, resp, "http_client", secret)
+}
+
+func assertSanitizedFailure(t *testing.T, resp model.RegisterResponse, step, secret string) {
+	t.Helper()
+	if resp.Status != "register_failed" || resp.Error == nil || resp.Error.Code != "network_error" || resp.Error.Step != step {
+		t.Fatalf("response=%#v", resp)
+	}
+	raw, _ := json.Marshal(resp)
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("response leaked secret %q: %s", secret, raw)
+	}
+}

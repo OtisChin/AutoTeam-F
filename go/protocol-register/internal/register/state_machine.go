@@ -73,7 +73,7 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 	return model.RegisterResponse{Success: true, Status: "success", Email: req.Email, SessionData: sessionData, Events: progress.Events()}
 }
 
-func fail(email, status, message, step string, retryable bool, events []model.Event) model.RegisterResponse {
+func fail(email, status, _ string, step string, retryable bool, events []model.Event) model.RegisterResponse {
 	code := status
 	if status == "network_error" {
 		status = "register_failed"
@@ -81,8 +81,6 @@ func fail(email, status, message, step string, retryable bool, events []model.Ev
 	if status == "phone_blocked" {
 		code = "phone_required"
 	}
-	if message == "" {
-		message = fmt.Sprintf("%s at %s", status, step)
-	}
+	message := fmt.Sprintf("%s at %s", status, step)
 	return model.RegisterResponse{Success: false, Status: status, Email: email, Error: &model.ErrorInfo{Code: code, Message: message, Retryable: retryable, Step: step}, Events: events}
 }
