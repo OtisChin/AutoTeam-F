@@ -7,9 +7,12 @@ import (
 	"strconv"
 
 	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/register"
 	"autoteam-f/protocol-register/internal/server"
 )
 
+// notImplementedEngine remains for compatibility with the command package's
+// historical response-contract test. The daemon uses HTTPRegisterEngine.
 type notImplementedEngine struct{}
 
 func (notImplementedEngine) Register(_ *http.Request, req model.RegisterRequest) model.RegisterResponse {
@@ -27,7 +30,8 @@ func main() {
 			maxConcurrency = parsed
 		}
 	}
-	srv := server.New(addr, maxConcurrency, notImplementedEngine{})
+	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{})
+	srv := server.New(addr, maxConcurrency, engine)
 	log.Printf("protocol-registerd listening on %s max_concurrency=%d", addr, maxConcurrency)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
