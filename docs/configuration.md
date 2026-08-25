@@ -157,3 +157,17 @@ RECONCILE_KICK_GHOST=true
 | `WHATSAPP_*`, `ANDROID_ADB_PATH` | 从 Android/ADB 读取 WhatsApp OTP |
 
 这些配置通常包含服务商 token、手机号池、登录态或钱包数据，必须只保存在本地 `.env` 或 `data/.env`，不要提交到 Git。
+
+## Go protocol registration service
+
+`PROTOCOL_REGISTER_ENGINE=python` keeps the legacy Python protocol path. Set `PROTOCOL_REGISTER_ENGINE=go` to route `register_mode=protocol` through the local `protocol-registerd` service.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `GO_PROTOCOL_REGISTER_URL` | `http://127.0.0.1:18787` | Local service endpoint |
+| `GO_PROTOCOL_REGISTER_AUTO_START` | `1` | Python may start the local binary |
+| `GO_PROTOCOL_REGISTER_BIN` | `bin/protocol-registerd.exe` | Windows binary path |
+| `GO_PROTOCOL_MAX_CONCURRENCY` | `50` | Maximum inflight Go registration tasks |
+| `GO_PROTOCOL_FALLBACK_PYTHON` | `1` | Use Python path when Go service is unavailable |
+| `GO_PROTOCOL_TRACE` | `0` | Include non-secret trace events |
+| `GO_PROTOCOL_IMPERSONATE` | `chrome136` | Header/fingerprint label |
