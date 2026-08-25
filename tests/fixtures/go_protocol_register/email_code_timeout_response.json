@@ -1,0 +1,12 @@
+{
+  "success": false,
+  "status": "email_code_timeout",
+  "email": "user@example.com",
+  "error": {
+    "code": "email_code_timeout",
+    "message": "email OTP not received within timeout",
+    "retryable": false,
+    "step": "email_otp"
+  },
+  "events": []
+}

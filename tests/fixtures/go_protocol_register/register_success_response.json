@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "status": "success",
+  "email": "user@example.com",
+  "session_data": {
+    "email": "user@example.com",
+    "accessToken": "access-token-1",
+    "sessionToken": "session-token-1",
+    "cookies": [],
+    "raw": {"source": "go_protocol_register"}
+  },
+  "events": [{"stage": "otp_verified", "message": "email OTP verified"}]
+}

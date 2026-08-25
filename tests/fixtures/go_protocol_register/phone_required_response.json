@@ -1,0 +1,12 @@
+{
+  "success": false,
+  "status": "phone_blocked",
+  "email": "user@example.com",
+  "error": {
+    "code": "phone_required",
+    "message": "OpenAI requested phone verification",
+    "retryable": false,
+    "step": "create_account"
+  },
+  "events": [{"stage": "phone_required", "message": "phone verification required"}]
+}
