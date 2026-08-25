@@ -124,8 +124,7 @@ func (c *Client) doJSON(ctx context.Context, method, url string, payload any, ou
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s: HTTP %d %s", method, url, resp.StatusCode, string(raw))
+		return fmt.Errorf("%s %s: HTTP %d", method, req.URL.Path, resp.StatusCode)
 	}
 	if out == nil {
 		return nil

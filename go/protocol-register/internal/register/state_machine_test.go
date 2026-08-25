@@ -62,7 +62,7 @@ func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
 
 func TestHTTPRegisterEngineNormalizesNetworkFailureStatus(t *testing.T) {
 	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		http.Error(w, "password=Password123$ access_token=access-secret otp=https://mail.example/otp-secret", http.StatusBadGateway)
 	}))
 	defer openaiSrv.Close()
 
@@ -73,6 +73,11 @@ func TestHTTPRegisterEngineNormalizesNetworkFailureStatus(t *testing.T) {
 	})
 	if resp.Status != "register_failed" || resp.Error == nil || resp.Error.Code != "network_error" {
 		t.Fatalf("response=%#v", resp)
+	}
+	for _, secret := range []string{"Password123$", "access-secret", "https://mail.example/otp-secret"} {
+		if strings.Contains(resp.Error.Message, secret) {
+			t.Fatalf("error leaked upstream secret %q: %q", secret, resp.Error.Message)
+		}
 	}
 }
 
