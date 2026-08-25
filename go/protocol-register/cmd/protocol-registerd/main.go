@@ -13,7 +13,7 @@ import (
 type notImplementedEngine struct{}
 
 func (notImplementedEngine) Register(_ *http.Request, req model.RegisterRequest) model.RegisterResponse {
-	return model.RegisterResponse{Success: false, Status: "not_implemented", Email: req.Email, Error: &model.ErrorInfo{Code: "not_implemented", Message: "registration engine not enabled", Step: "register"}, Events: []model.Event{}}
+	return model.RegisterResponse{Success: false, Status: "register_failed", Email: req.Email, Error: &model.ErrorInfo{Code: "not_implemented", Message: "registration engine not enabled", Step: "register"}, Events: []model.Event{}}
 }
 
 func main() {

@@ -7,16 +7,21 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"autoteam-f/protocol-register/internal/model"
 	"autoteam-f/protocol-register/internal/register"
 	"autoteam-f/protocol-register/internal/server"
 )
 
-type fakeEngine struct{ release <-chan struct{} }
+type fakeEngine struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
 
 func (e fakeEngine) Register(_ *http.Request, req model.RegisterRequest) model.RegisterResponse {
+	if e.entered != nil {
+		e.entered <- struct{}{}
+	}
 	if e.release != nil {
 		<-e.release
 	}
@@ -44,7 +49,8 @@ func TestHealthz(t *testing.T) {
 
 func TestRegisterRouteRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
 	release := make(chan struct{})
-	h := server.NewHandler(1, fakeEngine{release: release})
+	entered := make(chan struct{})
+	h := server.NewHandler(1, fakeEngine{entered: entered, release: release})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -53,7 +59,7 @@ func TestRegisterRouteRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	<-entered
 	req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader(`{"email":"two@example.com"}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -61,5 +67,27 @@ func TestRegisterRouteRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
 	wg.Wait()
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body model.RegisterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "register_failed" || body.Error == nil || body.Error.Code != "busy" {
+		t.Fatalf("body=%#v", body)
+	}
+}
+
+func TestRegisterRouteUsesExceptionStatusForBadRequest(t *testing.T) {
+	h := server.NewHandler(1, fakeEngine{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader("{"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var body model.RegisterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "exception" || body.Error == nil || body.Error.Code != "bad_request" {
+		t.Fatalf("body=%#v", body)
 	}
 }

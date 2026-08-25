@@ -28,7 +28,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/register":
 		var req model.RegisterRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, model.RegisterResponse{Success: false, Status: "bad_request", Error: &model.ErrorInfo{Code: "bad_request", Message: err.Error(), Step: "decode"}, Events: []model.Event{}})
+			writeJSON(w, http.StatusBadRequest, model.RegisterResponse{Success: false, Status: "exception", Error: &model.ErrorInfo{Code: "bad_request", Message: err.Error(), Step: "decode"}, Events: []model.Event{}})
 			return
 		}
 		select {
