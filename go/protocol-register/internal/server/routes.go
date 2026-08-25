@@ -38,10 +38,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusTooManyRequests, register.BusyResponse(req.Email))
 			return
 		}
-		writeJSON(w, http.StatusOK, h.engine.Register(r, req))
+		writeJSON(w, http.StatusOK, normalizeRegisterResponse(h.engine.Register(r, req)))
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
 	}
+}
+
+var allowedFailureStatuses = map[string]struct{}{
+	"email_code_timeout":  {},
+	"phone_blocked":       {},
+	"account_deactivated": {},
+	"register_failed":     {},
+	"exception":           {},
+}
+
+func normalizeRegisterResponse(response model.RegisterResponse) model.RegisterResponse {
+	if response.Success {
+		response.Status = "success"
+		return response
+	}
+	if _, ok := allowedFailureStatuses[response.Status]; ok {
+		return response
+	}
+
+	originalStatus := response.Status
+	response.Status = "register_failed"
+	if response.Error == nil {
+		response.Error = &model.ErrorInfo{}
+	}
+	if response.Error.Code == "" {
+		response.Error.Code = originalStatus
+	}
+	return response
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -91,3 +91,57 @@ func TestRegisterRouteUsesExceptionStatusForBadRequest(t *testing.T) {
 		t.Fatalf("body=%#v", body)
 	}
 }
+
+func TestRegisterRouteNormalizesInvalidEngineStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		success    bool
+		status     string
+		errorCode  string
+		expectStat string
+		expectCode string
+	}{
+		{name: "failed response", status: "engine_internal", errorCode: "", expectStat: "register_failed", expectCode: "engine_internal"},
+		{name: "failed response preserves error code", status: "engine_internal", errorCode: "provider_timeout", expectStat: "register_failed", expectCode: "provider_timeout"},
+		{name: "successful response", success: true, status: "engine_ok", errorCode: "", expectStat: "success", expectCode: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := server.NewHandler(1, fakeEngineResponse{response: model.RegisterResponse{
+				Success: tt.success,
+				Status:  tt.status,
+				Error:   &model.ErrorInfo{Code: tt.errorCode},
+				Events:  []model.Event{},
+			}})
+			req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader(`{"email":"user@example.com"}`))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			var body model.RegisterResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Status != tt.expectStat {
+				t.Fatalf("status=%q, want %q", body.Status, tt.expectStat)
+			}
+			if tt.expectCode == "" {
+				if body.Error != nil && body.Error.Code != "" {
+					t.Fatalf("error.code=%q, want empty", body.Error.Code)
+				}
+				return
+			}
+			if body.Error == nil || body.Error.Code != tt.expectCode {
+				t.Fatalf("error=%#v, want code %q", body.Error, tt.expectCode)
+			}
+		})
+	}
+}
+
+type fakeEngineResponse struct {
+	response model.RegisterResponse
+}
+
+func (e fakeEngineResponse) Register(_ *http.Request, _ model.RegisterRequest) model.RegisterResponse {
+	return e.response
+}

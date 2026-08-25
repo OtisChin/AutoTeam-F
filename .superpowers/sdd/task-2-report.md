@@ -40,3 +40,16 @@ commit:
 
 concerns:
 - 未运行 `go test -race ./...`；此前环境缺少 gcc/cgo，覆盖测试按要求已完成。
+
+## Task 2 第二轮复审修复
+
+修复内容:
+- 在 Go HTTP server 边界规范化 engine 返回的 register response status：成功响应统一为 `success`，非法失败 status 统一为 `register_failed`。
+- 非法失败 status 在 `error.code` 为空时保留原值；已有 `error.code` 保持不变。
+- 新增 fake engine 路由测试，覆盖非法成功/失败 status 及 error code 保留行为。
+
+测试命令:
+- `cd go/protocol-register; go test -count=1 ./...`
+
+提交:
+- `fix(protocol): normalize Go register response statuses`
