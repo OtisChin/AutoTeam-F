@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +73,36 @@ func TestHTTPRegisterEngineNormalizesNetworkFailureStatus(t *testing.T) {
 	})
 	if resp.Status != "register_failed" || resp.Error == nil || resp.Error.Code != "network_error" {
 		t.Fatalf("response=%#v", resp)
+	}
+}
+
+func TestHTTPRegisterEngineRejectsFailedOpenAIOAuthSignin(t *testing.T) {
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/csrf":
+			_ = json.NewEncoder(w).Encode(map[string]any{"csrfToken": "csrf-1"})
+		case "/api/auth/signin/openai":
+			_ = json.NewEncoder(w).Encode(map[string]any{"url": "http://" + r.Host + "/oauth/start"})
+		case "/oauth/start":
+			http.Error(w, "oauth provider failure", http.StatusBadGateway)
+		default:
+			t.Fatalf("unexpected request to %s", r.URL.Path)
+		}
+	}))
+	defer openaiSrv.Close()
+
+	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL})
+	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
+		Email:   "user@example.com",
+		Options: model.RegisterOptions{TimeoutSeconds: 2},
+	})
+	if resp.Status != "register_failed" || resp.Error == nil || resp.Error.Code != "network_error" {
+		t.Fatalf("response=%#v", resp)
+	}
+	if resp.Error.Step != "signin_openai" {
+		t.Fatalf("error=%#v", resp.Error)
+	}
+	if strings.Contains(resp.Error.Message, "oauth provider failure") {
+		t.Fatalf("error leaked response body: %q", resp.Error.Message)
 	}
 }

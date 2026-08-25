@@ -57,7 +57,10 @@ func (c *Client) SigninOpenAI(ctx context.Context, csrf string) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("oauth signin request failed: HTTP %d", resp.StatusCode)
+	}
 	return nil
 }
 
