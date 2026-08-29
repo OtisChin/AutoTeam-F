@@ -48,6 +48,16 @@ def test_client_health_raises_unavailable_for_connection_error():
         client.health()
 
 
+def test_client_health_raises_unavailable_when_body_is_not_ok(monkeypatch):
+    monkeypatch.setattr(
+        "autotoken.integrations.go_protocol_register_client._json_request",
+        lambda *args, **kwargs: {"ok": False},
+    )
+    client = GoProtocolRegisterClient(timeout=1)
+    with pytest.raises(GoProtocolRegisterUnavailable):
+        client.health()
+
+
 def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tmp_path):
     binary = tmp_path / "protocol-registerd.exe"
     binary.write_bytes(b"fixture")

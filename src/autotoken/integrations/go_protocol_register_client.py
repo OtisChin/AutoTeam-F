@@ -58,8 +58,12 @@ class GoProtocolRegisterClient:
 
     def health(self) -> dict[str, Any]:
         url = f"{self.base_url}/healthz"
+        def _ensure_healthy(body: dict[str, Any]) -> dict[str, Any]:
+            if not bool(body.get("ok")):
+                raise GoProtocolRegisterUnavailable("protocol-registerd health check failed")
+            return body
         try:
-            return _json_request(url, timeout=min(self.timeout, 5.0))
+            return _ensure_healthy(_json_request(url, timeout=min(self.timeout, 5.0)))
         except GoProtocolRegisterUnavailable:
             if self._started or str(os.environ.get("GO_PROTOCOL_REGISTER_AUTO_START", "1") or "").strip().lower() not in {
                 "1",
@@ -72,7 +76,7 @@ class GoProtocolRegisterClient:
             deadline = time.monotonic() + min(10.0, max(1.0, self.timeout))
             while True:
                 try:
-                    return _json_request(url, timeout=min(self.timeout, 1.0))
+                    return _ensure_healthy(_json_request(url, timeout=min(self.timeout, 1.0)))
                 except GoProtocolRegisterUnavailable:
                     if time.monotonic() >= deadline:
                         raise

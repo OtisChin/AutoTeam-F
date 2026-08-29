@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import random
+import re
 import string
 import sys
 import threading
@@ -53,6 +54,7 @@ from autotoken.auth.codex_auth import (
     refresh_main_auth_file,
     save_auth_file,
 )
+from autotoken.core.redaction import safe_error_summary
 from autotoken.core.identity import random_age, random_birthday, random_full_name, random_password
 from autotoken.core.normalization import normalized_email as _core_normalized_email
 from autotoken.core.textio import write_text
@@ -362,6 +364,21 @@ def _mark_outlook_email_registered(
     email: str, mail_client=None, *, mail_provider: str | None = None, source: str = ""
 ) -> None:
     _sync_provider_registered_email(email, mail_client, mail_provider=mail_provider, source=source)
+
+
+def _sanitize_go_failure_reason(reason: object) -> str:
+    text = safe_error_summary(reason, limit=240)
+    text = re.sub(
+        r"(?i)\b(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)\b\s*[:=]\s*[^,\s;]+",
+        r"\1=<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)\b\s+[^,\s;]+",
+        r"\1 <redacted>",
+        text,
+    )
+    return text
 
 
 def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
@@ -4468,7 +4485,7 @@ def create_account_direct(
                 go_status = str(session_data.get("status") or "").strip().lower()
                 if go_status:
                     last_failure_status = go_status
-                    last_failure_reason = str(
+                    last_failure_reason = _sanitize_go_failure_reason(
                         session_data.get("reason")
                         or (session_data.get("error") or {}).get("message")
                         or last_failure_reason
