@@ -37,6 +37,10 @@ def user_agent_for_impersonate(profile: str) -> str:
 
 # 通用 UA
 USER_AGENT = user_agent_for_impersonate("chrome136")
+_STATE_CHANGING_GET_PREFIXES = (
+    "https://auth.openai.com/api/accounts/email-otp/send",
+    "https://auth.openai.com/api/accounts/phone-otp/send",
+)
 
 
 def build_safe_retry_policy() -> Retry:
@@ -77,6 +81,9 @@ def create_http_session(proxy: str | None = None, impersonate: str = "chrome136"
         adapter = HTTPAdapter(max_retries=build_safe_retry_policy())
         session.mount("https://", adapter)
         session.mount("http://", adapter)
+        mutation_adapter = HTTPAdapter(max_retries=0)
+        for prefix in _STATE_CHANGING_GET_PREFIXES:
+            session.mount(prefix, mutation_adapter)
         if proxy:
             session.proxies = {"https": proxy, "http": proxy}
         session.headers["User-Agent"] = user_agent_for_impersonate(impersonate)

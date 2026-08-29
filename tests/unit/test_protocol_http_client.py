@@ -20,3 +20,17 @@ def test_requests_fallback_uses_configured_profile_user_agent(monkeypatch):
         assert "Chrome/141.0.0.0" in session.headers["User-Agent"]
     finally:
         session.close()
+
+
+def test_requests_fallback_disables_retries_for_get_mutations(monkeypatch):
+    monkeypatch.setattr(http_client, "_HAS_CFFI", False)
+    session = http_client.create_http_session()
+
+    try:
+        for url in (
+            "https://auth.openai.com/api/accounts/email-otp/send",
+            "https://auth.openai.com/api/accounts/phone-otp/send",
+        ):
+            assert session.get_adapter(url).max_retries.total == 0
+    finally:
+        session.close()

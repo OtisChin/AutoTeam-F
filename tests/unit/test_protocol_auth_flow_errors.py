@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -23,6 +24,116 @@ def _jwt(payload: dict) -> str:
 
 def _b64url_json(payload: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _flow_with_recording_otp_session(statuses):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.text = ""
+
+    class RecordingSession:
+        def __init__(self):
+            self.paths = []
+            self.cookies = {}
+            self._statuses = list(statuses)
+
+        def _request(self, url):
+            self.paths.append(urlparse(url).path)
+            status = self._statuses.pop(0) if self._statuses else 500
+            return FakeResponse(status)
+
+        def get(self, url, **_kwargs):
+            return self._request(url)
+
+        def post(self, url, **_kwargs):
+            return self._request(url)
+
+        def request_count(self, path):
+            return self.paths.count(path)
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.session = RecordingSession()
+    flow._last_sentinel_token = ""
+    return auth_flow, flow
+
+
+def test_email_otp_initial_delivery_is_attempted_once():
+    auth_flow, flow = _flow_with_recording_otp_session([200, 200])
+
+    flow.send_otp()
+    with pytest.raises(auth_flow.OtpDeliveryBudgetExceeded):
+        flow.send_otp()
+
+    assert flow.session.request_count("/api/accounts/email-otp/send") == 1
+
+
+def test_email_otp_delivery_timeout_consumes_initial_budget():
+    auth_flow, flow = _flow_with_recording_otp_session([])
+
+    def fail_after_dispatch(url, **_kwargs):
+        flow.session.paths.append(urlparse(url).path)
+        raise TimeoutError("timeout")
+
+    flow.session.get = fail_after_dispatch
+
+    with pytest.raises(TimeoutError):
+        flow.send_otp()
+    with pytest.raises(auth_flow.OtpDeliveryBudgetExceeded):
+        flow.send_otp()
+
+    assert flow.session.request_count("/api/accounts/email-otp/send") == 1
+
+
+def test_kickoff_does_not_cascade_to_other_otp_endpoints():
+    _auth_flow, flow = _flow_with_recording_otp_session([500, 500, 500, 500])
+
+    assert flow.kickoff_otp_delivery("register_password_success") is False
+
+    assert flow.session.paths == ["/api/accounts/email-otp/send"]
+
+
+def test_existing_otp_kickoff_does_not_cascade_after_resend_failure():
+    _auth_flow, flow = _flow_with_recording_otp_session([500, 500, 500])
+
+    assert flow.kickoff_otp_delivery("existing_forced_resend") is False
+
+    assert flow.session.paths == ["/api/accounts/email-otp/resend"]
+
+
+def test_email_otp_resend_is_attempted_once():
+    _auth_flow, flow = _flow_with_recording_otp_session([200, 200])
+
+    assert flow.resend_otp() is True
+    assert flow.resend_otp() is False
+
+    assert flow.session.request_count("/api/accounts/email-otp/resend") == 1
+
+
+def test_passwordless_and_standard_send_share_initial_delivery_budget():
+    auth_flow, flow = _flow_with_recording_otp_session([200, 200])
+
+    assert flow.send_passwordless_otp() is True
+    with pytest.raises(auth_flow.OtpDeliveryBudgetExceeded):
+        flow.send_otp()
+
+    assert len(flow.session.paths) == 1
+
+
+def test_required_otp_delivery_never_falls_back_to_another_endpoint():
+    auth_flow, flow = _flow_with_recording_otp_session([])
+    flow.kickoff_otp_delivery = lambda _mode="": False
+    flow.send_otp = lambda: (_ for _ in ()).throw(
+        AssertionError("a second OTP endpoint must not be called")
+    )
+
+    with pytest.raises(auth_flow.OtpDeliveryBudgetExceeded):
+        flow._require_otp_delivery("existing_timeout_retry")
 
 
 def test_auth_flow_uses_one_configured_profile(monkeypatch):
@@ -284,6 +395,60 @@ def test_email_otp_verify_retries_three_attempts_after_wrong_code(monkeypatch):
     assert len(wait_calls) == 2
     assert all(call["exclude_used"] is True for call in wait_calls)
     assert dumps == ["post_verify_otp_protocol_retry_2"]
+
+
+def test_email_otp_verify_defaults_to_two_distinct_codes(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    monkeypatch.delenv("OPENAI_EMAIL_OTP_VERIFY_MAX_ATTEMPTS", raising=False)
+    verify_codes = []
+
+    def fake_verify(code):
+        verify_codes.append(code)
+        raise RuntimeError("OTP 验证失败: 401: wrong_email_otp_code")
+
+    flow.verify_otp = fake_verify
+    flow.kickoff_otp_delivery = lambda _mode="": True
+    flow._wait_for_email_otp = lambda *_args, **_kwargs: "retry-code"
+
+    with pytest.raises(RuntimeError, match="wrong_email_otp_code"):
+        flow._verify_email_otp_with_retries(
+            object(),
+            "user@example.com",
+            "initial-code",
+            otp_timeout=60,
+            retry_mode="protocol_verify_retry",
+            dump_stage="post_verify_otp_protocol",
+        )
+
+    assert verify_codes == ["initial-code", "retry-code"]
+
+
+def test_email_otp_wait_rejects_a_previously_used_code():
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeMailProvider:
+        def wait_for_otp(self, _email, **_kwargs):
+            return "123456"
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._used_email_otp_codes.add("123456")
+
+    with pytest.raises(RuntimeError, match="已使用"):
+        flow._wait_for_email_otp(
+            FakeMailProvider(),
+            "user@example.com",
+            timeout=60,
+            issued_after=0,
+            exclude_used=True,
+        )
 
 
 def test_protocol_mail_adapter_waits_before_first_email_otp_query(monkeypatch):

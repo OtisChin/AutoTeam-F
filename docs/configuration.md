@@ -117,6 +117,18 @@ OAUTH_CHROME_CDP_URL=http://127.0.0.1:9222
 
 `OAUTH_BROWSER_MODE=protocol` 是默认模式，优先使用纯协议 OAuth。需要人工浏览器协作时，可以使用 Chrome CDP 相关配置。
 
+## 协议注册邮箱 OTP 预算
+
+```env
+OPENAI_EMAIL_OTP_VERIFY_MAX_ATTEMPTS=2
+OPENAI_EMAIL_OTP_MAX_RESENDS=1
+```
+
+每次协议注册尝试只允许一次初始邮箱 OTP mutation；`email-otp/send` 与
+`passwordless/send-otp` 共用该额度。默认最多再调用一次
+`email-otp/resend`，并最多校验两个不同的新验证码。网络 timeout 发生在发码
+调用后时同样消耗额度，系统不会改用另一个发码端点级联重试。
+
 ## Sentinel SDK 自动跟随
 
 协议注册默认从 OpenAI Sentinel 的官方运行时 frame 页面
