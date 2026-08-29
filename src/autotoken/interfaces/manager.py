@@ -358,6 +358,31 @@ def _sync_provider_registered_email(
         return
 
 
+def _mark_provider_unavailable_email(
+    email: str,
+    mail_client=None,
+    *,
+    mail_provider: str | None = None,
+    source: str = "",
+) -> None:
+    provider = (
+        (mail_provider or _mail_client_provider_name(mail_client)).strip().lower()
+        if (mail_provider or mail_client)
+        else ""
+    )
+    try:
+        if provider == "icloud":
+            from autotoken.storage.icloud_pool import mark_unavailable_email
+        elif provider in {"generic-api", "generic_api", "genericapi"}:
+            from autotoken.storage.generic_api_pool import mark_unavailable_email
+        else:
+            return
+
+        mark_unavailable_email(email, source=source or "register_failed")
+    except Exception as exc:
+        logger.debug("[%s] 标记不可复用邮箱失败: %s", provider or "mail", exc, exc_info=True)
+
+
 def _mark_outlook_email_registered(
     email: str, mail_client=None, *, mail_provider: str | None = None, source: str = ""
 ) -> None:
@@ -2746,6 +2771,11 @@ _DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
     "계정 생성 끝내기",
     "계정 만들기",
 )
+_ABOUT_YOU_AGE_SELECTORS = (
+    'input[name="age"], input[placeholder*="年龄"], input[placeholder*="Age"], '
+    'input[placeholder*="연령"], input[aria-label*="연령"], '
+    'input[placeholder*="나이"], input[aria-label*="나이"]'
+)
 
 
 def _safe_invite_screenshot(page, name):
@@ -2878,6 +2908,24 @@ def _visible_editable_locators(locator):
     except Exception:
         return []
     return visible
+
+
+def _direct_about_you_submit_wait_seconds() -> int:
+    try:
+        value = int(os.environ.get("REGISTER_DIRECT_ABOUT_YOU_SUBMIT_WAIT_SECONDS", "12") or 12)
+    except Exception:
+        value = 12
+    return max(3, min(45, value))
+
+
+def _find_about_you_age_input(page, *, timeout=800):
+    try:
+        age_input = page.locator(_ABOUT_YOU_AGE_SELECTORS).first
+        if age_input.is_visible(timeout=timeout) and age_input.is_editable(timeout=500):
+            return age_input
+    except Exception:
+        return None
+    return None
 
 
 def _fill_direct_verification_code(page, verification_code: str) -> bool:
@@ -3347,15 +3395,25 @@ def _complete_direct_about_you(page):
         except Exception:
             name_input = None
 
-        birthday_text_filled = _fill_about_you_birthday_text_input(page, desired=identity_bday)
+        age_filled = False
+        age_input = _find_about_you_age_input(page, timeout=700)
+        if age_input:
+            try:
+                _humanized_fill(page, age_input, identity_age, field_name="about_you_age")
+                age_filled = True
+                logger.info("[直接注册] 填入年龄: %s", identity_age)
+            except Exception:
+                age_filled = False
+
+        birthday_text_filled = False if age_filled else _fill_about_you_birthday_text_input(page, desired=identity_bday)
         spinbuttons = []
-        if not birthday_text_filled:
+        if not age_filled and not birthday_text_filled:
             try:
                 spinbuttons = page.locator('[role="spinbutton"]').all()
             except Exception:
                 spinbuttons = []
 
-        if birthday_text_filled:
+        if age_filled or birthday_text_filled:
             pass
         elif len(spinbuttons) >= 3:
             filled = _fill_about_you_birthday_by_meta(page, desired=identity_bday)
@@ -3383,15 +3441,13 @@ def _complete_direct_about_you(page):
                 except Exception as exc:
                     logger.warning("[直接注册] 生日字段填写失败（第 %d 次）: %s", attempt, exc)
         else:
-            try:
-                age_input = page.locator(
-                    'input[name="age"], input[placeholder*="年龄"], input[placeholder*="Age"], input[placeholder*="연령"], input[aria-label*="연령"], input[placeholder*="나이"], input[aria-label*="나이"]'
-                ).first
-                if age_input.is_visible(timeout=2000) and age_input.is_editable(timeout=500):
+            age_input = _find_about_you_age_input(page, timeout=1200)
+            if age_input:
+                try:
                     _humanized_fill(page, age_input, identity_age, field_name="about_you_age")
                     logger.info("[直接注册] 填入年龄: %s", identity_age)
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
         _accept_direct_about_you_required_consents(page)
 
@@ -3445,10 +3501,9 @@ def _complete_direct_about_you(page):
             except Exception:
                 pass
 
-        # 新版 auth.openai.com about-you 提交后经常要 20-35s 才从 profile
-        # 跳到 chatgpt.com。这里必须等待“离开 profile”，不能把 profile 本身
-        # 当成完成等待的结果，否则会立即返回并重复提交。
-        next_step = _wait_for_direct_step_change(page, "profile", timeout=35)
+        # 提交后快速轮询；仍停在 profile 时尽快重试，避免每轮固定等 35s。
+        # 少数慢跳转可用 REGISTER_DIRECT_ABOUT_YOU_SUBMIT_WAIT_SECONDS 调大。
+        next_step = _wait_for_direct_step_change(page, "profile", timeout=_direct_about_you_submit_wait_seconds())
         logger.info("[直接注册] 提交资料后状态: %s | URL: %s", next_step, page.url)
 
         # 提交 about-you 后最容易撞 add-phone：这里直接检测并 raise，让上层放弃账号
@@ -3471,6 +3526,7 @@ def _register_direct_once(
     return_session=False,
     proxy_url=None,
     use_roxybrowser=False,
+    use_cloakbrowser=False,
     enable_totp_mfa=False,
     progress_callback=None,
     out_outcome=None,
@@ -3504,6 +3560,8 @@ def _register_direct_once(
 
         def _safe_close_browser():
             if browser is None:
+                return
+            if use_cloakbrowser and _env_flag("CLOAK_KEEP_BROWSER_OPEN", False):
                 return
             try:
                 browser.close()
@@ -3542,6 +3600,19 @@ def _register_direct_once(
                 roxy_launch.workspace_id,
                 roxy_launch.dir_id,
                 endpoint,
+            )
+        elif use_cloakbrowser:
+            from autotoken.integrations.cloakbrowser_runtime import launch_cloakbrowser_context
+
+            cloak_runtime = launch_cloakbrowser_context(proxy_url=proxy_url)
+            stack.callback(lambda: None if _env_flag("CLOAK_KEEP_BROWSER_OPEN", False) else cloak_runtime.close())
+            browser = cloak_runtime.browser
+            context = cloak_runtime.context
+            page = cloak_runtime.page
+            logger.info(
+                "[直接注册] 使用 CloakBrowser 无头模式: proxy=%s options=%s",
+                "enabled" if str(proxy_url or "").strip() else "disabled",
+                cloak_runtime.raw.get("options"),
             )
         else:
             p = stack.enter_context(sync_playwright())
@@ -3584,10 +3655,7 @@ def _register_direct_once(
             return ""
 
         def _finish(success, session_data=None):
-            try:
-                browser.close()
-            except Exception:
-                pass
+            _safe_close_browser()
             if return_session:
                 return success, session_data
             return success
@@ -3882,6 +3950,10 @@ def _register_direct_once(
                 )
                 if provider_name == "outlook":
                     raise DirectRegisterEmailCodeTimeout(f"Outlook 邮箱 {code_timeout}s 内未收到验证码")
+                if provider_name == "icloud":
+                    raise DirectRegisterEmailCodeTimeout(f"iCloud 邮箱 {code_timeout}s 内未收到验证码")
+                if provider_name in {"generic-api", "generic_api", "genericapi"}:
+                    raise DirectRegisterEmailCodeTimeout(f"通用API邮箱 {code_timeout}s 内未收到验证码")
                 return _finish(False)
         elif code_step == "google":
             logger.warning("[直接注册] 验证码步骤误跳转到 Google 登录页")
@@ -3972,6 +4044,7 @@ def create_account_direct(
     registration_flow="standard",
     proxy_url=None,
     use_roxybrowser=False,
+    use_cloakbrowser=False,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
     oauth_phone_sms_max_price=None,
@@ -4016,6 +4089,8 @@ def create_account_direct(
     register_mode = str(register_mode or "browser").strip().lower()
     registration_flow = str(registration_flow or "standard").strip().lower()
     use_protocol_register = register_mode in {"protocol", "http", "api"}
+    use_cloakbrowser = registration_flow == "standard" and bool(use_cloakbrowser or register_mode == "cloak")
+    use_roxybrowser = registration_flow == "standard" and bool(use_roxybrowser) and not use_cloakbrowser
     proxy_url = str(proxy_url or "").strip() or None
     resolved_prefix = _with_random_suffix_prefix(email_prefix)
     account_id = None
@@ -4320,6 +4395,7 @@ def create_account_direct(
                     return_session=not check_team_membership,
                     proxy_url=proxy_url,
                     use_roxybrowser=use_roxybrowser,
+                    use_cloakbrowser=use_cloakbrowser,
                     enable_totp_mfa=enable_totp_mfa,
                     progress_callback=progress_callback,
                     out_outcome=out_outcome,
@@ -4423,6 +4499,7 @@ def create_account_direct(
             success = False
         except DirectRegisterEmailCodeTimeout as exc:
             logger.warning("[直接注册] %s 验证码超时，跳过当前邮箱: %s", email, exc)
+            _mark_provider_unavailable_email(email, mail_client, source="email_code_timeout")
             _discard_email("email_code_timeout")
             record_failure(
                 email,
@@ -4464,15 +4541,18 @@ def create_account_direct(
         if not success and out_outcome is not None:
             last_failure_reason = str(out_outcome.get("reason") or last_failure_reason or "")
         if not success and use_protocol_register and isinstance(session_data, dict):
-            go_status = str(session_data.get("status") or "").strip().lower()
-            if go_status:
-                last_failure_status = go_status
-                last_failure_reason = str(
-                    session_data.get("reason")
-                    or (session_data.get("error") or {}).get("message")
-                    or last_failure_reason
-                    or go_status
-                )
+            raw = session_data.get("raw")
+            raw_source = str(raw.get("source") if isinstance(raw, dict) else "").strip().lower()
+            if raw_source == "go_protocol_register":
+                go_status = str(session_data.get("status") or "").strip().lower()
+                if go_status:
+                    last_failure_status = go_status
+                    last_failure_reason = str(
+                        session_data.get("reason")
+                        or (session_data.get("error") or {}).get("message")
+                        or last_failure_reason
+                        or go_status
+                    )
 
         if success:
             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
@@ -5366,6 +5446,7 @@ def cmd_register_accounts(
     proxy_url=None,
     proxy_pool=None,
     use_roxybrowser=False,
+    use_cloakbrowser=False,
     register_proxy_selector=None,
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
@@ -5431,10 +5512,12 @@ def cmd_register_accounts(
     post_register_oauth = bool(post_register_oauth)
     register_mode = str(register_mode or "browser").strip().lower()
     registration_flow = str(registration_flow or "standard").strip().lower()
-    if register_mode not in {"browser", "protocol", "http", "api"}:
+    if register_mode not in {"browser", "protocol", "http", "api", "cloak"}:
         register_mode = "browser"
     if registration_flow not in {"standard", "phone_cpa"}:
         registration_flow = "standard"
+    use_cloakbrowser = registration_flow == "standard" and bool(use_cloakbrowser or register_mode == "cloak")
+    use_roxybrowser = registration_flow == "standard" and bool(use_roxybrowser) and not use_cloakbrowser
     fixed_proxy_url = str(proxy_url or "").strip()
     proxy_pool_list = [str(item).strip() for item in (proxy_pool or []) if str(item or "").strip()]
     register_proxy_meta = register_proxy_meta or {}
@@ -5492,15 +5575,16 @@ def cmd_register_accounts(
         except Exception:
             max_attempts = 5
         max_attempts = min(max_attempts, pool_size)
-        if use_roxybrowser:
+        if use_roxybrowser or use_cloakbrowser:
             selected_pool_proxy = proxy_pool_list[start]
             if progress_callback:
+                runtime_label = "CloakBrowser" if use_cloakbrowser else "RoxyBrowser"
                 progress_callback(
                     {
                         "stage": "register_proxy_selected",
                         "message": (
                             f"已为第 {job_index + 1}/{total} 个账号使用代理池第 "
-                            f"{start + 1}/{pool_size} 条（RoxyBrowser 跳过 HTTP 预探测）"
+                            f"{start + 1}/{pool_size} 条（{runtime_label} 跳过 HTTP 预探测）"
                         ),
                         "proxy_url_present": True,
                         "proxy_pool_size": pool_size,
@@ -5582,19 +5666,20 @@ def cmd_register_accounts(
             if not selected:
                 last_error = "动态代理 API 未返回可用代理"
                 break
-            if use_roxybrowser:
+            if use_roxybrowser or use_cloakbrowser:
                 if progress_callback:
+                    runtime_label = "CloakBrowser" if use_cloakbrowser else "RoxyBrowser"
                     progress_callback(
                         {
                             "stage": "register_proxy_api_selected",
-                            "message": f"已为第 {job_index + 1}/{total} 个账号获取动态代理（RoxyBrowser 跳过 HTTP 预探测）",
+                            "message": f"已为第 {job_index + 1}/{total} 个账号获取动态代理（{runtime_label} 跳过 HTTP 预探测）",
                             "proxy_api_provider": register_proxy_meta.get("proxy_api_provider") or "",
                             "proxy_api_url_present": bool(register_proxy_meta.get("proxy_api_url_present")),
                             "email_index": job_index + 1,
                             "proxy_attempt": proxy_attempt,
                             "max_proxy_attempts": max_attempts,
                             "probe_skipped": True,
-                            "probe_skip_reason": "roxybrowser",
+                            "probe_skip_reason": "cloakbrowser" if use_cloakbrowser else "roxybrowser",
                         }
                     )
                 return selected
@@ -5708,6 +5793,7 @@ def cmd_register_accounts(
                     registration_flow=registration_flow,
                     proxy_url=selected_proxy_url,
                     use_roxybrowser=use_roxybrowser,
+                    use_cloakbrowser=use_cloakbrowser,
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",

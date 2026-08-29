@@ -98,7 +98,14 @@ def test_protocol_register_preserves_go_failure_status(monkeypatch, status, chec
     monkeypatch.setattr(manager.time, "sleep", lambda *_args: None)
     monkeypatch.setattr(
         "autotoken.auth.protocol_register.register_once",
-        lambda *args, **kwargs: (False, {"status": status, "reason": "Go registration failed"}),
+        lambda *args, **kwargs: (
+            False,
+            {
+                "status": status,
+                "reason": "Go registration failed",
+                "raw": {"source": "go_protocol_register"},
+            },
+        ),
     )
 
     result = manager.create_account_direct(
@@ -114,6 +121,41 @@ def test_protocol_register_preserves_go_failure_status(monkeypatch, status, chec
     assert result is None
     assert outcome["status"] == status
     assert outcome["reason"] == "Go registration failed"
+
+
+def test_protocol_register_keeps_python_failure_status(monkeypatch):
+    outcome = {}
+
+    class FakeMailClient:
+        provider_name = "outlook"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mailbox-1", "user@example.com"
+
+        def delete_account(self, account_id):
+            return {"code": 0}
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *args, **kwargs: {})
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(
+        "autotoken.auth.protocol_register.register_once",
+        lambda *args, **kwargs: (False, {"status": 0, "reason": "legacy python failure", "raw": "no session"}),
+    )
+
+    result = manager.create_account_direct(
+        FakeMailClient(),
+        password="pw",
+        check_team_membership=False,
+        register_mode="protocol",
+        post_register_oauth=False,
+        retry_attempts=1,
+        out_outcome=outcome,
+    )
+
+    assert result is None
+    assert outcome["status"] == "register_failed"
 
 
 class FakeContext:
