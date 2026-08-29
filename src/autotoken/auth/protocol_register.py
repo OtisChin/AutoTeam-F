@@ -1045,6 +1045,18 @@ def _register_once_go(mail_client, *, email: str, password: str, account_id=None
     return go_response_to_protocol_result(response)
 
 
+def _go_protocol_supported_request(
+    *,
+    oauth_phone_sms_provider: str | None = None,
+    oauth_phone_sms_country: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
+) -> bool:
+    return not any(
+        str(value or "").strip()
+        for value in (oauth_phone_sms_provider, oauth_phone_sms_country, oauth_oasis_sms_cdks)
+    )
+
+
 def register_once(
     mail_client,
     *,
@@ -1056,7 +1068,11 @@ def register_once(
     oauth_phone_sms_country: str | None = None,
     oauth_oasis_sms_cdks: str | None = None,
 ) -> tuple[bool, dict]:
-    if _go_protocol_enabled():
+    if _go_protocol_enabled() and _go_protocol_supported_request(
+        oauth_phone_sms_provider=oauth_phone_sms_provider,
+        oauth_phone_sms_country=oauth_phone_sms_country,
+        oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
+    ):
         try:
             return _register_once_go(mail_client, email=email, password=password, account_id=account_id, proxy=proxy)
         except Exception as exc:

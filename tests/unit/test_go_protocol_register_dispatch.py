@@ -121,6 +121,28 @@ def test_register_once_go_fallback_uses_python_path(monkeypatch):
     assert payload["data"]["accessToken"] == "python-access"
 
 
+def test_register_once_go_skips_phone_sms_flows(monkeypatch):
+    calls = []
+    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
+    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "0")
+    monkeypatch.setattr(protocol_register, "_register_once_go", lambda *args, **kwargs: calls.append("go") or (_ for _ in ()).throw(
+        AssertionError("Go path must not run for phone/SMS protocol flows")
+    ))
+    monkeypatch.setattr(protocol_register, "_load_protocol_classes", lambda: (_FakeAuthFlow, _FakeConfig))
+    monkeypatch.setattr(protocol_register, "_attach_flow_stage_logs", lambda flow: calls.append("python"))
+    ok, payload = protocol_register.register_once(
+        FakeMailClient(),
+        email="user@example.com",
+        password="pw",
+        oauth_phone_sms_provider="phone_pool",
+        oauth_phone_sms_country="US",
+        oauth_oasis_sms_cdks="cdk-1",
+    )
+    assert ok is True
+    assert calls == ["python"]
+    assert payload["data"]["accessToken"] == "python-access"
+
+
 class _FakeConfig:
     proxy = None
 
