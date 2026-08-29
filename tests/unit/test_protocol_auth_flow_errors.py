@@ -23,6 +23,43 @@ def _b64url_json(payload: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
 
 
+def test_auth_flow_uses_one_configured_profile(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+    created = []
+    session = object()
+
+    class FakeConfig:
+        proxy = None
+
+    def fake_create_http_session(*, proxy, impersonate):
+        created.append((proxy, impersonate))
+        return session
+
+    monkeypatch.setenv("OPENAI_HTTP_IMPERSONATE", "chrome136")
+    monkeypatch.setattr(auth_flow, "create_http_session", fake_create_http_session)
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+
+    assert created == [(None, "chrome136")]
+    assert flow._impersonate_profile == "chrome136"
+    assert "Chrome/136.0.0.0" in flow._common_headers()["User-Agent"]
+
+
+def test_auth_flow_does_not_rotate_profile_after_tls_failure(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+    session = object()
+
+    class FakeConfig:
+        proxy = None
+
+    monkeypatch.setattr(auth_flow, "create_http_session", lambda **_kwargs: session)
+    flow = auth_flow.AuthFlow(FakeConfig())
+    original = flow.session
+
+    assert flow._rotate_impersonate_session() is False
+    assert flow.session is original
+
+
 def test_phone_otp_command_args_accepts_json_argv_and_quoted_command():
     auth_flow = _load_auth_flow_module()
 

@@ -3,6 +3,7 @@ HTTP 客户端 - 使用 curl_cffi 实现 TLS 指纹模拟
 支持 Cloudflare 绕过，降级到 requests
 """
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +21,22 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+_CHROME_PROFILE = re.compile(r"^chrome(\d+)$", re.IGNORECASE)
+
+
+def user_agent_for_impersonate(profile: str) -> str:
+    """Return a User-Agent consistent with the configured curl profile."""
+    match = _CHROME_PROFILE.fullmatch(str(profile or "").strip())
+    version = int(match.group(1)) if match else 136
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{version}.0.0.0 Safari/537.36"
+    )
+
+
 # 通用 UA
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-)
+USER_AGENT = user_agent_for_impersonate("chrome136")
 
 
 def build_safe_retry_policy() -> Retry:
@@ -67,5 +79,5 @@ def create_http_session(proxy: str | None = None, impersonate: str = "chrome136"
         session.mount("http://", adapter)
         if proxy:
             session.proxies = {"https": proxy, "http": proxy}
-        session.headers["User-Agent"] = USER_AGENT
+        session.headers["User-Agent"] = user_agent_for_impersonate(impersonate)
         return session

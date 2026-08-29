@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from config import Config
-from http_client import USER_AGENT, create_http_session
+from http_client import create_http_session, user_agent_for_impersonate
 from mail_provider import MailProvider
 
 from autotoken.core.jwt import decode_jwt_payload
@@ -127,12 +127,12 @@ class AuthFlow:
 
     def __init__(self, config: Config):
         self.config = config
-        self._impersonate_candidates = ["chrome136", "chrome124", "chrome120"]
-        self._impersonate_idx = 0
+        self._impersonate_profile = os.getenv("OPENAI_HTTP_IMPERSONATE", "chrome136").strip() or "chrome136"
         self.session = create_http_session(
             proxy=config.proxy,
-            impersonate=self._impersonate_candidates[self._impersonate_idx],
+            impersonate=self._impersonate_profile,
         )
+        self._user_agent = user_agent_for_impersonate(self._impersonate_profile)
         self.result = AuthResult()
         self._http_trace_enabled = str(os.getenv("AUTH_HTTP_TRACE", "0")).lower() in ("1", "true", "yes", "on")
         self._existing_email_verification_mode = ""
@@ -791,7 +791,7 @@ class AuthFlow:
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Referer": "https://chatgpt.com/",
-                    "User-Agent": USER_AGENT,
+                    "User-Agent": self._user_agent,
                 },
                 timeout=30,
                 allow_redirects=False,
@@ -865,7 +865,7 @@ class AuthFlow:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "User-Agent": USER_AGENT,
+            "User-Agent": self._user_agent,
         }
         form = {
             "grant_type": "authorization_code",
@@ -1811,14 +1811,9 @@ class AuthFlow:
         return out
 
     def _rotate_impersonate_session(self) -> bool:
-        """仅在 curl_cffi 指纹模式内切换 UA 指纹版本重试。"""
-        if self._impersonate_idx >= len(self._impersonate_candidates) - 1:
-            return False
-        self._impersonate_idx += 1
-        imp = self._impersonate_candidates[self._impersonate_idx]
-        logger.warning(f"TLS 异常，切换指纹重试: impersonate={imp}")
-        self.session = create_http_session(proxy=self.config.proxy, impersonate=imp)
-        return True
+        """Keep the attempt profile and cookie jar stable after a TLS error."""
+        logger.warning("TLS 异常，保持当前会话与客户端 profile，不在本次尝试内轮换")
+        return False
 
     @staticmethod
     def _is_invalid_state_error(exc: object) -> bool:
@@ -1831,7 +1826,7 @@ class AuthFlow:
             logger.info("重置 OAuth HTTP 会话: %s", reason)
         self.session = create_http_session(
             proxy=self.config.proxy,
-            impersonate=self._impersonate_candidates[self._impersonate_idx],
+            impersonate=self._impersonate_profile,
         )
 
     @staticmethod
@@ -1880,7 +1875,7 @@ class AuthFlow:
             "Accept": "application/json",
             "Referer": referer,
             "Origin": origin,
-            "User-Agent": USER_AGENT,
+            "User-Agent": self._user_agent,
         }
 
         # auth.openai.com 侧请求补设备标识（若可得）
@@ -3018,7 +3013,7 @@ class AuthFlow:
         if phone_attempt > 1:
             self.session = create_http_session(
                 proxy=self.config.proxy,
-                impersonate=self._impersonate_candidates[self._impersonate_idx],
+                impersonate=self._impersonate_profile,
             )
             self.result = AuthResult()
             self._last_register_password_error = ""
@@ -3161,7 +3156,7 @@ class AuthFlow:
 
             self.session = create_http_session(
                 proxy=self.config.proxy,
-                impersonate=self._impersonate_candidates[self._impersonate_idx],
+                impersonate=self._impersonate_profile,
             )
             self.result = AuthResult()
             self.result.email = phone_login
