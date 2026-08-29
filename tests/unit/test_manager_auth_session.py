@@ -73,9 +73,14 @@ def test_protocol_register_does_not_record_account_when_auth_session_save_fails(
 
 
 @pytest.mark.parametrize(
-    "status", ["email_code_timeout", "phone_blocked", "account_deactivated", "register_failed", "exception"]
+    ("status", "check_team_membership"),
+    [
+        (status, check_team_membership)
+        for status in ["email_code_timeout", "phone_blocked", "account_deactivated", "register_failed", "exception"]
+        for check_team_membership in [False, True]
+    ],
 )
-def test_protocol_register_preserves_go_failure_status(monkeypatch, status):
+def test_protocol_register_preserves_go_failure_status(monkeypatch, status, check_team_membership):
     outcome = {}
 
     class FakeMailClient:
@@ -99,7 +104,7 @@ def test_protocol_register_preserves_go_failure_status(monkeypatch, status):
     result = manager.create_account_direct(
         FakeMailClient(),
         password="pw",
-        check_team_membership=False,
+        check_team_membership=check_team_membership,
         register_mode="protocol",
         post_register_oauth=False,
         retry_attempts=1,

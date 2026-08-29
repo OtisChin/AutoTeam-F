@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -45,3 +46,38 @@ def test_client_health_raises_unavailable_for_connection_error():
     client = GoProtocolRegisterClient(base_url="http://127.0.0.1:9", timeout=0.01)
     with pytest.raises(GoProtocolRegisterUnavailable):
         client.health()
+
+
+def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tmp_path):
+    binary = tmp_path / "protocol-registerd.exe"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    calls = []
+
+    def fake_request(url, payload=None, *, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            raise GoProtocolRegisterUnavailable("connection refused")
+        return {"ok": True}
+
+    started = []
+    monkeypatch.setattr(
+        "autotoken.integrations.go_protocol_register_client._json_request", fake_request
+    )
+    monkeypatch.setattr(
+        "autotoken.integrations.go_protocol_register_client.subprocess.Popen",
+        lambda args, **kwargs: started.append((args, kwargs)),
+    )
+
+    result = GoProtocolRegisterClient(timeout=1).health()
+
+    assert result == {"ok": True}
+    assert started == [
+        ([str(binary)], {
+            "cwd": str(tmp_path),
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+        })
+    ]

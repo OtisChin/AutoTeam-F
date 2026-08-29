@@ -88,6 +88,14 @@ def test_go_failure_status_is_preserved(status):
     assert payload["status"] == status
 
 
+def test_go_unknown_failure_status_maps_to_register_failed():
+    ok, payload = go_response_to_protocol_result(
+        {"success": False, "status": "provider_secret_internal", "error": {"message": "failure"}}
+    )
+    assert ok is False
+    assert payload["status"] == "register_failed"
+
+
 def test_register_once_go_without_fallback_raises(monkeypatch):
     monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
     monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "0")

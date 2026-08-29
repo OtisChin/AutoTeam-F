@@ -4324,10 +4324,12 @@ def create_account_direct(
                     progress_callback=progress_callback,
                     out_outcome=out_outcome,
                 )
-            if not check_team_membership:
+            if use_protocol_register and isinstance(result, tuple):
+                success, session_data = result
+            elif not check_team_membership:
                 success, session_data = result
             else:
-                success = result[0] if use_protocol_register and isinstance(result, tuple) else result
+                success = result
         except RegisterBlocked as blocked:
             logger.error("[直接注册] %s 被阻断: %s", email, blocked)
             _progress(

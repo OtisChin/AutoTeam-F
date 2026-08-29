@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import time
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -33,9 +36,47 @@ class GoProtocolRegisterClient:
     def __init__(self, base_url: str | None = None, timeout: float = 190.0):
         self.base_url = _base_url(base_url)
         self.timeout = float(timeout or 190.0)
+        self._started = False
+
+    def _start_configured_binary(self) -> None:
+        binary = Path(os.environ.get("GO_PROTOCOL_REGISTER_BIN") or "bin/protocol-registerd.exe").expanduser()
+        if not binary.is_absolute():
+            binary = (Path.cwd() / binary).resolve()
+        if not binary.is_file():
+            raise GoProtocolRegisterUnavailable("configured protocol-registerd binary is missing")
+        try:
+            subprocess.Popen(
+                [str(binary)],
+                cwd=str(binary.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, ValueError) as exc:
+            raise GoProtocolRegisterUnavailable("unable to start protocol-registerd") from exc
+        self._started = True
 
     def health(self) -> dict[str, Any]:
-        return _json_request(f"{self.base_url}/healthz", timeout=min(self.timeout, 5.0))
+        url = f"{self.base_url}/healthz"
+        try:
+            return _json_request(url, timeout=min(self.timeout, 5.0))
+        except GoProtocolRegisterUnavailable:
+            if self._started or str(os.environ.get("GO_PROTOCOL_REGISTER_AUTO_START", "1") or "").strip().lower() not in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                raise
+            self._start_configured_binary()
+            deadline = time.monotonic() + min(10.0, max(1.0, self.timeout))
+            while True:
+                try:
+                    return _json_request(url, timeout=min(self.timeout, 1.0))
+                except GoProtocolRegisterUnavailable:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
 
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
         return _json_request(f"{self.base_url}/v1/register", payload, timeout=self.timeout)
@@ -58,8 +99,11 @@ def go_response_to_protocol_result(response: dict[str, Any]) -> tuple[bool, dict
 
     error = dict(response.get("error") or {})
     reason = str(error.get("message") or response.get("status") or "go protocol register failed")
+    status = str(response.get("status") or "").strip().lower()
+    if status not in {"email_code_timeout", "phone_blocked", "account_deactivated", "register_failed", "exception"}:
+        status = "register_failed"
     return False, {
-        "status": str(response.get("status") or error.get("code") or "register_failed"),
+        "status": status,
         "email": str(response.get("email") or ""),
         "reason": reason,
         "error": error,
