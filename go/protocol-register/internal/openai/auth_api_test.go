@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -91,7 +92,10 @@ func TestClientUsesHeadersForEachEndpointBase(t *testing.T) {
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeaders = capturedHeaders{origin: r.Header.Get("Origin"), referer: r.Header.Get("Referer")}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"page": map[string]any{"type": "create_account_password"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"page":         map[string]any{"type": "create_account_password"},
+			"continue_url": "/create-account/password",
+		})
 	}))
 	defer authServer.Close()
 
@@ -106,7 +110,7 @@ func TestClientUsesHeadersForEachEndpointBase(t *testing.T) {
 	if _, err := client.GetCSRF(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.AuthorizeContinue(context.Background(), "user@example.com"); err != nil {
+	if _, err := client.AuthorizeContinue(context.Background(), "user@example.com", "sentinel-1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,5 +119,110 @@ func TestClientUsesHeadersForEachEndpointBase(t *testing.T) {
 	}
 	if authHeaders.origin != authServer.URL || authHeaders.referer != authServer.URL+"/" {
 		t.Fatalf("auth headers=%#v", authHeaders)
+	}
+}
+
+func TestAuthorizeContinueReturnsTypedKnownStates(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]any
+		want AuthStep
+	}{
+		{
+			name: "password registration",
+			body: map[string]any{
+				"page":         map[string]any{"type": "create_account_password"},
+				"continue_url": "/create-account/password",
+			},
+			want: AuthStep{PageType: "create_account_password", ContinueURL: "/create-account/password"},
+		},
+		{
+			name: "email OTP",
+			body: map[string]any{
+				"page": map[string]any{
+					"type":    "email_otp_verification",
+					"payload": map[string]any{"email_verification_mode": "passwordless_signup"},
+				},
+				"continue_url": "/email-verification",
+			},
+			want: AuthStep{
+				PageType:              "email_otp_verification",
+				ContinueURL:           "/email-verification",
+				EmailVerificationMode: "passwordless_signup",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sentinelToken string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sentinelToken = r.Header.Get("openai-sentinel-token")
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tt.body)
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+			got, err := client.AuthorizeContinue(context.Background(), "user@example.com", "sentinel-authorize")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("step=%#v, want %#v", got, tt.want)
+			}
+			if sentinelToken != "sentinel-authorize" {
+				t.Fatalf("openai-sentinel-token=%q", sentinelToken)
+			}
+		})
+	}
+}
+
+func TestAuthorizeContinueRejectsInvalidAndChallengeStates(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		status      int
+		body        string
+		wantErr     error
+	}{
+		{
+			name:        "unknown page",
+			contentType: "application/json",
+			status:      http.StatusOK,
+			body:        `{"page":{"type":"captcha"},"continue_url":"/captcha"}`,
+			wantErr:     ErrInvalidAuthState,
+		},
+		{
+			name:        "missing continuation",
+			contentType: "application/json",
+			status:      http.StatusOK,
+			body:        `{"page":{"type":"create_account_password"}}`,
+			wantErr:     ErrInvalidAuthState,
+		},
+		{
+			name:        "HTML challenge",
+			contentType: "text/html; charset=utf-8",
+			status:      http.StatusForbidden,
+			body:        `<html><title>challenge</title></html>`,
+			wantErr:     ErrChallengeUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+			_, err := client.AuthorizeContinue(context.Background(), "user@example.com", "sentinel-authorize")
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err=%v, want %v", err, tt.wantErr)
+			}
+		})
 	}
 }

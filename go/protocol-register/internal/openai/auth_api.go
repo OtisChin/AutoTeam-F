@@ -4,12 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+var ErrInvalidAuthState = errors.New("invalid auth state")
+
+type AuthStep struct {
+	PageType              string
+	ContinueURL           string
+	EmailVerificationMode string
+}
 
 type Client struct {
 	HTTP           *http.Client
@@ -84,18 +94,43 @@ func (c *Client) SigninOpenAI(ctx context.Context, csrf string) error {
 	return nil
 }
 
-func (c *Client) AuthorizeContinue(ctx context.Context, email string) (string, error) {
+func (c *Client) AuthorizeContinue(ctx context.Context, email, sentinelToken string) (AuthStep, error) {
+	if strings.TrimSpace(sentinelToken) == "" {
+		return AuthStep{}, ErrSentinelUnavailable
+	}
 	var out struct {
 		Page struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
+			Payload struct {
+				EmailVerificationMode string `json:"email_verification_mode"`
+			} `json:"payload"`
 		} `json:"page"`
+		ContinueURL string `json:"continue_url"`
 	}
-	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/authorize/continue", map[string]any{"username": map[string]any{"value": email, "kind": "email"}, "screen_hint": "signup"}, &out, c.authAPIHeaders())
-	return out.Page.Type, err
+	headers := c.authAPIHeaders()
+	headers.Set("openai-sentinel-token", sentinelToken)
+	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/authorize/continue", map[string]any{"username": map[string]any{"value": email, "kind": "email"}, "screen_hint": "signup"}, &out, headers)
+	if err != nil {
+		return AuthStep{}, err
+	}
+	step := AuthStep{
+		PageType:              strings.TrimSpace(out.Page.Type),
+		ContinueURL:           strings.TrimSpace(out.ContinueURL),
+		EmailVerificationMode: strings.TrimSpace(out.Page.Payload.EmailVerificationMode),
+	}
+	if err := validateAuthStep(step); err != nil {
+		return AuthStep{}, err
+	}
+	return step, nil
 }
 
-func (c *Client) RegisterPassword(ctx context.Context, email, password string) error {
-	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/user/register", map[string]any{"password": password, "username": email}, nil, c.authAPIHeaders())
+func (c *Client) RegisterPassword(ctx context.Context, email, password, sentinelToken string) error {
+	if strings.TrimSpace(sentinelToken) == "" {
+		return ErrSentinelUnavailable
+	}
+	headers := c.authAPIHeaders()
+	headers.Set("openai-sentinel-token", sentinelToken)
+	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/user/register", map[string]any{"password": password, "username": email}, nil, headers)
 }
 
 func (c *Client) SendEmailOTP(ctx context.Context) error {
@@ -110,8 +145,13 @@ func (c *Client) VerifyEmailOTP(ctx context.Context, code string) (string, error
 	return out.ContinueURL, err
 }
 
-func (c *Client) CreateAccount(ctx context.Context) error {
-	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/profile", map[string]any{"name": "Alex Chen", "age": 33}, nil, c.authAPIHeaders())
+func (c *Client) CreateAccount(ctx context.Context, sentinelToken string) error {
+	if strings.TrimSpace(sentinelToken) == "" {
+		return ErrSentinelUnavailable
+	}
+	headers := c.authAPIHeaders()
+	headers.Set("openai-sentinel-token", sentinelToken)
+	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/profile", map[string]any{"name": "Alex Chen", "age": 33}, nil, headers)
 }
 
 func (c *Client) GetAuthSession(ctx context.Context) (map[string]any, error) {
@@ -157,6 +197,13 @@ func (c *Client) do(ctx context.Context, method, targetURL string, body io.Reade
 		return fmt.Errorf("%s request failed", method)
 	}
 	defer resp.Body.Close()
+	mediaType, _, contentTypeErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		return ErrChallengeUnavailable
+	}
+	if contentTypeErr != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+		return ErrInvalidAuthState
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s %s: HTTP %d", method, req.URL.Path, resp.StatusCode)
 	}
@@ -172,6 +219,47 @@ func (c *Client) chatGPTAPIHeaders() http.Header {
 
 func (c *Client) authAPIHeaders() http.Header {
 	return APIHeaders(baseOrigin(c.BaseURL), c.BaseURL+"/", c.UserAgent)
+}
+
+func (c *Client) DeviceID() string {
+	if c.HTTP == nil || c.HTTP.Jar == nil {
+		return ""
+	}
+	for _, raw := range []string{c.BaseURL, c.ChatGPTBaseURL} {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		for _, cookie := range c.HTTP.Jar.Cookies(parsed) {
+			if cookie.Name == "oai-did" {
+				return cookie.Value
+			}
+		}
+	}
+	return ""
+}
+
+func validateAuthStep(step AuthStep) error {
+	switch step.PageType {
+	case "", "create_account_password", "email_otp_verification", "about_you":
+	default:
+		return fmt.Errorf("%w: unsupported page", ErrInvalidAuthState)
+	}
+	if !validContinueURL(step.ContinueURL) {
+		return fmt.Errorf("%w: continuation missing or invalid", ErrInvalidAuthState)
+	}
+	return nil
+}
+
+func validContinueURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if parsed.IsAbs() {
+		return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+	}
+	return parsed.Host == "" && strings.HasPrefix(parsed.Path, "/")
 }
 
 func baseOrigin(raw string) string {
