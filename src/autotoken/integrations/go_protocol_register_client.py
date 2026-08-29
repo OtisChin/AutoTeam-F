@@ -48,7 +48,13 @@ def go_response_to_protocol_result(response: dict[str, Any]) -> tuple[bool, dict
         raw = dict(session_data.get("raw") or {})
         raw.setdefault("source", "go_protocol_register")
         session_data["raw"] = raw
-        return True, session_data
+        return True, {
+            "status": 200,
+            "data": session_data,
+            "email": str(response.get("email") or session_data.get("email") or ""),
+            "events": list(response.get("events") or []),
+            "raw": raw,
+        }
 
     error = dict(response.get("error") or {})
     reason = str(error.get("message") or response.get("status") or "go protocol register failed")

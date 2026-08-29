@@ -4027,6 +4027,7 @@ def create_account_direct(
     chosen_password = password or random_password()
     password = chosen_password
     last_failure_reason = ""
+    last_failure_status = ""
     post_register_oauth_enabled = (
         POST_REGISTER_OAUTH_ENABLED if post_register_oauth is None else bool(post_register_oauth)
     )
@@ -4288,6 +4289,7 @@ def create_account_direct(
             register_attempts_total=MAX_REGISTER_ATTEMPTS,
             duplicate_swaps=duplicate_swaps,
         )
+        session_data = None
         try:
             if use_protocol_register:
                 logger.info("[协议注册] 使用协议注册流程: %s", email)
@@ -4459,6 +4461,16 @@ def create_account_direct(
 
         if not success and out_outcome is not None:
             last_failure_reason = str(out_outcome.get("reason") or last_failure_reason or "")
+        if not success and use_protocol_register and isinstance(session_data, dict):
+            go_status = str(session_data.get("status") or "").strip().lower()
+            if go_status:
+                last_failure_status = go_status
+                last_failure_reason = str(
+                    session_data.get("reason")
+                    or (session_data.get("error") or {}).get("message")
+                    or last_failure_reason
+                    or go_status
+                )
 
         if success:
             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
@@ -4600,21 +4612,18 @@ def create_account_direct(
             register_attempts,
             duplicate_swaps,
         )
+        failure_status = last_failure_status or "register_failed"
+        failure_reason = last_failure_reason or f"连续 {register_attempts} 次注册尝试失败"
+        _mark_provider_unavailable_email(email, mail_client, source=failure_status)
         _discard_email("register_failed")
-        record_failure(
-            email,
-            "register_failed",
-            last_failure_reason or f"连续 {register_attempts} 次注册尝试失败",
-            register_attempts=register_attempts,
-            duplicate_swaps=duplicate_swaps,
-        )
-        _record_outcome("register_failed", reason=last_failure_reason or f"注册 {register_attempts} 次均失败")
+        record_failure(email, failure_status, failure_reason, register_attempts=register_attempts, duplicate_swaps=duplicate_swaps)
+        _record_outcome(failure_status, reason=failure_reason)
         _progress(
-            "register_failed",
-            f"注册失败: {email}: {last_failure_reason or f'连续 {register_attempts} 次注册尝试失败'}",
+            failure_status,
+            f"注册失败: {email}: {failure_reason}",
             email=email,
             level="error",
-            reason=last_failure_reason or f"连续 {register_attempts} 次注册尝试失败",
+            reason=failure_reason,
         )
         return None
 
