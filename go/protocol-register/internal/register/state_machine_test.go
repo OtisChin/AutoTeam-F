@@ -72,27 +72,8 @@ func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected one user agent across the flow, got %#v", userAgents)
 	}
-	allowed := []string{
-		"Chrome/143.0.0.0",
-		"Chrome/144.0.0.0",
-		"Chrome/145.0.0.0",
-		"Chrome/146.0.0.0",
-		"Chrome/147.0.0.0",
-		"Chrome/148.0.0.0",
-		"Chrome/149.0.0.0",
-		"Chrome/150.0.0.0",
-		"Chrome/151.0.0.0",
-		"Chrome/152.0.0.0",
-	}
-	ok := false
-	for _, want := range allowed {
-		if strings.Contains(userAgent, want) {
-			ok = true
-			break
-		}
-	}
-	if !ok {
-		t.Fatalf("user agent=%q, want one of 141+", userAgent)
+	if userAgent != "AutoToken-F protocol-registerd/go-http" {
+		t.Fatalf("user agent=%q, want deterministic go-http identity", userAgent)
 	}
 	for _, path := range []string{"/api/auth/csrf", "/api/auth/signin/openai", "/api/accounts/authorize/continue", "/api/accounts/user/register", "/api/accounts/email-otp/send", "/api/accounts/email-otp/verify", "/api/accounts/profile", "/api/auth/session"} {
 		if hits[path] == 0 {
