@@ -27,6 +27,17 @@ USER_AGENT = (
 )
 
 
+def build_safe_retry_policy() -> Retry:
+    """Build a retry policy that never replays state-changing requests."""
+    return Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
+        respect_retry_after_header=True,
+    )
+
+
 def create_http_session(proxy: str | None = None, impersonate: str = "chrome136"):
     """
     创建 HTTP 会话。优先使用 curl_cffi 模拟浏览器 TLS 指纹，
@@ -51,13 +62,7 @@ def create_http_session(proxy: str | None = None, impersonate: str = "chrome136"
     else:
         session = requests.Session()
         session.trust_env = False
-        retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "POST"],
-        )
-        adapter = HTTPAdapter(max_retries=retry)
+        adapter = HTTPAdapter(max_retries=build_safe_retry_policy())
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         if proxy:
