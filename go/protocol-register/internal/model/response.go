@@ -7,10 +7,11 @@ type Event struct {
 }
 
 type ErrorInfo struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
-	Step      string `json:"step"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	Retryable   bool   `json:"retryable"`
+	Step        string `json:"step"`
+	RequestSent bool   `json:"request_sent"`
 }
 
 type RegisterResponse struct {

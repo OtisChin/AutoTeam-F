@@ -19,6 +19,10 @@ class GoProtocolRegisterStartupUnavailable(GoProtocolRegisterUnavailable):
     pass
 
 
+class GoProtocolRegisterServiceNotReady(GoProtocolRegisterStartupUnavailable):
+    pass
+
+
 class GoProtocolRegisterIndeterminate(GoProtocolRegisterUnavailable):
     pass
 
@@ -81,6 +85,8 @@ class GoProtocolRegisterClient:
         def _ensure_healthy(body: dict[str, Any]) -> dict[str, Any]:
             if not bool(body.get("ok")):
                 raise GoProtocolRegisterStartupUnavailable("protocol-registerd health check failed")
+            if body.get("protocol_ready") is not True:
+                raise GoProtocolRegisterServiceNotReady("protocol-registerd is not protocol-ready")
             return body
 
         try:
@@ -91,6 +97,8 @@ class GoProtocolRegisterClient:
                     failure_type=GoProtocolRegisterStartupUnavailable,
                 )
             )
+        except GoProtocolRegisterServiceNotReady:
+            raise
         except GoProtocolRegisterStartupUnavailable:
             if self._started or str(os.environ.get("GO_PROTOCOL_REGISTER_AUTO_START", "1") or "").strip().lower() not in {
                 "1",
@@ -103,7 +111,7 @@ class GoProtocolRegisterClient:
             with _AUTO_START_LOCK:
                 if not _AUTO_START_TRIGGERED:
                     try:
-                        _ensure_healthy(
+                        body = _ensure_healthy(
                             _json_request(
                                 url,
                                 timeout=1.0,
@@ -112,7 +120,9 @@ class GoProtocolRegisterClient:
                         )
                         _AUTO_START_TRIGGERED = True
                         self._started = True
-                        return {"ok": True}
+                        return body
+                    except GoProtocolRegisterServiceNotReady:
+                        raise
                     except GoProtocolRegisterStartupUnavailable:
                         self._start_configured_binary()
                         _AUTO_START_TRIGGERED = True
@@ -126,6 +136,8 @@ class GoProtocolRegisterClient:
                             failure_type=GoProtocolRegisterStartupUnavailable,
                         )
                     )
+                except GoProtocolRegisterServiceNotReady:
+                    raise
                 except GoProtocolRegisterStartupUnavailable:
                     if time.monotonic() >= deadline:
                         raise

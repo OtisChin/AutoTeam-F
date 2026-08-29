@@ -24,16 +24,37 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:18787"
 	}
-	maxConcurrency := 50
-	if raw := os.Getenv("GO_PROTOCOL_MAX_CONCURRENCY"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			maxConcurrency = parsed
-		}
-	}
+	cfg := loadServerConfig()
 	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{})
-	srv := server.New(addr, maxConcurrency, engine)
-	log.Printf("protocol-registerd listening on %s max_concurrency=%d", addr, maxConcurrency)
+	srv := server.New(addr, cfg, engine)
+	log.Printf(
+		"protocol-registerd listening on %s protocol_ready=%t max_concurrency=%d auth_concurrency=%d",
+		addr,
+		cfg.ProtocolReady,
+		cfg.MaxConcurrency,
+		cfg.AuthConcurrency,
+	)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func loadServerConfig() server.Config {
+	return server.Config{
+		MaxConcurrency:  positiveEnv("GO_PROTOCOL_MAX_CONCURRENCY", 20),
+		AuthConcurrency: positiveEnv("GO_PROTOCOL_AUTH_CONCURRENCY", 3),
+		ProtocolReady:   false,
+	}
+}
+
+func positiveEnv(name string, fallback int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

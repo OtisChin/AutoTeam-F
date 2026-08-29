@@ -9,23 +9,53 @@ import (
 )
 
 type Handler struct {
-	maxConcurrency int
-	engine         register.Engine
-	sem            chan struct{}
+	cfg    Config
+	engine register.Engine
+	sem    chan struct{}
 }
 
-func NewHandler(maxConcurrency int, engine register.Engine) http.Handler {
-	if maxConcurrency <= 0 {
-		maxConcurrency = 50
+type Config struct {
+	MaxConcurrency  int
+	AuthConcurrency int
+	ProtocolReady   bool
+}
+
+func normalizeConfig(cfg Config) Config {
+	if cfg.MaxConcurrency <= 0 {
+		cfg.MaxConcurrency = 20
 	}
-	return &Handler{maxConcurrency: maxConcurrency, engine: engine, sem: make(chan struct{}, maxConcurrency)}
+	if cfg.AuthConcurrency <= 0 {
+		cfg.AuthConcurrency = 3
+	}
+	if cfg.AuthConcurrency > cfg.MaxConcurrency {
+		cfg.AuthConcurrency = cfg.MaxConcurrency
+	}
+	return cfg
+}
+
+func NewHandler(cfg Config, engine register.Engine) http.Handler {
+	cfg = normalizeConfig(cfg)
+	return &Handler{cfg: cfg, engine: engine, sem: make(chan struct{}, cfg.MaxConcurrency)}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "protocol-registerd", "version": "dev", "max_concurrency": h.maxConcurrency, "inflight": len(h.sem)})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":               true,
+			"protocol_ready":   h.cfg.ProtocolReady,
+			"service":          "protocol-registerd",
+			"version":          "dev",
+			"max_concurrency":  h.cfg.MaxConcurrency,
+			"auth_concurrency": h.cfg.AuthConcurrency,
+			"inflight":         len(h.sem),
+		})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/register":
+		if !h.cfg.ProtocolReady {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, register.ServiceNotReadyResponse(""))
+			return
+		}
 		var req model.RegisterRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, model.RegisterResponse{Success: false, Status: "exception", Error: &model.ErrorInfo{Code: "bad_request", Message: err.Error(), Step: "decode"}, Events: []model.Event{}})
@@ -35,6 +65,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case h.sem <- struct{}{}:
 			defer func() { <-h.sem }()
 		default:
+			w.Header().Set("Retry-After", "1")
 			writeJSON(w, http.StatusTooManyRequests, register.BusyResponse(req.Email))
 			return
 		}
@@ -45,6 +76,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 var allowedFailureStatuses = map[string]struct{}{
+	"service_not_ready":   {},
+	"busy":                {},
 	"email_code_timeout":  {},
 	"phone_blocked":       {},
 	"account_deactivated": {},

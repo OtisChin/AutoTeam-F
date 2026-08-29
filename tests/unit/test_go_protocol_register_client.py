@@ -60,6 +60,54 @@ def test_client_health_raises_unavailable_when_body_is_not_ok(monkeypatch):
         client.health()
 
 
+def test_client_health_requires_protocol_readiness_without_restarting(monkeypatch):
+    monkeypatch.setattr(
+        go_client,
+        "_json_request",
+        lambda *_args, **_kwargs: {"ok": True, "protocol_ready": False},
+    )
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    started = []
+    monkeypatch.setattr(
+        go_client.subprocess,
+        "Popen",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+
+    with pytest.raises(go_client.GoProtocolRegisterServiceNotReady):
+        GoProtocolRegisterClient(timeout=1).health()
+
+    assert started == []
+
+
+def test_client_health_lock_recheck_does_not_restart_not_ready_daemon(monkeypatch, tmp_path):
+    binary = tmp_path / "protocol-registerd.exe"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    monkeypatch.setattr(go_client, "_AUTO_START_TRIGGERED", False)
+    calls = []
+
+    def fake_request(*_args, failure_type, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise failure_type("connection refused")
+        return {"ok": True, "protocol_ready": False}
+
+    started = []
+    monkeypatch.setattr(go_client, "_json_request", fake_request)
+    monkeypatch.setattr(
+        go_client.subprocess,
+        "Popen",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+
+    with pytest.raises(go_client.GoProtocolRegisterServiceNotReady):
+        GoProtocolRegisterClient(timeout=1).health()
+
+    assert started == []
+
+
 def test_register_transport_failure_is_indeterminate(monkeypatch):
     monkeypatch.setattr(
         go_client,
@@ -84,7 +132,7 @@ def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tm
         calls.append(url)
         if len(calls) <= 2:
             raise failure_type("connection refused")
-        return {"ok": True}
+        return {"ok": True, "protocol_ready": True}
 
     started = []
     monkeypatch.setattr(
@@ -97,7 +145,7 @@ def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tm
 
     result = GoProtocolRegisterClient(timeout=1).health()
 
-    assert result == {"ok": True}
+    assert result == {"ok": True, "protocol_ready": True}
     assert started == [
         ([str(binary)], {
             "cwd": str(tmp_path),
@@ -126,7 +174,7 @@ def test_client_auto_start_is_process_wide(monkeypatch, tmp_path):
             call_number = state["calls"]
         if call_number <= 3:
             raise failure_type("connection refused")
-        return {"ok": True}
+        return {"ok": True, "protocol_ready": True}
 
     monkeypatch.setattr(
         "autotoken.integrations.go_protocol_register_client._json_request", fake_request
@@ -152,5 +200,8 @@ def test_client_auto_start_is_process_wide(monkeypatch, tmp_path):
         thread.join()
 
     assert not errors
-    assert results == [{"ok": True}, {"ok": True}]
+    assert results == [
+        {"ok": True, "protocol_ready": True},
+        {"ok": True, "protocol_ready": True},
+    ]
     assert len(started) == 1

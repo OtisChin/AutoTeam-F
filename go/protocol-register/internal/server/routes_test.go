@@ -30,8 +30,36 @@ func (e fakeEngine) Register(_ *http.Request, req model.RegisterRequest) model.R
 
 var _ register.Engine = fakeEngine{}
 
+type countingEngine struct{ calls int }
+
+func (e *countingEngine) Register(_ *http.Request, req model.RegisterRequest) model.RegisterResponse {
+	e.calls++
+	return model.RegisterResponse{Success: true, Status: "success", Email: req.Email, Events: []model.Event{}}
+}
+
+func TestRegisterRouteRejectsBeforeEngineWhenProtocolIsNotReady(t *testing.T) {
+	engine := &countingEngine{}
+	h := server.NewHandler(server.Config{
+		MaxConcurrency: 7, AuthConcurrency: 3, ProtocolReady: false,
+	}, engine)
+	req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader(`{"email":"user@example.com"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || engine.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", rec.Code, engine.calls, rec.Body.String())
+	}
+	var body model.RegisterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "service_not_ready" || body.Error == nil || body.Error.RequestSent {
+		t.Fatalf("body=%#v", body)
+	}
+}
+
 func TestHealthz(t *testing.T) {
-	h := server.NewHandler(7, fakeEngine{})
+	h := server.NewHandler(server.Config{MaxConcurrency: 7, AuthConcurrency: 3}, fakeEngine{})
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -42,7 +70,7 @@ func TestHealthz(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["ok"] != true || body["service"] != "protocol-registerd" || int(body["max_concurrency"].(float64)) != 7 {
+	if body["ok"] != true || body["protocol_ready"] != false || body["service"] != "protocol-registerd" || int(body["max_concurrency"].(float64)) != 7 || int(body["auth_concurrency"].(float64)) != 3 {
 		t.Fatalf("body=%#v", body)
 	}
 }
@@ -50,7 +78,7 @@ func TestHealthz(t *testing.T) {
 func TestRegisterRouteRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	h := server.NewHandler(1, fakeEngine{entered: entered, release: release})
+	h := server.NewHandler(server.Config{MaxConcurrency: 1, ProtocolReady: true}, fakeEngine{entered: entered, release: release})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -72,13 +100,13 @@ func TestRegisterRouteRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Status != "register_failed" || body.Error == nil || body.Error.Code != "busy" {
+	if body.Status != "busy" || body.Error == nil || body.Error.Code != "busy" || body.Error.RequestSent {
 		t.Fatalf("body=%#v", body)
 	}
 }
 
 func TestRegisterRouteUsesExceptionStatusForBadRequest(t *testing.T) {
-	h := server.NewHandler(1, fakeEngine{})
+	h := server.NewHandler(server.Config{MaxConcurrency: 1, ProtocolReady: true}, fakeEngine{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader("{"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -108,7 +136,7 @@ func TestRegisterRouteNormalizesInvalidEngineStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := server.NewHandler(1, fakeEngineResponse{response: model.RegisterResponse{
+			h := server.NewHandler(server.Config{MaxConcurrency: 1, ProtocolReady: true}, fakeEngineResponse{response: model.RegisterResponse{
 				Success: tt.success,
 				Status:  tt.status,
 				Error:   &model.ErrorInfo{Code: tt.errorCode},
