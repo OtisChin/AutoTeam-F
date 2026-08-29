@@ -1,6 +1,9 @@
+import uuid
+
 import pytest
 
 from autotoken.auth import protocol_register
+from autotoken.integrations import go_protocol_register_client as go_client
 from autotoken.integrations.go_protocol_register_client import (
     GoProtocolRegisterUnavailable,
     go_response_to_protocol_result,
@@ -27,6 +30,7 @@ class FakeGoClient:
         return {"ok": True}
 
     def register(self, payload):
+        uuid.UUID(payload["request_id"])
         assert payload["email"] == "user@example.com"
         assert payload["password"] == "pw"
         assert payload["mail"]["provider"] == "generic-api"
@@ -137,7 +141,7 @@ def test_register_once_go_fallback_uses_python_path(monkeypatch):
     monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
     monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "1")
     monkeypatch.setattr(protocol_register, "_register_once_go", lambda *args, **kwargs: (_ for _ in ()).throw(
-        GoProtocolRegisterUnavailable("service unavailable")
+        go_client.GoProtocolRegisterStartupUnavailable("service unavailable")
     ))
     monkeypatch.setattr(protocol_register, "_load_protocol_classes", lambda: (_FakeAuthFlow, _FakeConfig))
     monkeypatch.setattr(protocol_register, "_attach_flow_stage_logs", lambda flow: calls.append("python"))
@@ -145,6 +149,30 @@ def test_register_once_go_fallback_uses_python_path(monkeypatch):
     assert ok is True
     assert calls == ["python"]
     assert payload["data"]["accessToken"] == "python-access"
+
+
+def test_indeterminate_go_failure_does_not_fallback_to_python(monkeypatch):
+    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
+    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "1")
+    monkeypatch.setattr(
+        protocol_register,
+        "_register_once_go",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            go_client.GoProtocolRegisterIndeterminate("reset")
+        ),
+    )
+    monkeypatch.setattr(
+        protocol_register,
+        "_load_protocol_classes",
+        lambda: (_ for _ in ()).throw(AssertionError("Python fallback must not run")),
+    )
+
+    with pytest.raises(go_client.GoProtocolRegisterIndeterminate):
+        protocol_register.register_once(
+            FakeMailClient(),
+            email="user@example.com",
+            password="pw",
+        )
 
 
 def test_register_once_go_skips_phone_sms_flows(monkeypatch):

@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1032,7 +1033,7 @@ def _register_once_go(mail_client, *, email: str, password: str, account_id=None
     client.health()
     response = client.register(
         {
-            "request_id": f"autotoken-{int(time.time() * 1000)}",
+            "request_id": str(uuid.uuid4()),
             "email": email,
             "password": password,
             "proxy_url": proxy or "",
@@ -1075,9 +1076,13 @@ def register_once(
         oauth_phone_sms_country=oauth_phone_sms_country,
         oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
     ):
+        from autotoken.integrations.go_protocol_register_client import (
+            GoProtocolRegisterStartupUnavailable,
+        )
+
         try:
             return _register_once_go(mail_client, email=email, password=password, account_id=account_id, proxy=proxy)
-        except Exception as exc:
+        except GoProtocolRegisterStartupUnavailable as exc:
             if not _env_flag("GO_PROTOCOL_FALLBACK_PYTHON", "1"):
                 raise
             logger.warning("Go 协议注册不可用，回退 Python 协议注册: %s", safe_error_summary(exc, limit=180))

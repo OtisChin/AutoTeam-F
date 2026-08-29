@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from autotoken.integrations import go_protocol_register_client as go_client
 from autotoken.integrations.go_protocol_register_client import (
     GoProtocolRegisterClient,
     GoProtocolRegisterUnavailable,
@@ -59,6 +60,18 @@ def test_client_health_raises_unavailable_when_body_is_not_ok(monkeypatch):
         client.health()
 
 
+def test_register_transport_failure_is_indeterminate(monkeypatch):
+    monkeypatch.setattr(
+        go_client,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("reset")),
+    )
+    client = GoProtocolRegisterClient(base_url="http://127.0.0.1:1")
+
+    with pytest.raises(go_client.GoProtocolRegisterIndeterminate):
+        client.register({"email": "user@example.com"})
+
+
 def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tmp_path):
     binary = tmp_path / "protocol-registerd.exe"
     binary.write_bytes(b"fixture")
@@ -67,10 +80,10 @@ def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tm
     monkeypatch.setattr("autotoken.integrations.go_protocol_register_client._AUTO_START_TRIGGERED", False)
     calls = []
 
-    def fake_request(url, payload=None, *, timeout):
+    def fake_request(url, payload=None, *, timeout, failure_type):
         calls.append(url)
         if len(calls) <= 2:
-            raise GoProtocolRegisterUnavailable("connection refused")
+            raise failure_type("connection refused")
         return {"ok": True}
 
     started = []
@@ -106,13 +119,13 @@ def test_client_auto_start_is_process_wide(monkeypatch, tmp_path):
     calls_lock = threading.Lock()
     started = []
 
-    def fake_request(url, payload=None, *, timeout):
+    def fake_request(url, payload=None, *, timeout, failure_type):
         assert payload is None
         with calls_lock:
             state["calls"] += 1
             call_number = state["calls"]
         if call_number <= 3:
-            raise GoProtocolRegisterUnavailable("connection refused")
+            raise failure_type("connection refused")
         return {"ok": True}
 
     monkeypatch.setattr(
