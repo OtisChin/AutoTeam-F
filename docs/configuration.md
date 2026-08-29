@@ -129,6 +129,20 @@ OPENAI_EMAIL_OTP_MAX_RESENDS=1
 `email-otp/resend`，并最多校验两个不同的新验证码。网络 timeout 发生在发码
 调用后时同样消耗额度，系统不会改用另一个发码端点级联重试。
 
+## 协议注册安全默认值
+
+- `PROTOCOL_REGISTER_ENGINE=python` 仍是默认引擎；Go daemon 是 opt-in MVP。
+- `OPENAI_HTTP_IMPERSONATE=chrome136` 在一次 Python 尝试开始时读取一次；TLS
+  错误按网络失败处理，不会在尝试内轮换 profile 或替换 cookie jar。
+- HTTP transport 只对普通 `GET/HEAD/OPTIONS` 使用安全重试；OTP send 这类以
+  GET 表达的 mutation 使用专用零重试 adapter，所有 POST mutation 均不自动重试。
+- Sentinel SDK 执行不可用时默认 fail-closed；synthetic fallback 仅保留显式
+  legacy 兼容开关，失败后不会继续发送注册 mutation。
+- 邮箱 OTP 预算为一次初始请求、默认一次 resend，并默认最多校验两个不同新码。
+- Go 到 Python 的自动 fallback 只允许发生在 daemon 启动或健康检查失败时；
+  `/v1/register` 请求发出后的 timeout、连接中断或无效响应属于 indeterminate，
+  必须停止当前尝试，不能通过 Python 重放。
+
 ## Sentinel SDK 自动跟随
 
 协议注册默认从 OpenAI Sentinel 的官方运行时 frame 页面
@@ -230,14 +244,20 @@ RECONCILE_KICK_GHOST=true
 
 ## Go protocol registration service
 
-`PROTOCOL_REGISTER_ENGINE=python` keeps the legacy Python protocol path. Set `PROTOCOL_REGISTER_ENGINE=go` to route `register_mode=protocol` through the local `protocol-registerd` service.
+`PROTOCOL_REGISTER_ENGINE=python` 保持 Python 参考链路。设置为 `go` 会把
+`register_mode=protocol` 路由到本机 `protocol-registerd`；在 readiness 与状态机
+一致性验证完成前，该服务保持 opt-in，不应直接扩大线上并发。
 
 | Variable | Default | Purpose |
 |---|---:|---|
 | `GO_PROTOCOL_REGISTER_URL` | `http://127.0.0.1:18787` | Local service endpoint |
 | `GO_PROTOCOL_REGISTER_AUTO_START` | `1` | Python may start the local binary |
 | `GO_PROTOCOL_REGISTER_BIN` | `bin/protocol-registerd.exe` | Windows binary path |
-| `GO_PROTOCOL_MAX_CONCURRENCY` | `50` | Maximum inflight Go registration tasks |
-| `GO_PROTOCOL_FALLBACK_PYTHON` | `1` | Use Python path when Go service is unavailable |
+| `GO_PROTOCOL_MAX_CONCURRENCY` | `50` | MVP daemon admission ceiling；不是建议的上游认证并发 |
+| `GO_PROTOCOL_FALLBACK_PYTHON` | `1` | 仅 daemon 启动/健康检查失败时允许 Python fallback |
 | `GO_PROTOCOL_TRACE` | `0` | Include non-secret trace events |
-| `GO_PROTOCOL_IMPERSONATE` | `chrome143,chrome144,chrome145,chrome146,chrome147,chrome148,chrome149,chrome150,chrome151,chrome152` | Chrome fingerprint pool or single label |
+| `GO_PROTOCOL_IMPERSONATE` | `chrome143,...,chrome152` | MVP legacy UA label；Go 标准 TLS 不构成对应浏览器 profile |
+
+Go register 调用一旦开始，客户端会把后续网络 timeout、连接中断和无效 JSON
+响应标记为 `indeterminate` 并直接返回错误。即使
+`GO_PROTOCOL_FALLBACK_PYTHON=1`，这些错误也不会触发 Python 注册。
