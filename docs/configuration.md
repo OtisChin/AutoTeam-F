@@ -131,7 +131,8 @@ OPENAI_EMAIL_OTP_MAX_RESENDS=1
 
 ## 协议注册安全默认值
 
-- `PROTOCOL_REGISTER_ENGINE=python` 仍是默认引擎；Go daemon 是 opt-in MVP。
+- `PROTOCOL_REGISTER_ENGINE=python` 仍是默认引擎；Go daemon 在本阶段硬编码
+  `protocol_ready=false`，不会向上游发送注册请求。
 - `OPENAI_HTTP_IMPERSONATE=chrome136` 在一次 Python 尝试开始时读取一次；TLS
   错误按网络失败处理，不会在尝试内轮换 profile 或替换 cookie jar。
 - HTTP transport 只对普通 `GET/HEAD/OPTIONS` 使用安全重试；OTP send 这类以
@@ -244,19 +245,22 @@ RECONCILE_KICK_GHOST=true
 
 ## Go protocol registration service
 
-`PROTOCOL_REGISTER_ENGINE=python` 保持 Python 参考链路。设置为 `go` 会把
-`register_mode=protocol` 路由到本机 `protocol-registerd`；在 readiness 与状态机
-一致性验证完成前，该服务保持 opt-in，不应直接扩大线上并发。
+`PROTOCOL_REGISTER_ENGINE=python` 保持 Python 参考链路。设置为 `go` 会先检查
+本机 `protocol-registerd`，但本阶段 daemon 将 `protocol_ready=false` 硬编码在
+生产配置中，因此 `/v1/register` 会在解析请求和调用引擎前返回
+`service_not_ready`，不会接触上游。启用 startup-only fallback 时会回到 Python；
+禁用 fallback 时会返回明确的 unavailable 错误。
 
 | Variable | Default | Purpose |
 |---|---:|---|
 | `GO_PROTOCOL_REGISTER_URL` | `http://127.0.0.1:18787` | Local service endpoint |
 | `GO_PROTOCOL_REGISTER_AUTO_START` | `1` | Python may start the local binary |
 | `GO_PROTOCOL_REGISTER_BIN` | `bin/protocol-registerd.exe` | Windows binary path |
-| `GO_PROTOCOL_MAX_CONCURRENCY` | `50` | MVP daemon admission ceiling；不是建议的上游认证并发 |
+| `GO_PROTOCOL_MAX_CONCURRENCY` | `20` | Daemon 总 admission 上限，包含等待邮箱 OTP 的尝试 |
+| `GO_PROTOCOL_AUTH_CONCURRENCY` | `3` | 上游认证阶段的保守并发上限 |
 | `GO_PROTOCOL_FALLBACK_PYTHON` | `1` | 仅 daemon 启动/健康检查失败时允许 Python fallback |
 | `GO_PROTOCOL_TRACE` | `0` | Include non-secret trace events |
-| `GO_PROTOCOL_IMPERSONATE` | `chrome143,...,chrome152` | MVP legacy UA label；Go 标准 TLS 不构成对应浏览器 profile |
+| `GO_PROTOCOL_IMPERSONATE` | `go-http` | 仅保留请求兼容性；标准 Go transport 会忽略传入值，并始终如实标识为 `go-http` |
 
 Go register 调用一旦开始，客户端会把后续网络 timeout、连接中断和无效 JSON
 响应标记为 `indeterminate` 并直接返回错误。即使
