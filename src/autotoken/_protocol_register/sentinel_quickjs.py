@@ -59,6 +59,22 @@ logger = logging.getLogger(__name__)
 
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 _SDK_DOWNLOAD_LOCK = threading.Lock()
+_PROCESS_ENV_ALLOWLIST = (
+    "PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+)
+_SENTINEL_SUBPROCESS_ENV = frozenset(
+    {
+        "OPENAI_SENTINEL_SDK_FILE",
+        "OPENAI_SENTINEL_QUICKJS_SCRIPT",
+        "OPENAI_SENTINEL_VM_TIMEOUT_MS",
+    }
+)
 
 
 def _resolve_node_binary() -> str:
@@ -67,6 +83,21 @@ def _resolve_node_binary() -> str:
 
 def _quickjs_script_path() -> Path:
     return Path(__file__).resolve().parent / "openai_sentinel_quickjs.js"
+
+
+def _subprocess_env(extra: dict[str, str]) -> dict[str, str]:
+    """Build a minimal Node environment without inheriting app secrets."""
+    inherited = {key.upper(): value for key, value in os.environ.items()}
+    env = {
+        key: inherited[key]
+        for key in _PROCESS_ENV_ALLOWLIST
+        if key in inherited
+    }
+    for key, value in extra.items():
+        normalized = str(key).upper()
+        if normalized in _SENTINEL_SUBPROCESS_ENV:
+            env[normalized] = str(value)
+    return env
 
 
 def _ensure_sdk_file(
@@ -178,12 +209,11 @@ def _run_quickjs_action(
         text=True,
         capture_output=True,
         timeout=max(10, int(timeout_ms / 1000) + 5),
-        env={
-            **os.environ,
+        env=_subprocess_env({
             "OPENAI_SENTINEL_SDK_FILE": str(sdk_file),
             "OPENAI_SENTINEL_QUICKJS_SCRIPT": str(quickjs_script),
             "OPENAI_SENTINEL_VM_TIMEOUT_MS": str(min(timeout_ms, 30000)),
-        },
+        }),
     )
     if proc.returncode != 0:
         raise RuntimeError(f"QuickJS 执行失败: {(proc.stderr or proc.stdout or 'unknown').strip()[:300]}")

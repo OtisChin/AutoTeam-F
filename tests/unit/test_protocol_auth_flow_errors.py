@@ -5,6 +5,8 @@ import logging
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_auth_flow_module():
     protocol_dir = Path(__file__).resolve().parents[2] / "src" / "autotoken" / "_protocol_register"
@@ -58,6 +60,64 @@ def test_auth_flow_does_not_rotate_profile_after_tls_failure(monkeypatch):
 
     assert flow._rotate_impersonate_session() is False
     assert flow.session is original
+
+
+def test_register_password_stops_when_sentinel_refresh_is_unavailable(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+    sentinel_module = importlib.import_module("sentinel")
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeSession:
+        def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("registration mutation must not be sent")
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.session = FakeSession()
+    flow.result.device_id = "device-1"
+    monkeypatch.setattr(
+        sentinel_module,
+        "get_sentinel_token",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sentinel_module.SentinelUnavailable("runtime unavailable")
+        ),
+    )
+
+    with pytest.raises(sentinel_module.SentinelUnavailable):
+        flow.register_password("user@example.com")
+
+
+def test_create_account_stops_when_sentinel_refresh_is_unavailable(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+    sentinel_module = importlib.import_module("sentinel")
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeSession:
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("account mutation must not be sent")
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.session = FakeSession()
+    flow.result.device_id = "device-1"
+    monkeypatch.setattr(
+        sentinel_module,
+        "get_sentinel_token",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sentinel_module.SentinelUnavailable("runtime unavailable")
+        ),
+    )
+
+    with pytest.raises(sentinel_module.SentinelUnavailable):
+        flow.create_account()
 
 
 def test_phone_otp_command_args_accepts_json_argv_and_quoted_command():

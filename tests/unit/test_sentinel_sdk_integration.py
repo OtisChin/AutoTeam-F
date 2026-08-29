@@ -7,6 +7,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from autotoken._protocol_register import sentinel, sentinel_quickjs
 from autotoken._protocol_register.sentinel_sdk import SentinelSdk
 
@@ -62,6 +64,30 @@ class SlowDownloadSession(DownloadSession):
             self.calls.append((url, kwargs))
         time.sleep(0.05)
         return SdkResponse()
+
+
+def test_sentinel_fails_closed_when_quickjs_is_unavailable(monkeypatch):
+    monkeypatch.delenv("OPENAI_SENTINEL_DISABLE_QUICKJS", raising=False)
+    monkeypatch.delenv("OPENAI_SENTINEL_ALLOW_SYNTHETIC_FALLBACK", raising=False)
+    monkeypatch.setattr(
+        sentinel_quickjs,
+        "get_sentinel_token_via_quickjs",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(sentinel.SentinelUnavailable):
+        sentinel.get_sentinel_token(object(), "device-1")
+
+
+def test_quickjs_subprocess_environment_excludes_application_secrets(monkeypatch):
+    monkeypatch.setenv("APPLICATION_SECRET_FOR_TEST", "do-not-inherit")
+
+    env = sentinel_quickjs._subprocess_env(
+        {"OPENAI_SENTINEL_VM_TIMEOUT_MS": "1000"}
+    )
+
+    assert "APPLICATION_SECRET_FOR_TEST" not in env
+    assert env["OPENAI_SENTINEL_VM_TIMEOUT_MS"] == "1000"
 
 
 def test_quickjs_download_uses_resolved_sdk_url_and_version_cache(

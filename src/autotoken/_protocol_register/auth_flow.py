@@ -2183,6 +2183,7 @@ class AuthFlow:
                 logger.info("Sentinel Token 获取成功")
             except Exception as e:
                 logger.warning(f"注册前刷新 sentinel 失败: {e}")
+                raise
 
         headers = self._common_headers("https://auth.openai.com/create-account/password")
         headers["Content-Type"] = "application/json"
@@ -2387,6 +2388,7 @@ class AuthFlow:
                 logger.info("Sentinel Token 获取成功")
             except Exception as e:
                 logger.warning(f"创建账户前刷新 sentinel 失败: {e}")
+                raise
         headers = self._common_headers("https://auth.openai.com/about-you")
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:

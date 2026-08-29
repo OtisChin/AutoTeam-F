@@ -128,6 +128,7 @@ OAUTH_CHROME_CDP_URL=http://127.0.0.1:9222
 OPENAI_SENTINEL_SDK_URL=
 OPENAI_SENTINEL_VERSION=
 OPENAI_SENTINEL_SDK_TTL_SECONDS=21600
+OPENAI_SENTINEL_ALLOW_SYNTHETIC_FALLBACK=0
 ```
 
 解析优先级如下：
@@ -140,14 +141,18 @@ OPENAI_SENTINEL_SDK_TTL_SECONDS=21600
 5. 发现失败时使用过期的 last-discovered 缓存。
 6. 无可用缓存时使用内置版本 `20260219f9f6`。
 
-QuickJS 会再按“本次解析版本 → 最近一次完整求解成功的 last-known-good →
-内置版本”尝试，若未来 SDK 的压缩结构发生不兼容变化，不会直接中断全部注册。
+QuickJS 会再按“本次解析版本 → 最近一次完整执行成功的 last-known-good →
+内置版本”尝试。所有候选均不可执行时，协议注册默认 fail-closed，不会生成
+synthetic token，也不会继续发送后续注册请求。此时应停止任务，或由操作员
+显式选择项目支持的浏览器注册流程。
 
 默认 TTL 为 `21600` 秒（6 小时），设为 `0` 可让每次注册都检查线上版本，
 但高并发场景建议保留默认值。Windows 缓存通常位于
 `%TEMP%/openai-sentinel-demo/latest.json`；运行验证记录位于同目录的
-`last-good.json`，各版本 SDK 位于版本子目录。QuickJS 与纯 Python fallback
-共用同一次解析结果，避免生成 token 时出现 SDK 地址不一致。
+`last-good.json`，各版本 SDK 位于版本子目录。旧的纯 Python synthetic fallback
+仅可通过 `OPENAI_SENTINEL_ALLOW_SYNTHETIC_FALLBACK=1` 显式恢复以兼容旧部署，
+该路径不受支持，默认保持关闭。QuickJS 子进程只继承启动 Node 所需的系统变量
+和 Sentinel 运行参数，不继承应用密码、API key 或其他配置 secrets。
 
 ## Playwright 代理
 
