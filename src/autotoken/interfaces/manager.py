@@ -4474,6 +4474,8 @@ def create_account_direct(
                         or last_failure_reason
                         or go_status
                     )
+            else:
+                last_failure_status = ""
 
         if success:
             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)

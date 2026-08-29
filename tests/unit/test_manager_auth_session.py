@@ -158,6 +158,53 @@ def test_protocol_register_keeps_python_failure_status(monkeypatch):
     assert outcome["status"] == "register_failed"
 
 
+def test_protocol_register_clears_stale_go_status_on_python_retry_failure(monkeypatch):
+    outcome = {}
+    attempts = []
+
+    class FakeMailClient:
+        provider_name = "outlook"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mailbox-1", "user@example.com"
+
+        def delete_account(self, account_id):
+            return {"code": 0}
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *args, **kwargs: {})
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.time, "sleep", lambda *_args: None)
+
+    def fake_register_once(*args, **kwargs):
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            return (
+                False,
+                {
+                    "status": "email_code_timeout",
+                    "reason": "Go registration failed",
+                    "raw": {"source": "go_protocol_register"},
+                },
+            )
+        return (False, {"status": 0, "reason": "legacy python failure", "raw": {"source": "python"}})
+
+    monkeypatch.setattr("autotoken.auth.protocol_register.register_once", fake_register_once)
+
+    result = manager.create_account_direct(
+        FakeMailClient(),
+        password="pw",
+        check_team_membership=False,
+        register_mode="protocol",
+        post_register_oauth=False,
+        retry_attempts=2,
+        out_outcome=outcome,
+    )
+
+    assert result is None
+    assert outcome["status"] == "register_failed"
+
+
 class FakeContext:
     def cookies(self, url):
         assert url == "https://chatgpt.com"
