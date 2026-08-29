@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -42,6 +44,7 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 		case "/oauth/start":
 			captured.navigationOrigin = r.Header.Get("Origin")
 			captured.navigationAccept = r.Header.Get("Accept")
+			http.SetCookie(w, &http.Cookie{Name: "oai-did", Value: "device-1", Path: "/"})
 			w.WriteHeader(http.StatusOK)
 		default:
 			http.NotFound(w, r)
@@ -51,8 +54,12 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 
 	profile := ResolveTransportProfile("chrome143,chrome152")
 	client := NewClient(srv.Client(), srv.URL, srv.URL, profile.UserAgent)
-	if err := client.SigninOpenAI(context.Background(), "csrf-1"); err != nil {
+	deviceID, err := client.InitializeOAuth(context.Background(), "csrf-1")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if deviceID != "device-1" {
+		t.Fatalf("deviceID=%q", deviceID)
 	}
 
 	values, err := url.ParseQuery(captured.body)
@@ -79,6 +86,97 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 	}
 	if values.Get("csrfToken") != "csrf-1" || values.Get("callbackUrl") != srv.URL+"/" || values.Get("json") != "true" {
 		t.Fatalf("form=%#v", values)
+	}
+}
+
+func TestInitializeOAuthRequiresDeviceCookie(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/signin/openai":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"url": srv.URL + "/oauth/start"})
+		case "/oauth/start":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+	if _, err := client.InitializeOAuth(context.Background(), "csrf-1"); !errors.Is(err, ErrInvalidAuthState) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFollowContinueRejectsUntrustedHostBeforeRequest(t *testing.T) {
+	untrustedCalls := 0
+	untrusted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		untrustedCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer untrusted.Close()
+	trusted := httptest.NewServer(http.NotFoundHandler())
+	defer trusted.Close()
+
+	client := NewClient(http.DefaultClient, trusted.URL, trusted.URL, defaultTransportUserAgent)
+	err := client.FollowContinue(context.Background(), untrusted.URL+"/steal-session")
+	if !errors.Is(err, ErrInvalidAuthState) {
+		t.Fatalf("err=%v", err)
+	}
+	if untrustedCalls != 0 {
+		t.Fatalf("untrusted calls=%d", untrustedCalls)
+	}
+}
+
+func TestJSONResponsesRejectTrailingAndOversizedData(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "trailing JSON", body: `{"csrfToken":"csrf-1"}{"extra":true}`},
+		{name: "oversized", body: `{"csrfToken":"csrf-1"}` + strings.Repeat(" ", (1<<20)+1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+			if _, err := client.GetCSRF(context.Background()); !errors.Is(err, ErrInvalidAuthState) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestNoOutputJSONResponsesAreDrainedForConnectionReuse(t *testing.T) {
+	var newConnections atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"padding": strings.Repeat("x", 4096)})
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConnections.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+	for range 2 {
+		if err := client.SendEmailOTP(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := newConnections.Load(); got != 1 {
+		t.Fatalf("connections=%d, want one reused connection", got)
 	}
 }
 
@@ -117,7 +215,7 @@ func TestClientUsesHeadersForEachEndpointBase(t *testing.T) {
 	if chatGPTHeaders.origin != chatGPTServer.URL || chatGPTHeaders.referer != chatGPTServer.URL+"/auth/login" {
 		t.Fatalf("ChatGPT headers=%#v", chatGPTHeaders)
 	}
-	if authHeaders.origin != authServer.URL || authHeaders.referer != authServer.URL+"/" {
+	if authHeaders.origin != authServer.URL || authHeaders.referer != authServer.URL+"/create-account" {
 		t.Fatalf("auth headers=%#v", authHeaders)
 	}
 }

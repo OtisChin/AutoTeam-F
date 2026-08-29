@@ -47,10 +47,11 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 		return fail(req.Email, "network_error", err.Error(), "csrf", true, progress.Events())
 	}
 	progress.Add("csrf", "csrf token acquired", nil)
-	if err := api.SigninOpenAI(ctx, csrf); err != nil {
-		return fail(req.Email, "network_error", err.Error(), "signin_openai", true, progress.Events())
+	deviceID, err := api.InitializeOAuth(ctx, csrf)
+	if err != nil {
+		return authFailure(req.Email, err, "signin_openai", "network_error", true, progress.Events())
 	}
-	authorizeToken, err := e.sentinelToken(ctx, client, api.DeviceID(), "authorize_continue")
+	authorizeToken, err := e.sentinelToken(ctx, client, deviceID, "authorize_continue")
 	if err != nil {
 		return authFailure(req.Email, err, "authorize_continue", "register_failed", true, progress.Events())
 	}
@@ -59,8 +60,11 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 		return authFailure(req.Email, err, "authorize_continue", "register_failed", true, progress.Events())
 	}
 	progress.Add("email_submitted", "email accepted", map[string]any{"page_type": authStep.PageType})
+	if err := api.FollowContinue(ctx, authStep.ContinueURL); err != nil {
+		return authFailure(req.Email, err, "authorize_continue", "register_failed", true, progress.Events())
+	}
 	if authStep.PageType == "create_account_password" {
-		passwordToken, err := e.sentinelToken(ctx, client, api.DeviceID(), "username_password_create")
+		passwordToken, err := e.sentinelToken(ctx, client, deviceID, "username_password_create")
 		if err != nil {
 			return authFailure(req.Email, err, "register_password", "register_failed", true, progress.Events())
 		}
@@ -71,24 +75,40 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 	if err := api.SendEmailOTP(ctx); err != nil {
 		return fail(req.Email, "register_failed", err.Error(), "send_email_otp", true, progress.Events())
 	}
-	code, err := mailbridge.NewClient(client, 3*time.Second).WaitForOTP(ctx, req.Mail.ReceiveCodeURL)
+	mailHTTPClient, err := httpclient.New("", timeout+30*time.Second)
+	if err != nil {
+		return fail(req.Email, "network_error", err.Error(), "mail_client", true, progress.Events())
+	}
+	code, err := mailbridge.NewClient(mailHTTPClient, 3*time.Second).WaitForOTP(ctx, req.Mail.ReceiveCodeURL)
 	if err != nil {
 		return fail(req.Email, "email_code_timeout", "email OTP not received within timeout", "email_otp", false, progress.Events())
 	}
-	if _, err := api.VerifyEmailOTP(ctx, code); err != nil {
-		return fail(req.Email, "register_failed", err.Error(), "verify_email_otp", true, progress.Events())
+	otpStep, err := api.VerifyEmailOTP(ctx, code)
+	if err != nil {
+		return authFailure(req.Email, err, "verify_email_otp", "register_failed", true, progress.Events())
+	}
+	if otpStep.PageType != "about_you" {
+		return authFailure(req.Email, openai.ErrInvalidAuthState, "verify_email_otp", "register_failed", true, progress.Events())
 	}
 	progress.Add("otp_verified", "email OTP verified", nil)
-	createToken, err := e.sentinelToken(ctx, client, api.DeviceID(), "create_account")
+	createToken, err := e.sentinelToken(ctx, client, deviceID, "create_account")
 	if err != nil {
 		return authFailure(req.Email, err, "create_account", "phone_blocked", false, progress.Events())
 	}
-	if err := api.CreateAccount(ctx, createToken); err != nil {
+	createStep, err := api.CreateAccount(ctx, createToken, "Alex Chen", "1993-01-01")
+	if err != nil {
 		return authFailure(req.Email, err, "create_account", "phone_blocked", false, progress.Events())
 	}
-	sessionData, err := api.GetAuthSession(ctx)
+	if err := api.FollowContinue(ctx, createStep.ContinueURL); err != nil {
+		return authFailure(req.Email, err, "create_account_redirect", "register_failed", false, progress.Events())
+	}
+	rawSession, err := api.GetAuthSession(ctx)
 	if err != nil {
 		return fail(req.Email, "register_failed", err.Error(), "auth_session", true, progress.Events())
+	}
+	sessionData, err := openai.ExtractSession(rawSession, client.Jar, api.ChatGPTBaseURL)
+	if err != nil {
+		return fail(req.Email, "session_missing", err.Error(), "auth_session", false, progress.Events())
 	}
 	sessionData["email"] = req.Email
 	sessionData["raw"] = map[string]any{"source": "go_protocol_register"}

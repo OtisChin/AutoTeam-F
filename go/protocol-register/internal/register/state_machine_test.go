@@ -13,58 +13,160 @@ import (
 	"testing"
 )
 
-func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
-	hits := map[string]int{}
-	userAgents := map[string]int{}
-	expectedSentinel := map[string]string{
-		"/api/accounts/authorize/continue": "mock-authorize_continue",
-		"/api/accounts/user/register":      "mock-username_password_create",
-		"/api/accounts/profile":            "mock-create_account",
+func TestHTTPRegisterEngineEnforcesLocalAuthStateParity(t *testing.T) {
+	type requestExpectation struct {
+		method        string
+		path          string
+		contentType   string
+		origin        string
+		referer       string
+		sentinelToken string
+		authCookies   bool
+		sessionCookie bool
 	}
-	var mu sync.Mutex
-	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits[r.URL.Path]++
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Content-Type", "application/json")
-			ua := r.Header.Get("User-Agent")
-			mu.Lock()
-			userAgents[ua]++
-			mu.Unlock()
+
+	var (
+		openaiSrv   *httptest.Server
+		expected    []requestExpectation
+		requestMu   sync.Mutex
+		requestStep int
+	)
+	openaiSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestMu.Lock()
+		if requestStep >= len(expected) {
+			requestMu.Unlock()
+			t.Errorf("unexpected extra request: %s %s", r.Method, r.URL.RequestURI())
+			http.NotFound(w, r)
+			return
 		}
-		if want, ok := expectedSentinel[r.URL.Path]; ok {
-			if got := r.Header.Get("openai-sentinel-token"); got != want {
-				t.Errorf("%s sentinel token=%q, want %q", r.URL.Path, got, want)
+		want := expected[requestStep]
+		requestStep++
+		requestMu.Unlock()
+
+		if r.Method != want.method || r.URL.Path != want.path {
+			t.Errorf("request=%s %s, want %s %s", r.Method, r.URL.Path, want.method, want.path)
+		}
+		if got := r.Header.Get("User-Agent"); got != "AutoToken-F protocol-registerd/go-http" {
+			t.Errorf("%s User-Agent=%q", r.URL.Path, got)
+		}
+		if got := r.Header.Get("Content-Type"); got != want.contentType {
+			t.Errorf("%s Content-Type=%q, want %q", r.URL.Path, got, want.contentType)
+		}
+		if got := r.Header.Get("Origin"); got != want.origin {
+			t.Errorf("%s Origin=%q, want %q", r.URL.Path, got, want.origin)
+		}
+		if got := r.Header.Get("Referer"); got != want.referer {
+			t.Errorf("%s Referer=%q, want %q", r.URL.Path, got, want.referer)
+		}
+		if got := r.Header.Get("openai-sentinel-token"); got != want.sentinelToken {
+			t.Errorf("%s sentinel=%q, want %q", r.URL.Path, got, want.sentinelToken)
+		}
+		if want.authCookies {
+			for name, value := range map[string]string{"oai-did": "device-1", "auth-state": "state-1"} {
+				cookie, err := r.Cookie(name)
+				if err != nil || cookie.Value != value {
+					t.Errorf("%s cookie %s=%v err=%v", r.URL.Path, name, cookie, err)
+				}
 			}
-		} else if got := r.Header.Get("openai-sentinel-token"); got != "" {
-			t.Errorf("%s unexpectedly received sentinel token %q", r.URL.Path, got)
+		}
+		if want.sessionCookie {
+			cookie, err := r.Cookie("next-auth.session-token")
+			if err != nil || cookie.Value != "session-1" {
+				t.Errorf("%s session cookie=%v err=%v", r.URL.Path, cookie, err)
+			}
+		}
+
+		writeJSON := func(payload any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(payload)
 		}
 		switch r.URL.Path {
 		case "/api/auth/csrf":
-			_ = json.NewEncoder(w).Encode(map[string]any{"csrfToken": "csrf-1"})
+			writeJSON(map[string]string{"csrfToken": "csrf-1"})
 		case "/api/auth/signin/openai":
-			_ = json.NewEncoder(w).Encode(map[string]any{"url": "http://" + r.Host + "/oauth/start"})
+			if err := r.ParseForm(); err != nil || r.Form.Get("csrfToken") != "csrf-1" || r.Form.Get("json") != "true" {
+				t.Errorf("signin form=%#v err=%v", r.Form, err)
+			}
+			writeJSON(map[string]string{"url": openaiSrv.URL + "/oauth/start"})
 		case "/oauth/start":
 			http.SetCookie(w, &http.Cookie{Name: "oai-did", Value: "device-1", Path: "/"})
-			_, _ = w.Write([]byte("ok"))
+			http.SetCookie(w, &http.Cookie{Name: "auth-state", Value: "state-1", Path: "/"})
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("oauth initialized"))
 		case "/api/accounts/authorize/continue":
-			_ = json.NewEncoder(w).Encode(map[string]any{"page": map[string]any{"type": "create_account_password"}, "continue_url": "/create-account/password"})
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			username, _ := body["username"].(map[string]any)
+			if username["value"] != "user@example.com" || body["screen_hint"] != "signup" {
+				t.Errorf("authorize body=%#v", body)
+			}
+			writeJSON(map[string]any{"page": map[string]any{"type": "create_account_password"}, "continue_url": "/create-account/password"})
+		case "/create-account/password":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("password page"))
 		case "/api/accounts/user/register":
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["username"] != "user@example.com" || body["password"] != "Password123$" {
+				t.Errorf("password body=%#v", body)
+			}
+			writeJSON(map[string]bool{"ok": true})
 		case "/api/accounts/email-otp/send":
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-		case "/api/accounts/email-otp/verify":
-			_ = json.NewEncoder(w).Encode(map[string]any{"continue_url": "http://" + r.Host + "/about-you"})
-		case "/api/accounts/profile":
-			_ = json.NewEncoder(w).Encode(map[string]any{"continue_url": "http://" + r.Host + "/callback?code=abc"})
+			writeJSON(map[string]bool{"ok": true})
+		case "/api/accounts/email-otp/validate":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["code"] != "123456" {
+				t.Errorf("OTP body=%#v", body)
+			}
+			writeJSON(map[string]any{"page": map[string]any{"type": "about_you"}, "continue_url": "/about-you"})
+		case "/api/accounts/create_account":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["name"] != "Alex Chen" || body["birthdate"] != "1993-01-01" {
+				t.Errorf("create-account body=%#v", body)
+			}
+			writeJSON(map[string]string{"continue_url": "/authorize/resume"})
+		case "/authorize/resume":
+			http.Redirect(w, r, openaiSrv.URL+"/api/auth/callback/openai?code=abc", http.StatusFound)
+		case "/api/auth/callback/openai":
+			if r.URL.Query().Get("code") != "abc" {
+				t.Errorf("callback query=%q", r.URL.RawQuery)
+			}
+			http.SetCookie(w, &http.Cookie{Name: "next-auth.session-token", Value: "session-1", Path: "/"})
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("callback consumed"))
 		case "/api/auth/session":
-			_ = json.NewEncoder(w).Encode(map[string]any{"accessToken": "access-1", "sessionToken": "session-1"})
+			writeJSON(map[string]any{"accessToken": "access-1", "user": map[string]any{"email": "user@example.com"}})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer openaiSrv.Close()
+
+	expected = []requestExpectation{
+		{method: http.MethodGet, path: "/api/auth/csrf", origin: openaiSrv.URL, referer: openaiSrv.URL + "/auth/login"},
+		{method: http.MethodPost, path: "/api/auth/signin/openai", contentType: "application/x-www-form-urlencoded", origin: openaiSrv.URL, referer: openaiSrv.URL + "/auth/login"},
+		{method: http.MethodGet, path: "/oauth/start", referer: openaiSrv.URL + "/auth/login"},
+		{method: http.MethodPost, path: "/api/accounts/authorize/continue", contentType: "application/json", origin: openaiSrv.URL, referer: openaiSrv.URL + "/create-account", sentinelToken: "mock-authorize_continue", authCookies: true},
+		{method: http.MethodGet, path: "/create-account/password", referer: openaiSrv.URL + "/", authCookies: true},
+		{method: http.MethodPost, path: "/api/accounts/user/register", contentType: "application/json", origin: openaiSrv.URL, referer: openaiSrv.URL + "/create-account/password", sentinelToken: "mock-username_password_create", authCookies: true},
+		{method: http.MethodGet, path: "/api/accounts/email-otp/send", origin: openaiSrv.URL, referer: openaiSrv.URL + "/create-account/password", authCookies: true},
+		{method: http.MethodPost, path: "/api/accounts/email-otp/validate", contentType: "application/json", origin: openaiSrv.URL, referer: openaiSrv.URL + "/email-verification", authCookies: true},
+		{method: http.MethodPost, path: "/api/accounts/create_account", contentType: "application/json", origin: openaiSrv.URL, referer: openaiSrv.URL + "/about-you", sentinelToken: "mock-create_account", authCookies: true},
+		{method: http.MethodGet, path: "/authorize/resume", referer: openaiSrv.URL + "/", authCookies: true},
+		{method: http.MethodGet, path: "/api/auth/callback/openai", referer: openaiSrv.URL + "/authorize/resume", authCookies: true},
+		{method: http.MethodGet, path: "/api/auth/session", origin: openaiSrv.URL, referer: openaiSrv.URL + "/", authCookies: true, sessionCookie: true},
+	}
+
+	mailCalls := 0
 	mailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"code": "123456"})
+		mailCalls++
+		if len(r.Cookies()) != 0 {
+			t.Errorf("mail request leaked auth cookies: %#v", r.Cookies())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "123456"})
 	}))
 	defer mailSrv.Close()
 
@@ -77,21 +179,15 @@ func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
 		Mail:    model.MailConfig{Provider: "generic-api", ReceiveCodeURL: mailSrv.URL},
 		Options: model.RegisterOptions{TimeoutSeconds: 2},
 	})
-	if !resp.Success || resp.Status != "success" || resp.SessionData["accessToken"] != "access-1" {
+
+	if !resp.Success || resp.Status != "success" || resp.SessionData["accessToken"] != "access-1" || resp.SessionData["sessionToken"] != "session-1" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	mu.Lock()
-	var userAgent string
-	for ua := range userAgents {
-		userAgent = ua
-	}
-	count := len(userAgents)
-	mu.Unlock()
-	if count != 1 {
-		t.Fatalf("expected one user agent across the flow, got %#v", userAgents)
-	}
-	if userAgent != "AutoToken-F protocol-registerd/go-http" {
-		t.Fatalf("user agent=%q, want deterministic go-http identity", userAgent)
+	requestMu.Lock()
+	gotRequestSteps := requestStep
+	requestMu.Unlock()
+	if gotRequestSteps != len(expected) || mailCalls != 1 {
+		t.Fatalf("request steps=%d/%d mail calls=%d", gotRequestSteps, len(expected), mailCalls)
 	}
 	wantFlows := []string{"authorize_continue", "username_password_create", "create_account"}
 	if len(provider.calls) != len(wantFlows) {
@@ -100,11 +196,6 @@ func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
 	for i, wantFlow := range wantFlows {
 		if provider.calls[i].flow != wantFlow || provider.calls[i].deviceID != "device-1" {
 			t.Fatalf("sentinel call[%d]=%#v", i, provider.calls[i])
-		}
-	}
-	for _, path := range []string{"/api/auth/csrf", "/api/auth/signin/openai", "/api/accounts/authorize/continue", "/api/accounts/user/register", "/api/accounts/email-otp/send", "/api/accounts/email-otp/verify", "/api/accounts/profile", "/api/auth/session"} {
-		if hits[path] == 0 {
-			t.Fatalf("expected hit for %s, hits=%#v", path, hits)
 		}
 	}
 }
@@ -225,7 +316,7 @@ func TestHTTPRegisterEngineSanitizesOAuthURLErrors(t *testing.T) {
 		Email:   "user@example.com",
 		Options: model.RegisterOptions{TimeoutSeconds: 2},
 	})
-	assertSanitizedFailure(t, resp, "signin_openai", secret)
+	assertSanitizedFailure(t, resp, "signin_openai", secret, "invalid_auth_state", "invalid_auth_state")
 }
 
 func TestHTTPRegisterEngineSanitizesProxyURLErrors(t *testing.T) {
@@ -236,7 +327,7 @@ func TestHTTPRegisterEngineSanitizesProxyURLErrors(t *testing.T) {
 		ProxyURL: "http://proxy-user:" + secret + "@[::1",
 		Options:  model.RegisterOptions{TimeoutSeconds: 2},
 	})
-	assertSanitizedFailure(t, resp, "http_client", secret)
+	assertSanitizedFailure(t, resp, "http_client", secret, "register_failed", "network_error")
 }
 
 type sentinelCall struct {
@@ -255,9 +346,9 @@ func (p *staticSentinelProvider) Token(_ context.Context, _ *http.Client, device
 
 var _ openai.SentinelProvider = (*staticSentinelProvider)(nil)
 
-func assertSanitizedFailure(t *testing.T, resp model.RegisterResponse, step, secret string) {
+func assertSanitizedFailure(t *testing.T, resp model.RegisterResponse, step, secret, status, code string) {
 	t.Helper()
-	if resp.Status != "register_failed" || resp.Error == nil || resp.Error.Code != "network_error" || resp.Error.Step != step {
+	if resp.Status != status || resp.Error == nil || resp.Error.Code != code || resp.Error.Step != step {
 		t.Fatalf("response=%#v", resp)
 	}
 	raw, _ := json.Marshal(resp)
