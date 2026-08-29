@@ -1,328 +1,376 @@
-### Task 4: 注册账户页 mail.com 邮箱池 UI
+### Task 4: Go Email-First Registration State Machine
 
 **Files:**
-- Modify: `D:/code/OpenSource/AutoTeam-F/web/src/api.js`
-- Modify: `D:/code/OpenSource/AutoTeam-F/web/src/components/RegisterAccountPage.vue`
+- Create: `go/protocol-register/internal/register/progress.go`
+- Create: `go/protocol-register/internal/register/state_machine.go`
+- Create: `go/protocol-register/internal/register/state_machine_test.go`
+- Create: `go/protocol-register/internal/openai/headers.go`
+- Create: `go/protocol-register/internal/openai/auth_api.go`
+- Modify: `go/protocol-register/cmd/protocol-registerd/main.go`
 
 **Interfaces:**
-- Consumes: `api.importMailAccounts(text)`
-- Consumes: `api.getMailAccountsPoolStatus()`
-- Consumes: `api.syncMailAccountsToAccountPool(emails)`
-- Consumes: `api.loginAccountsBatch(emails, { mail_provider: "mail.com", protocol_only: true, bind_email: false })`
-- Produces UI functions:
-  - `isMailComProvider`
-  - `loadMailComPoolStatus`
-  - `importMailComAccounts`
-  - `loginSelectedMailComAccounts`
-  - `deleteSelectedMailComPoolEmails`
+- Produces: `register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig) *register.HTTPRegisterEngine`.
+- Produces: `openai.Client` methods for phase-1 endpoints.
+- Consumes: `httpclient.New`, `mailbridge.NewClient`.
 
-- [ ] **Step 1: Add API methods**
+- [ ] **Step 1: Write failing mocked success test**
 
-In `D:/code/OpenSource/AutoTeam-F/web/src/api.js`, after existing mail account methods:
+Create `go/protocol-register/internal/register/state_machine_test.go`:
 
-```js
-  getMailAccountsPoolStatus: () => request('GET', '/mail-accounts/pool-status'),
-  syncMailAccountsToAccountPool: (emails = []) => request('POST', '/mail-accounts/sync-account-pool', { emails }),
-```
+```go
+package register_test
 
-- [ ] **Step 2: Add provider computeds**
-
-In `D:/code/OpenSource/AutoTeam-F/web/src/components/RegisterAccountPage.vue`, add:
-
-```js
-const isMailComProvider = computed(() => String(registerForm.value.mailProvider || '').trim().toLowerCase() === 'mail.com')
-```
-
-Update:
-
-```js
-const registerProviderUsesPool = computed(() => isOutlookProvider.value || isMailComProvider.value)
-const registerProviderPoolMessage = computed(() => {
-  if (isOutlookProvider.value) return 'Outlook 邮箱池中选择'
-  if (isMailComProvider.value) return 'mail.com 邮箱池中选择'
-  return ''
-})
-const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value && !isPhoneCpaFlow.value)
-```
-
-Update `registerPreviewEmail`:
-
-```js
-if (isMailComProvider.value) return 'mail.com邮箱池中选择'
-```
-
-- [ ] **Step 3: Add mail.com UI state**
-
-Near Outlook state variables, add:
-
-```js
-const mailComPoolStatus = ref(null)
-const mailComPoolLoading = ref(false)
-const mailComPoolError = ref('')
-const mailComImportDialogOpen = ref(false)
-const mailComImportContent = ref('')
-const mailComImportResult = ref('')
-const mailComImportResultOk = ref(true)
-const mailComPoolDialogOpen = ref(false)
-const mailComPoolSelectedEmails = ref([])
-const mailComPoolDeleting = ref(false)
-const mailComPoolLoginBusy = ref(false)
-
-const mailComPoolItems = computed(() => Array.isArray(mailComPoolStatus.value?.items) ? mailComPoolStatus.value.items : [])
-const mailComPoolVisibleEmails = computed(() => mailComPoolItems.value.map(item => item.email).filter(Boolean))
-const mailComPoolSelectedCount = computed(() => mailComPoolSelectedEmails.value.length)
-const mailComPoolAllVisibleSelected = computed(() => {
-  const visible = mailComPoolVisibleEmails.value
-  return visible.length > 0 && visible.every(email => mailComPoolSelectedEmails.value.includes(email))
-})
-const mailComLoginCandidateEmails = computed(() => {
-  const selected = mailComPoolSelectedEmails.value.length ? mailComPoolSelectedEmails.value : mailComPoolVisibleEmails.value
-  const ready = new Set(mailComPoolItems.value.filter(item => item.auth_session_status === 'ready').map(item => item.email))
-  return selected.filter(email => email && !ready.has(email))
-})
-```
-
-- [ ] **Step 4: Add mail.com UI methods**
-
-Near Outlook methods, add:
-
-```js
-function openMailComImportDialog() {
-  mailComImportDialogOpen.value = true
-  mailComImportResult.value = ''
-}
-
-function closeMailComImportDialog() {
-  if (mailComPoolLoading.value) return
-  mailComImportDialogOpen.value = false
-}
-
-async function loadMailComPoolStatus() {
-  if (!isMailComProvider.value || mailComPoolLoading.value) return
-  mailComPoolLoading.value = true
-  mailComPoolError.value = ''
-  try {
-    mailComPoolStatus.value = await api.getMailAccountsPoolStatus()
-    const visible = new Set(mailComPoolVisibleEmails.value)
-    mailComPoolSelectedEmails.value = mailComPoolSelectedEmails.value.filter(email => visible.has(email))
-  } catch (e) {
-    mailComPoolStatus.value = null
-    mailComPoolError.value = `读取 mail.com 邮箱池失败: ${e.message}`
-  } finally {
-    mailComPoolLoading.value = false
-  }
-}
-
-async function importMailComAccounts() {
-  if (mailComPoolLoading.value) return
-  const content = mailComImportContent.value.trim()
-  if (!content) {
-    mailComImportResult.value = '请先粘贴 mail.com 账号'
-    mailComImportResultOk.value = false
-    return
-  }
-  mailComPoolLoading.value = true
-  try {
-    const result = await api.importMailAccounts(content)
-    mailComPoolStatus.value = result.pool_status || await api.getMailAccountsPoolStatus()
-    const emails = Array.isArray(result.synced_account_pool?.emails) ? result.synced_account_pool.emails : []
-    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${emails.length} 个，正在启动登录入池`
-    mailComImportResultOk.value = true
-    if (emails.length) {
-      await api.loginAccountsBatch(emails, {
-        mail_provider: 'mail.com',
-        protocol_only: true,
-        bind_email: false,
-      })
-      emit('task-started')
-    }
-    await loadMailComPoolStatus()
-  } catch (e) {
-    mailComImportResult.value = `导入失败: ${e.message}`
-    mailComImportResultOk.value = false
-  } finally {
-    mailComPoolLoading.value = false
-  }
-}
-
-function openMailComPoolDialog() {
-  mailComPoolDialogOpen.value = true
-  loadMailComPoolStatus()
-}
-
-function closeMailComPoolDialog() {
-  if (mailComPoolDeleting.value || mailComPoolLoginBusy.value) return
-  mailComPoolDialogOpen.value = false
-}
-
-function toggleMailComPoolEmail(email, checked) {
-  const value = String(email || '').trim()
-  if (!value) return
-  const selected = new Set(mailComPoolSelectedEmails.value)
-  checked ? selected.add(value) : selected.delete(value)
-  mailComPoolSelectedEmails.value = Array.from(selected)
-}
-
-function toggleMailComPoolVisible(checked) {
-  const selected = new Set(mailComPoolSelectedEmails.value)
-  for (const email of mailComPoolVisibleEmails.value) {
-    checked ? selected.add(email) : selected.delete(email)
-  }
-  mailComPoolSelectedEmails.value = Array.from(selected)
-}
-
-async function loginSelectedMailComAccounts() {
-  if (mailComPoolLoginBusy.value) return
-  const emails = mailComLoginCandidateEmails.value
-  if (!emails.length) {
-    setMessage('没有需要登录入池的 mail.com 账号', false)
-    return
-  }
-  mailComPoolLoginBusy.value = true
-  try {
-    await api.syncMailAccountsToAccountPool(emails)
-    await api.loginAccountsBatch(emails, {
-      mail_provider: 'mail.com',
-      protocol_only: true,
-      bind_email: false,
-    })
-    emit('task-started')
-    setMessage(`已启动 ${emails.length} 个 mail.com 账号登录入池`, true)
-  } catch (e) {
-    setMessage(`启动 mail.com 登录入池失败: ${e.message}`, false)
-  } finally {
-    mailComPoolLoginBusy.value = false
-  }
-}
-
-async function deleteSelectedMailComPoolEmails() {
-  if (mailComPoolDeleting.value || mailComPoolSelectedCount.value === 0) return
-  const emails = [...mailComPoolSelectedEmails.value]
-  const ok = window.confirm(`确认从 mail.com 邮箱池删除 ${emails.length} 个邮箱?\\n\\n只会删除 mail邮箱管理中的记录，不会删除本地账号池记录。`)
-  if (!ok) return
-  mailComPoolDeleting.value = true
-  try {
-    const result = await api.deleteMailAccounts(emails)
-    mailComPoolSelectedEmails.value = []
-    await loadMailComPoolStatus()
-    setMessage(`已从 mail.com 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)
-  } catch (e) {
-    setMessage(`删除 mail.com 邮箱失败: ${e.message}`, false)
-  } finally {
-    mailComPoolDeleting.value = false
-  }
-}
-```
-
-- [ ] **Step 5: Add mail.com card and dialogs**
-
-Copy the Outlook 邮箱池 card in `RegisterAccountPage.vue` and change text/state/function names:
-
-```vue
-<div v-if="isMailComProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
-  <div class="flex items-start justify-between gap-3">
-    <div>
-      <div class="text-sm font-medium text-white">mail.com 邮箱池</div>
-      <div class="mt-1 text-xs text-gray-500">导入后会同步账号池，并自动启动 ChatGPT 登录获取 auth_session。</div>
-    </div>
-    <div class="flex flex-wrap justify-end gap-2">
-      <button type="button" @click="loadMailComPoolStatus" :disabled="mailComPoolLoading" class="px-3 py-1.5 rounded-lg text-xs border bg-gray-900 hover:bg-gray-800 text-gray-300 border-gray-700 transition disabled:opacity-50">
-        {{ mailComPoolLoading ? '刷新中...' : '刷新状态' }}
-      </button>
-      <button type="button" @click="openMailComImportDialog" class="px-3 py-1.5 rounded-lg text-xs border bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/30 transition">
-        导入邮箱
-      </button>
-      <button type="button" @click="openMailComPoolDialog" class="px-3 py-1.5 rounded-lg text-xs border bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30 transition">
-        管理邮箱池
-      </button>
-    </div>
-  </div>
-  <div v-if="mailComPoolStatus" class="border-y border-gray-800 py-3">
-    <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
-      <div><div class="text-[11px] text-gray-500">邮箱池</div><div class="mt-0.5 text-sm font-medium text-white">{{ mailComPoolStatus.total }}</div></div>
-      <div><div class="text-[11px] text-gray-500">可用</div><div class="mt-0.5 text-sm font-medium text-emerald-300">{{ mailComPoolStatus.available }}</div></div>
-      <div><div class="text-[11px] text-gray-500">auth_session</div><div class="mt-0.5 text-sm font-medium text-blue-300">{{ mailComPoolStatus.auth_session_ready }}</div></div>
-      <div><div class="text-[11px] text-gray-500">未登录</div><div class="mt-0.5 text-sm font-medium text-amber-300">{{ mailComPoolStatus.not_logged_in }}</div></div>
-      <div><div class="text-[11px] text-gray-500">失败</div><div class="mt-0.5 text-sm font-medium text-red-300">{{ mailComPoolStatus.login_failed }}</div></div>
-    </div>
-    <div class="mt-2 text-xs text-gray-500">
-      下一个可用邮箱：
-      <span class="font-mono text-gray-300">{{ mailComPoolStatus.next_available_email || '无' }}</span>
-    </div>
-  </div>
-  <div v-else-if="mailComPoolError" class="text-xs text-red-300">{{ mailComPoolError }}</div>
-</div>
-```
-
-Add import and pool dialogs near the Outlook dialogs with fields:
-
-```vue
-<div v-if="mailComImportDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-  <div class="w-full max-w-3xl rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-2xl">
-    <div class="flex items-center justify-between">
-      <h3 class="text-lg font-semibold text-white">导入 mail.com 邮箱</h3>
-      <button type="button" class="text-gray-400 hover:text-white" @click="closeMailComImportDialog">×</button>
-    </div>
-    <p class="mt-2 text-xs text-gray-500">格式：邮箱----GPT密码----邮箱密码----refreshToken，每行一个。</p>
-    <textarea v-model="mailComImportContent" rows="10" spellcheck="false" class="mt-3 w-full rounded-lg border border-gray-700 bg-gray-900 p-3 font-mono text-xs text-gray-100 focus:border-blue-500 focus:outline-none"></textarea>
-    <div v-if="mailComImportResult" class="mt-3 rounded-lg px-3 py-2 text-xs" :class="mailComImportResultOk ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border border-red-500/20 bg-red-500/10 text-red-300'">
-      {{ mailComImportResult }}
-    </div>
-    <div class="mt-4 flex justify-end gap-2">
-      <button type="button" @click="closeMailComImportDialog" class="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800">取消</button>
-      <button type="button" @click="importMailComAccounts" :disabled="mailComPoolLoading" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50">
-        {{ mailComPoolLoading ? '导入中...' : '导入并登录入池' }}
-      </button>
-    </div>
-  </div>
-</div>
-```
-
-The management dialog should list `mailComPoolItems` with columns: checkbox, email, status, auth_session, account_pool_status, actions. Use `loginSelectedMailComAccounts()` for the “登录并入池/重试” button and `deleteSelectedMailComPoolEmails()` for deletion.
-
-- [ ] **Step 6: Add watchers and lifecycle**
-
-Update Escape handler:
-
-```js
-  } else if (mailComImportDialogOpen.value) {
-    closeMailComImportDialog()
-  } else if (mailComPoolDialogOpen.value) {
-    closeMailComPoolDialog()
-  }
-```
-
-Add watcher:
-
-```js
-watch(
-  isMailComProvider,
-  enabled => {
-    if (enabled) loadMailComPoolStatus()
-  }
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/register"
 )
+
+func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
+	hits := map[string]int{}
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits[r.URL.Path]++
+		switch r.URL.Path {
+		case "/api/auth/csrf":
+			_ = json.NewEncoder(w).Encode(map[string]any{"csrfToken": "csrf-1"})
+		case "/api/auth/signin/openai":
+			_ = json.NewEncoder(w).Encode(map[string]any{"url": "http://" + r.Host + "/oauth/start"})
+		case "/oauth/start":
+			http.SetCookie(w, &http.Cookie{Name: "oai-did", Value: "device-1", Path: "/"})
+			_, _ = w.Write([]byte("ok"))
+		case "/api/accounts/authorize/continue":
+			_ = json.NewEncoder(w).Encode(map[string]any{"page": map[string]any{"type": "create_account_password"}, "continue_url": "/create-account/password"})
+		case "/api/accounts/user/register":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case "/api/accounts/email-otp/send":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case "/api/accounts/email-otp/verify":
+			_ = json.NewEncoder(w).Encode(map[string]any{"continue_url": "http://" + r.Host + "/about-you"})
+		case "/api/accounts/profile":
+			_ = json.NewEncoder(w).Encode(map[string]any{"continue_url": "http://" + r.Host + "/callback?code=abc"})
+		case "/api/auth/session":
+			_ = json.NewEncoder(w).Encode(map[string]any{"accessToken": "access-1", "sessionToken": "session-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer openaiSrv.Close()
+	mailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": "123456"})
+	}))
+	defer mailSrv.Close()
+
+	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL})
+	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
+		Email: "user@example.com", Password: "Password123$",
+		Mail: model.MailConfig{Provider: "generic-api", ReceiveCodeURL: mailSrv.URL},
+		Options: model.RegisterOptions{TimeoutSeconds: 2},
+	})
+	if !resp.Success || resp.Status != "success" || resp.SessionData["accessToken"] != "access-1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	for _, path := range []string{"/api/auth/csrf", "/api/auth/signin/openai", "/api/accounts/authorize/continue", "/api/accounts/user/register", "/api/accounts/email-otp/send", "/api/accounts/email-otp/verify", "/api/accounts/profile", "/api/auth/session"} {
+		if hits[path] == 0 {
+			t.Fatalf("expected hit for %s, hits=%#v", path, hits)
+		}
+	}
+}
 ```
 
-Update mounted hooks and task-finished refresh paths:
-
-```js
-if (isMailComProvider.value) loadMailComPoolStatus()
-```
-
-- [ ] **Step 7: Run frontend build**
+- [ ] **Step 2: Run test to verify failure**
 
 Run:
 
 ```powershell
-npm --prefix web run build
+cd go/protocol-register
+go test ./internal/register -run TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail -v
 ```
 
-Expected: build exits with code 0.
+Expected: FAIL because `NewHTTPRegisterEngine` and OpenAI client methods do not exist.
 
-- [ ] **Step 8: Commit Task 4**
+- [ ] **Step 3: Implement OpenAI client and state machine**
+
+Create `go/protocol-register/internal/openai/headers.go`:
+
+```go
+package openai
+
+import "net/http"
+
+const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+
+func CommonHeaders(referer string) http.Header {
+	h := http.Header{}
+	h.Set("User-Agent", UserAgent)
+	h.Set("Accept", "application/json,text/html,*/*")
+	h.Set("Referer", referer)
+	h.Set("Origin", "https://auth.openai.com")
+	return h
+}
+```
+
+Create `go/protocol-register/internal/openai/auth_api.go`:
+
+```go
+package openai
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+)
+
+type Client struct {
+	HTTP           *http.Client
+	BaseURL        string
+	ChatGPTBaseURL string
+}
+
+func NewClient(httpClient *http.Client, baseURL, chatGPTBaseURL string) *Client {
+	if baseURL == "" {
+		baseURL = "https://auth.openai.com"
+	}
+	if chatGPTBaseURL == "" {
+		chatGPTBaseURL = "https://chatgpt.com"
+	}
+	return &Client{HTTP: httpClient, BaseURL: baseURL, ChatGPTBaseURL: chatGPTBaseURL}
+}
+
+func (c *Client) GetCSRF(ctx context.Context) (string, error) {
+	var out struct{ CSRFToken string `json:"csrfToken"` }
+	if err := c.doJSON(ctx, http.MethodGet, c.ChatGPTBaseURL+"/api/auth/csrf", nil, &out); err != nil {
+		return "", err
+	}
+	if out.CSRFToken == "" {
+		return "", fmt.Errorf("csrf token missing")
+	}
+	return out.CSRFToken, nil
+}
+
+func (c *Client) SigninOpenAI(ctx context.Context, csrf string) error {
+	var out struct{ URL string `json:"url"` }
+	err := c.doJSON(ctx, http.MethodPost, c.ChatGPTBaseURL+"/api/auth/signin/openai", map[string]any{"csrfToken": csrf, "callbackUrl": c.ChatGPTBaseURL + "/", "json": "true"}, &out)
+	if err != nil {
+		return err
+	}
+	if out.URL == "" {
+		return fmt.Errorf("auth url missing")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, out.URL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+func (c *Client) AuthorizeContinue(ctx context.Context, email string) (string, error) {
+	var out struct{ Page struct{ Type string `json:"type"` } `json:"page"` }
+	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/authorize/continue", map[string]any{"username": map[string]any{"value": email, "kind": "email"}, "screen_hint": "signup"}, &out)
+	return out.Page.Type, err
+}
+
+func (c *Client) RegisterPassword(ctx context.Context, email, password string) error {
+	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/user/register", map[string]any{"password": password, "username": email}, nil)
+}
+
+func (c *Client) SendEmailOTP(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodGet, c.BaseURL+"/api/accounts/email-otp/send", nil, nil)
+}
+
+func (c *Client) VerifyEmailOTP(ctx context.Context, code string) (string, error) {
+	var out struct{ ContinueURL string `json:"continue_url"` }
+	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/email-otp/verify", map[string]any{"code": code}, &out)
+	return out.ContinueURL, err
+}
+
+func (c *Client) CreateAccount(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/profile", map[string]any{"name": "Alex Chen", "age": 33}, nil)
+}
+
+func (c *Client) GetAuthSession(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	err := c.doJSON(ctx, http.MethodGet, c.ChatGPTBaseURL+"/api/auth/session", nil, &out)
+	return out, err
+}
+
+func (c *Client) doJSON(ctx context.Context, method, url string, payload any, out any) error {
+	var body io.Reader
+	if payload != nil {
+		raw, _ := json.Marshal(payload)
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return err
+	}
+	for key, values := range CommonHeaders(c.ChatGPTBaseURL + "/") {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("%s %s: HTTP %d %s", method, url, resp.StatusCode, string(raw))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+```
+
+Create `go/protocol-register/internal/register/progress.go`:
+
+```go
+package register
+
+import "autoteam-f/protocol-register/internal/model"
+
+type Progress struct{ events []model.Event }
+
+func (p *Progress) Add(stage, message string, extra map[string]any) {
+	p.events = append(p.events, model.Event{Stage: stage, Message: message, Extra: extra})
+}
+
+func (p *Progress) Events() []model.Event {
+	out := make([]model.Event, len(p.events))
+	copy(out, p.events)
+	return out
+}
+```
+
+Create `go/protocol-register/internal/register/state_machine.go`:
+
+```go
+package register
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+	"autoteam-f/protocol-register/internal/httpclient"
+	"autoteam-f/protocol-register/internal/mailbridge"
+	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/openai"
+)
+
+type HTTPRegisterEngineConfig struct{ BaseURL, ChatGPTBaseURL string }
+type HTTPRegisterEngine struct{ cfg HTTPRegisterEngineConfig }
+
+func NewHTTPRegisterEngine(cfg HTTPRegisterEngineConfig) *HTTPRegisterEngine { return &HTTPRegisterEngine{cfg: cfg} }
+
+func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest) model.RegisterResponse {
+	progress := &Progress{}
+	timeout := time.Duration(req.Options.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	client, err := httpclient.New(req.ProxyURL, timeout+30*time.Second)
+	if err != nil {
+		return fail(req.Email, "network_error", err.Error(), "http_client", true, progress.Events())
+	}
+	api := openai.NewClient(client, e.cfg.BaseURL, e.cfg.ChatGPTBaseURL)
+	csrf, err := api.GetCSRF(ctx)
+	if err != nil {
+		return fail(req.Email, "network_error", err.Error(), "csrf", true, progress.Events())
+	}
+	progress.Add("csrf", "csrf token acquired", nil)
+	if err := api.SigninOpenAI(ctx, csrf); err != nil {
+		return fail(req.Email, "network_error", err.Error(), "signin_openai", true, progress.Events())
+	}
+	pageType, err := api.AuthorizeContinue(ctx, req.Email)
+	if err != nil {
+		return fail(req.Email, "register_failed", err.Error(), "authorize_continue", true, progress.Events())
+	}
+	progress.Add("email_submitted", "email accepted", map[string]any{"page_type": pageType})
+	if pageType == "create_account_password" {
+		if err := api.RegisterPassword(ctx, req.Email, req.Password); err != nil {
+			return fail(req.Email, "register_failed", err.Error(), "register_password", true, progress.Events())
+		}
+	}
+	if err := api.SendEmailOTP(ctx); err != nil {
+		return fail(req.Email, "register_failed", err.Error(), "send_email_otp", true, progress.Events())
+	}
+	code, err := mailbridge.NewClient(client, 3*time.Second).WaitForOTP(ctx, req.Mail.ReceiveCodeURL)
+	if err != nil {
+		return fail(req.Email, "email_code_timeout", "email OTP not received within timeout", "email_otp", false, progress.Events())
+	}
+	if _, err := api.VerifyEmailOTP(ctx, code); err != nil {
+		return fail(req.Email, "register_failed", err.Error(), "verify_email_otp", true, progress.Events())
+	}
+	progress.Add("otp_verified", "email OTP verified", nil)
+	if err := api.CreateAccount(ctx); err != nil {
+		return fail(req.Email, "phone_blocked", err.Error(), "create_account", false, progress.Events())
+	}
+	sessionData, err := api.GetAuthSession(ctx)
+	if err != nil {
+		return fail(req.Email, "register_failed", err.Error(), "auth_session", true, progress.Events())
+	}
+	sessionData["email"] = req.Email
+	sessionData["raw"] = map[string]any{"source": "go_protocol_register"}
+	return model.RegisterResponse{Success: true, Status: "success", Email: req.Email, SessionData: sessionData, Events: progress.Events()}
+}
+
+func fail(email, status, message, step string, retryable bool, events []model.Event) model.RegisterResponse {
+	code := status
+	if status == "phone_blocked" {
+		code = "phone_required"
+	}
+	if message == "" {
+		message = fmt.Sprintf("%s at %s", status, step)
+	}
+	return model.RegisterResponse{Success: false, Status: status, Email: email, Error: &model.ErrorInfo{Code: code, Message: message, Retryable: retryable, Step: step}, Events: events}
+}
+```
+
+Modify `go/protocol-register/cmd/protocol-registerd/main.go` to use:
+
+```go
+engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{})
+srv := server.New(addr, maxConcurrency, engine)
+```
+
+and import:
+
+```go
+"autoteam-f/protocol-register/internal/register"
+```
+
+- [ ] **Step 4: Run tests and commit**
+
+Run:
 
 ```powershell
-git add web/src/api.js web/src/components/RegisterAccountPage.vue
-git commit -m "feat: add mailcom pool UI"
+cd go/protocol-register
+go test ./...
+cd ..\..
+git add go/protocol-register
+git commit -m "feat(protocol): add Go email registration state machine"
 ```
+
+Expected: Go tests PASS and commit succeeds.
+
+---
 

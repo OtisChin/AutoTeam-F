@@ -13,16 +13,20 @@ type Client struct {
 	HTTP           *http.Client
 	BaseURL        string
 	ChatGPTBaseURL string
+	UserAgent      string
 }
 
-func NewClient(httpClient *http.Client, baseURL, chatGPTBaseURL string) *Client {
+func NewClient(httpClient *http.Client, baseURL, chatGPTBaseURL, userAgent string) *Client {
 	if baseURL == "" {
 		baseURL = "https://auth.openai.com"
 	}
 	if chatGPTBaseURL == "" {
 		chatGPTBaseURL = "https://chatgpt.com"
 	}
-	return &Client{HTTP: httpClient, BaseURL: baseURL, ChatGPTBaseURL: chatGPTBaseURL}
+	if userAgent == "" {
+		userAgent = defaultChromeProfile().UserAgent
+	}
+	return &Client{HTTP: httpClient, BaseURL: baseURL, ChatGPTBaseURL: chatGPTBaseURL, UserAgent: userAgent}
 }
 
 func (c *Client) GetCSRF(ctx context.Context) (string, error) {
@@ -110,7 +114,7 @@ func (c *Client) doJSON(ctx context.Context, method, url string, payload any, ou
 	if err != nil {
 		return err
 	}
-	for key, values := range CommonHeaders(c.ChatGPTBaseURL + "/") {
+	for key, values := range CommonHeaders(c.ChatGPTBaseURL+"/", c.UserAgent) {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}

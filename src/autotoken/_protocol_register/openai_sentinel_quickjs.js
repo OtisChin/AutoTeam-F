@@ -1,10 +1,88 @@
-const EXPOSE_PATCH = "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.token=ye,t}({});";
-const EXPOSE_REPLACEMENT =
-  "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.token=ye,t.__debug_n=_n,t.__debug_bindProof=D,t}({});";
-const INSTANCE_PATCH = "var P=new _;";
-const INSTANCE_REPLACEMENT = "var P=new _;globalThis.__debugP=P;";
-const SDK_GLOBAL_PATCH = "var SentinelSDK=";
-const SDK_GLOBAL_REPLACEMENT = "globalThis.SentinelSDK=";
+const IDENTIFIER_SOURCE = "[A-Za-z_$][A-Za-z0-9_$]*";
+
+function regexMatches(source, pattern) {
+  return [...source.matchAll(pattern)];
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function requireUniqueMatch(source, pattern, label) {
+  const matches = regexMatches(source, pattern);
+  if (matches.length !== 1) {
+    throw new Error(`unsupported Sentinel SDK: ${label} matches=${matches.length}`);
+  }
+  return matches[0];
+}
+
+function patchSdkSource(sdkSource) {
+  let sdk = String(sdkSource || "");
+  const globalPattern = /\bvar\s+SentinelSDK\s*=/g;
+  requireUniqueMatch(sdk, globalPattern, "global");
+  sdk = sdk.replace(globalPattern, "globalThis.SentinelSDK=");
+
+  const instancePattern = new RegExp(
+    `\\bvar\\s+(${IDENTIFIER_SOURCE})\\s*=\\s*new\\s+(${IDENTIFIER_SOURCE})\\s*;`,
+    "g",
+  );
+  const instanceMatch = requireUniqueMatch(sdk, instancePattern, "proof instance");
+  const instanceName = instanceMatch[1];
+  sdk = sdk.replace(
+    instanceMatch[0],
+    `${instanceMatch[0]}globalThis.__debugP=${instanceName};`,
+  );
+
+  const weakMapPattern = new RegExp(
+    `\\bconst\\s+(${IDENTIFIER_SOURCE})\\s*=\\s*new\\s+WeakMap\\s*;`,
+    "g",
+  );
+  const weakMapMatch = requireUniqueMatch(sdk, weakMapPattern, "proof WeakMap");
+  const weakMapName = weakMapMatch[1];
+  const weakMapRegion = sdk.slice(weakMapMatch.index, weakMapMatch.index + 1600);
+  const functionPattern = new RegExp(
+    `function\\s+(${IDENTIFIER_SOURCE})\\s*\\((${IDENTIFIER_SOURCE}),(${IDENTIFIER_SOURCE})\\)\\s*\\{([^{}]{1,320})\\}`,
+    "g",
+  );
+  const bindCandidates = regexMatches(weakMapRegion, functionPattern).filter((match) => {
+    const firstArgument = escapeRegex(match[2]);
+    const secondArgument = escapeRegex(match[3]);
+    const mapAccess = `${escapeRegex(weakMapName)}\\s*(?:\\.set|\\[[^\\]]+\\])`;
+    return new RegExp(
+      `${mapAccess}\\s*\\(\\s*${firstArgument}\\s*,\\s*${secondArgument}\\s*\\)`,
+    ).test(match[4]);
+  });
+  if (bindCandidates.length !== 1) {
+    throw new Error(
+      `unsupported Sentinel SDK: proof binding matches=${bindCandidates.length}`,
+    );
+  }
+  const bindProofName = bindCandidates[0][1];
+
+  const turnstilePattern = new RegExp(
+    `\\.dx\\s*\\?\\s*await\\s+(${IDENTIFIER_SOURCE})\\s*\\(`,
+    "g",
+  );
+  const turnstileMatch = requireUniqueMatch(
+    sdk,
+    turnstilePattern,
+    "turnstile solver",
+  );
+  const turnstileSolverName = turnstileMatch[1];
+
+  const exportPattern = new RegExp(
+    `,\\s*(${IDENTIFIER_SOURCE})\\.token\\s*=\\s*(${IDENTIFIER_SOURCE})\\s*,\\s*\\1\\s*\\}\\s*\\(\\{\\}\\)\\s*;\\s*$`,
+    "g",
+  );
+  const exportMatch = requireUniqueMatch(sdk, exportPattern, "public export");
+  const sdkObjectName = exportMatch[1];
+  const tokenFunctionName = exportMatch[2];
+  sdk = sdk.replace(
+    exportPattern,
+    `,${sdkObjectName}.token=${tokenFunctionName},${sdkObjectName}.__debug_n=${turnstileSolverName},${sdkObjectName}.__debug_bindProof=${bindProofName},${sdkObjectName}}({});`,
+  );
+  return sdk;
+}
 
 function bytesToBase64(bytes) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -111,7 +189,7 @@ function installRuntime(payload) {
     URL: "https://auth.openai.com/",
     cookie: `oai-did=${encodeURIComponent(payload.device_id || "")}`,
     scripts,
-    currentScript: { src: "https://sentinel.openai.com/sentinel/sdk.js", getAttribute() { return null; } },
+    currentScript: { src: String(payload.sdk_url || "https://sentinel.openai.com/sentinel/sdk.js"), getAttribute() { return null; } },
     documentElement,
     body: createElement("body"),
     head: createElement("head"),
@@ -346,11 +424,11 @@ function installRuntime(payload) {
 }
 
 function loadPatchedSdk(sdkSource) {
-  let sdk = String(sdkSource || "");
-  sdk = sdk.replace(SDK_GLOBAL_PATCH, SDK_GLOBAL_REPLACEMENT);
-  sdk = sdk.replace(INSTANCE_PATCH, INSTANCE_REPLACEMENT);
-  sdk = sdk.replace(EXPOSE_PATCH, EXPOSE_REPLACEMENT);
+  const sdk = patchSdkSource(sdkSource);
   eval(sdk);
+  if (!globalThis.__debugP || !globalThis.SentinelSDK) {
+    throw new Error("unsupported Sentinel SDK: patched exports are unavailable");
+  }
 }
 
 async function run(payload, sdkSource) {

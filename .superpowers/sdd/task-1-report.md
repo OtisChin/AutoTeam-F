@@ -1,29 +1,29 @@
-STATUS: DONE
+status: DONE_WITH_CONCERNS
 
-变更文件:
-- D:/code/OpenSource/AutoTeam-F/src/autotoken/storage/mail_accounts.py
-- D:/code/OpenSource/AutoTeam-F/src/autotoken/mail/mailcom.py
-- D:/code/OpenSource/AutoTeam-F/src/autotoken/mail/__init__.py
-- D:/code/OpenSource/AutoTeam-F/src/autotoken/settings/setup_wizard.py
-- D:/code/OpenSource/AutoTeam-F/tests/unit/test_mail_accounts.py
-- D:/code/OpenSource/AutoTeam-F/tests/unit/test_mailcom_mail.py
+## 修改文件列表
+- src/autotoken/integrations/go_protocol_register_client.py
+- tests/unit/test_go_protocol_register_client.py
+- tests/fixtures/go_protocol_register/register_request_generic_api.json
+- tests/fixtures/go_protocol_register/register_success_response.json
+- tests/fixtures/go_protocol_register/email_code_timeout_response.json
+- tests/fixtures/go_protocol_register/phone_required_response.json
 
-提交 hash:
-- b57c7d6
+## 测试命令和输出摘要
+- $env:PYTHONIOENCODING='utf-8'; uv run --no-sync pytest tests/unit/test_go_protocol_register_client.py -q（TDD RED：导入失败，ModuleNotFoundError，符合实现缺失预期）
+- $env:PYTHONIOENCODING='utf-8'; uv run --no-sync pytest tests/unit/test_go_protocol_register_client.py -q（GREEN：4 passed in 0.15s）
+- 提交后复跑同一命令：4 passed。
+- git diff --check：通过。
 
-运行的测试命令和结果:
-- .\\.venv\\Scripts\\python.exe -m pytest tests/unit/test_mail_accounts.py -q
-  - 第一次（RED）: 4 failed, 5 passed；失败原因符合预期：mailcom_pool_status / sync_mail_accounts_to_account_pool / list_available_registration_accounts / mark_mailcom_registered 缺失
-  - 第二次（GREEN）: 9 passed
-- .\\.venv\\Scripts\\python.exe -m pytest tests/unit/test_mailcom_mail.py -q
-  - 第一次（RED）: collection error；失败原因符合预期：autotoken.mail.mailcom 不存在
-- .\\.venv\\Scripts\\python.exe -m pytest tests/unit/test_mailcom_mail.py tests/unit/test_mail_provider_config_routes.py -q
-  - GREEN: 7 passed
+## commit hash
+4d2929dd63f5601c1aa3e3f9ab2f88ffffb05d94
 
-自审结论:
-- 已按 TDD 先补失败测试，再实现最小代码通过。
-- 仅改动 brief 指定的 Task 1 代码/测试文件；未触碰用户明确禁止的无关文件。
-- provider 工厂与 setup wizard 已接入 mail.com，storage helper 与 mail.com provider 行为均由单测覆盖。
+## self-review
+- 已按 email-first contract 创建四个 JSON fixtures。
+- wrapper 默认地址为 http://127.0.0.1:18787，支持 GO_PROTOCOL_REGISTER_URL，并提供 /healthz 与 /v1/register 调用。
+- 成功、邮箱验证码超时、手机号要求响应均映射到 protocol result；连接、超时、无效 JSON 转换为 GoProtocolRegisterUnavailable。
+- 仅提交 Task 1 brief 列出的六个实现/测试/fixture 文件；未触碰工作区中其他既有 dirty changes。
+- 未运行全量测试，因此全量回归状态未确认。
 
-任何顾虑:
-- 无。
+## concerns
+- 工作区存在其他用户/历史 dirty changes，未纳入本次提交。
+- 本任务仅验证目标单测，未运行完整测试套件。

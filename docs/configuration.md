@@ -117,6 +117,38 @@ OAUTH_CHROME_CDP_URL=http://127.0.0.1:9222
 
 `OAUTH_BROWSER_MODE=protocol` 是默认模式，优先使用纯协议 OAuth。需要人工浏览器协作时，可以使用 Chrome CDP 相关配置。
 
+## Sentinel SDK 自动跟随
+
+协议注册默认从 OpenAI Sentinel 的官方运行时 frame 页面
+`https://sentinel.openai.com/backend-api/sentinel/frame.html` 发现当前 `sdk.js`，
+无需手工维护版本号。该页面位于 OpenAI 官方子域，但属于线上运行时入口，
+因此实现同时保留缓存、last-known-good 和内置版本回退。
+
+```env
+OPENAI_SENTINEL_SDK_URL=
+OPENAI_SENTINEL_VERSION=
+OPENAI_SENTINEL_SDK_TTL_SECONDS=21600
+```
+
+解析优先级如下：
+
+1. `OPENAI_SENTINEL_SDK_URL`：临时固定完整 SDK 地址，仅接受
+   `https://sentinel.openai.com/sentinel/<version>/sdk.js`。
+2. `OPENAI_SENTINEL_VERSION`：临时固定版本，并自动拼成官方地址。
+3. TTL 内的本地缓存。
+4. 线上 frame 页面实时发现。
+5. 发现失败时使用过期的 last-discovered 缓存。
+6. 无可用缓存时使用内置版本 `20260219f9f6`。
+
+QuickJS 会再按“本次解析版本 → 最近一次完整求解成功的 last-known-good →
+内置版本”尝试，若未来 SDK 的压缩结构发生不兼容变化，不会直接中断全部注册。
+
+默认 TTL 为 `21600` 秒（6 小时），设为 `0` 可让每次注册都检查线上版本，
+但高并发场景建议保留默认值。Windows 缓存通常位于
+`%TEMP%/openai-sentinel-demo/latest.json`；运行验证记录位于同目录的
+`last-good.json`，各版本 SDK 位于版本子目录。QuickJS 与纯 Python fallback
+共用同一次解析结果，避免生成 token 时出现 SDK 地址不一致。
+
 ## Playwright 代理
 
 ```env
@@ -125,6 +157,26 @@ PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1
 ```
 
 如果浏览器 OAuth 使用代理，建议显式绕过 localhost，避免本地回调被代理截走。
+
+## CloakBrowser 注册
+
+注册页勾选“使用 Cloak 无头模式”后，会用 CloakBrowser 替代本地 Playwright Chromium 执行标准邮箱注册。该模式默认无头运行，并复用注册任务里传入的固定代理、代理池或动态代理 API。
+
+```env
+CLOAK_HEADLESS=true
+CLOAK_HUMANIZE=true
+CLOAK_GEOIP=true
+CLOAK_USE_PROXY=true
+CLOAK_LOCALE=
+CLOAK_TIMEZONE=
+CLOAK_LICENSE_KEY=
+CLOAK_FINGERPRINT_SEED=
+CLOAK_USER_DATA_DIR=
+CLOAK_EXTRA_ARGS=
+CLOAK_KEEP_BROWSER_OPEN=false
+```
+
+常用调试方式：把 `CLOAK_HEADLESS=false` 显示窗口；把 `CLOAK_KEEP_BROWSER_OPEN=true` 保留浏览器。需要固定地区画像时可显式设置 `CLOAK_LOCALE=ja-JP`、`CLOAK_TIMEZONE=Asia/Tokyo` 等。
 
 ## 自动巡检
 
@@ -152,6 +204,7 @@ RECONCILE_KICK_GHOST=true
 | 前缀 | 用途 |
 |------|------|
 | `ROXYBROWSER_*` | 浏览器自动化使用 RoxyBrowser 模式 |
+| `CLOAK_*` | 注册模块使用 CloakBrowser 无头模式 |
 | `GOPAY_AUTO_SIGNUP_*` | 自动注册 GoPay 钱包 |
 | `REKBERINAJA_*` | GoPay 充值辅助 |
 | `WHATSAPP_*`, `ANDROID_ADB_PATH` | 从 Android/ADB 读取 WhatsApp OTP |
@@ -170,4 +223,4 @@ RECONCILE_KICK_GHOST=true
 | `GO_PROTOCOL_MAX_CONCURRENCY` | `50` | Maximum inflight Go registration tasks |
 | `GO_PROTOCOL_FALLBACK_PYTHON` | `1` | Use Python path when Go service is unavailable |
 | `GO_PROTOCOL_TRACE` | `0` | Include non-secret trace events |
-| `GO_PROTOCOL_IMPERSONATE` | `chrome136` | Header/fingerprint label |
+| `GO_PROTOCOL_IMPERSONATE` | `chrome143,chrome144,chrome145,chrome146,chrome147,chrome148,chrome149,chrome150,chrome151,chrome152` | Chrome fingerprint pool or single label |

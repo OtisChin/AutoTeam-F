@@ -92,6 +92,7 @@ class ManualRegisterParams(BaseModel):
     phone_only: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
     use_roxybrowser: bool = Field(False, validation_alias=AliasChoices("use_roxybrowser", "useRoxyBrowser"))
+    use_cloakbrowser: bool = Field(False, validation_alias=AliasChoices("use_cloakbrowser", "useCloakBrowser"))
     oauth_phone_sms_provider: str = Field(
         "",
         validation_alias=AliasChoices("oauth_phone_sms_provider", "oauthPhoneSmsProvider"),
@@ -171,12 +172,17 @@ def create_account_register_task_router(
         registration_flow = str(params.registration_flow or "standard").strip().lower()
         if registration_flow not in {"standard", "phone_cpa"}:
             raise HTTPException(status_code=400, detail="registration_flow 只支持 standard 或 phone_cpa")
-        use_roxybrowser = registration_flow == "standard" and bool(params.use_roxybrowser)
+        use_cloakbrowser = registration_flow == "standard" and bool(params.use_cloakbrowser)
+        use_roxybrowser = registration_flow == "standard" and bool(params.use_roxybrowser) and not use_cloakbrowser
         if use_roxybrowser:
             _assert_roxybrowser_available()
         register_mode = (
             "protocol"
-            if registration_flow == "phone_cpa" or (bool(params.protocol_register) and not use_roxybrowser)
+            if registration_flow == "phone_cpa"
+            else "cloak"
+            if use_cloakbrowser
+            else "protocol"
+            if bool(params.protocol_register) and not use_roxybrowser
             else "browser"
         )
         phone_only = bool(params.phone_only)
@@ -346,6 +352,7 @@ def create_account_register_task_router(
             ),
             "register_mode": register_mode,
             "use_roxybrowser": use_roxybrowser,
+            "use_cloakbrowser": use_cloakbrowser,
             "proxy_url_present": bool(normalized_proxy_url),
             "proxy_pool_size": len(proxy_pool),
             "proxy_api_provider": proxy_api_provider,
@@ -381,6 +388,7 @@ def create_account_register_task_router(
                 proxy_url=normalized_proxy_url,
                 proxy_pool=proxy_pool,
                 use_roxybrowser=use_roxybrowser,
+                use_cloakbrowser=use_cloakbrowser,
                 register_proxy_selector=register_proxy_selector,
                 register_proxy_meta=register_proxy_meta,
                 oauth_phone_sms_provider=oauth_phone_sms_provider or None,
@@ -416,6 +424,7 @@ def create_account_register_task_router(
             register_mode=register_mode,
             proxy_url=normalized_proxy_url,
             use_roxybrowser=use_roxybrowser,
+            use_cloakbrowser=use_cloakbrowser,
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,
             oauth_phone_sms_max_price=oauth_phone_sms_max_price,

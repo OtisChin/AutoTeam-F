@@ -33,17 +33,32 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+try:
+    from .sentinel_sdk import (
+        SentinelSdk,
+        mark_sentinel_sdk_good,
+        resolve_sentinel_sdk,
+        sentinel_sdk_candidates,
+    )
+except ImportError:  # pragma: no cover - bundled top-level import mode
+    from sentinel_sdk import (
+        SentinelSdk,
+        mark_sentinel_sdk_good,
+        resolve_sentinel_sdk,
+        sentinel_sdk_candidates,
+    )
+
 logger = logging.getLogger(__name__)
 
 
-SENTINEL_VERSION = "20260219f9f6"
-SENTINEL_SDK_URL = f"https://sentinel.openai.com/sentinel/{SENTINEL_VERSION}/sdk.js"
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
+_SDK_DOWNLOAD_LOCK = threading.Lock()
 
 
 def _resolve_node_binary() -> str:
@@ -54,33 +69,55 @@ def _quickjs_script_path() -> Path:
     return Path(__file__).resolve().parent / "openai_sentinel_quickjs.js"
 
 
-def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
+def _ensure_sdk_file(
+    session: Any,
+    timeout_ms: int,
+    *,
+    sdk: SentinelSdk,
+) -> Path:
     """Download OpenAI's actual sdk.js to /tmp cache (one-shot per version)."""
-    cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / SENTINEL_VERSION
+    cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / sdk.version
     cache_dir.mkdir(parents=True, exist_ok=True)
     sdk_file = cache_dir / "sdk.js"
-    if sdk_file.exists() and sdk_file.stat().st_size > 0:
-        return sdk_file
+    with _SDK_DOWNLOAD_LOCK:
+        if sdk_file.exists() and sdk_file.stat().st_size > 0:
+            return sdk_file
 
-    resp = session.get(
-        SENTINEL_SDK_URL,
-        headers={
-            "accept": "*/*",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "referer": "https://auth.openai.com/",
-            "sec-fetch-dest": "script",
-            "sec-fetch-mode": "no-cors",
-            "sec-fetch-site": "same-site",
-        },
-        timeout=max(10, int(timeout_ms / 1000)),
-    )
-    if getattr(resp, "status_code", 0) != 200:
-        raise RuntimeError(f"下载 sdk.js 失败: HTTP {resp.status_code}")
-    content = getattr(resp, "content", b"") or (resp.text or "").encode()
-    if not content:
-        raise RuntimeError("下载 sdk.js 失败: 响应为空")
-    sdk_file.write_bytes(content)
-    return sdk_file
+        resp = session.get(
+            sdk.url,
+            headers={
+                "accept": "*/*",
+                "accept-language": "zh-CN,zh;q=0.9",
+                "referer": "https://auth.openai.com/",
+                "sec-fetch-dest": "script",
+                "sec-fetch-mode": "no-cors",
+                "sec-fetch-site": "same-site",
+            },
+            timeout=max(10, int(timeout_ms / 1000)),
+        )
+        if getattr(resp, "status_code", 0) != 200:
+            raise RuntimeError(f"下载 sdk.js 失败: HTTP {resp.status_code}")
+        content = getattr(resp, "content", b"") or (resp.text or "").encode()
+        if isinstance(content, str):
+            content = content.encode()
+        if not content:
+            raise RuntimeError("下载 sdk.js 失败: 响应为空")
+
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=cache_dir,
+                prefix="sdk-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(content)
+            os.replace(temporary, sdk_file)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return sdk_file
 
 
 _WRAPPER_JS = """
@@ -162,6 +199,7 @@ def _run_quickjs_action(
 def _fetch_sentinel_challenge(
     session: Any,
     *,
+    sdk: SentinelSdk,
     device_id: str,
     flow: str,
     request_p: str,
@@ -173,7 +211,10 @@ def _fetch_sentinel_challenge(
         data=json.dumps(body, separators=(",", ":")),
         headers={
             "origin": "https://sentinel.openai.com",
-            "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_VERSION}",
+            "referer": (
+                "https://sentinel.openai.com/backend-api/sentinel/frame.html"
+                f"?sv={sdk.version}"
+            ),
             "content-type": "text/plain;charset=UTF-8",
             "accept": "*/*",
             "accept-encoding": "gzip, deflate, br, zstd",
@@ -212,57 +253,88 @@ def get_sentinel_token_via_quickjs(
 
     did = str(device_id or uuid.uuid4())
     try:
-        sdk_file = _ensure_sdk_file(session, timeout_ms)
-
-        requirements = _run_quickjs_action(
-            action="requirements",
-            sdk_file=sdk_file,
-            quickjs_script=quickjs_script,
-            payload={"device_id": did},
-            timeout_ms=timeout_ms,
+        primary_sdk = resolve_sentinel_sdk(
+            session,
+            timeout_seconds=max(1, int(timeout_ms / 1000)),
         )
-        request_p = str(requirements.get("request_p") or "").strip()
-        if not request_p:
-            log("Sentinel QuickJS 失败: requirements 未返回 request_p")
-            return None
+        for sdk in sentinel_sdk_candidates(primary_sdk):
+            try:
+                sdk_file = _ensure_sdk_file(session, timeout_ms, sdk=sdk)
+                requirements = _run_quickjs_action(
+                    action="requirements",
+                    sdk_file=sdk_file,
+                    quickjs_script=quickjs_script,
+                    payload={"device_id": did, "sdk_url": sdk.url},
+                    timeout_ms=timeout_ms,
+                )
+                request_p = str(requirements.get("request_p") or "").strip()
+                if not request_p:
+                    raise RuntimeError("requirements 未返回 request_p")
+            except Exception as exc:
+                log(f"Sentinel QuickJS SDK {sdk.version} 加载失败: {exc}")
+                continue
 
-        challenge = _fetch_sentinel_challenge(
-            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms,
-        )
-        c_value = str(challenge.get("token") or "").strip()
-        if not c_value:
-            log("Sentinel QuickJS 失败: challenge token 为空")
-            return None
+            try:
+                challenge = _fetch_sentinel_challenge(
+                    session,
+                    sdk=sdk,
+                    device_id=did,
+                    flow=flow,
+                    request_p=request_p,
+                    timeout_ms=timeout_ms,
+                )
+            except Exception as exc:
+                log(f"Sentinel QuickJS challenge 失败: {exc}")
+                return None
+            c_value = str(challenge.get("token") or "").strip()
+            if not c_value:
+                log("Sentinel QuickJS challenge token 为空")
+                return None
 
-        solved = _run_quickjs_action(
-            action="solve",
-            sdk_file=sdk_file,
-            quickjs_script=quickjs_script,
-            payload={
-                "device_id": did,
-                "request_p": request_p,
-                "challenge": challenge,
-            },
-            timeout_ms=timeout_ms,
-        )
-        final_p = str(solved.get("final_p") or solved.get("p") or "").strip()
-        if not final_p:
-            log("Sentinel QuickJS 失败: solve 未返回 final_p")
-            return None
+            try:
+                solved = _run_quickjs_action(
+                    action="solve",
+                    sdk_file=sdk_file,
+                    quickjs_script=quickjs_script,
+                    payload={
+                        "device_id": did,
+                        "sdk_url": sdk.url,
+                        "request_p": request_p,
+                        "challenge": challenge,
+                    },
+                    timeout_ms=timeout_ms,
+                )
+                final_p = str(
+                    solved.get("final_p") or solved.get("p") or ""
+                ).strip()
+                if not final_p:
+                    raise RuntimeError("solve 未返回 final_p")
 
-        t_raw = solved.get("t")
-        t_value = "" if t_raw is None else str(t_raw).strip()
-        if not t_value:
-            log("Sentinel QuickJS 失败: solve 未返回有效 t")
-            return None
+                t_raw = solved.get("t")
+                t_value = "" if t_raw is None else str(t_raw).strip()
+                if not t_value:
+                    raise RuntimeError("solve 未返回有效 t")
 
-        token = json.dumps(
-            {"p": final_p, "t": t_value, "c": c_value, "id": did, "flow": flow},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-        log(f"Sentinel QuickJS 成功 (p_len={len(final_p)} t_len={len(t_value)} c_len={len(c_value)})")
-        return token
+                token = json.dumps(
+                    {
+                        "p": final_p,
+                        "t": t_value,
+                        "c": c_value,
+                        "id": did,
+                        "flow": flow,
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                mark_sentinel_sdk_good(sdk)
+                log(
+                    "Sentinel QuickJS 成功 "
+                    f"(sdk={sdk.version} p_len={len(final_p)} "
+                    f"t_len={len(t_value)} c_len={len(c_value)})"
+                )
+                return token
+            except Exception as exc:
+                log(f"Sentinel QuickJS SDK {sdk.version} 求解失败: {exc}")
     except Exception as e:
         log(f"Sentinel QuickJS 异常: {e}")
-        return None
+    return None

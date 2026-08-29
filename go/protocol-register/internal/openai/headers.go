@@ -2,11 +2,12 @@ package openai
 
 import "net/http"
 
-const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-
-func CommonHeaders(referer string) http.Header {
+func CommonHeaders(referer, userAgent string) http.Header {
+	if userAgent == "" {
+		userAgent = defaultChromeProfile().UserAgent
+	}
 	h := http.Header{}
-	h.Set("User-Agent", UserAgent)
+	h.Set("User-Agent", userAgent)
 	h.Set("Accept", "application/json,text/html,*/*")
 	h.Set("Referer", referer)
 	h.Set("Origin", "https://auth.openai.com")

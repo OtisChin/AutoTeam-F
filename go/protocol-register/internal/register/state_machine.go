@@ -31,7 +31,8 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 	if err != nil {
 		return fail(req.Email, "network_error", err.Error(), "http_client", true, progress.Events())
 	}
-	api := openai.NewClient(client, e.cfg.BaseURL, e.cfg.ChatGPTBaseURL)
+	impersonation := openai.ResolveImpersonation(req.Options.Impersonate)
+	api := openai.NewClient(client, e.cfg.BaseURL, e.cfg.ChatGPTBaseURL, impersonation.UserAgent)
 	csrf, err := api.GetCSRF(ctx)
 	if err != nil {
 		return fail(req.Email, "network_error", err.Error(), "csrf", true, progress.Events())

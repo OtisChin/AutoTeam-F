@@ -18,6 +18,8 @@ class FakeMailClient:
 
 
 class FakeGoClient:
+    expected_impersonate = "chrome-test"
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -33,7 +35,7 @@ class FakeGoClient:
         assert payload["proxy_url"] == "http://proxy.test:8080"
         assert payload["options"]["timeout_seconds"] == 45
         assert payload["options"]["trace"] is True
-        assert payload["options"]["impersonate"] == "chrome-test"
+        assert payload["options"]["impersonate"] == self.expected_impersonate
         return {
             "success": True,
             "status": "success",
@@ -67,6 +69,30 @@ def test_register_once_uses_go_engine_when_enabled(monkeypatch):
     assert payload["status"] == 200
     assert payload["data"]["accessToken"] == "access"
     assert payload["data"]["sessionToken"] == "session"
+
+
+def test_register_once_go_defaults_to_chrome_143_plus_pool(monkeypatch):
+    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
+    monkeypatch.setenv("OTP_TIMEOUT", "45")
+    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "0")
+    monkeypatch.setenv("GO_PROTOCOL_TRACE", "1")
+    monkeypatch.delenv("GO_PROTOCOL_IMPERSONATE", raising=False)
+    monkeypatch.setattr(
+        "autotoken.integrations.go_protocol_register_client.GoProtocolRegisterClient",
+        FakeGoClient,
+    )
+    monkeypatch.setattr(FakeGoClient, "expected_impersonate", "chrome143,chrome144,chrome145,chrome146,chrome147,chrome148,chrome149,chrome150,chrome151,chrome152")
+
+    ok, payload = protocol_register.register_once(
+        FakeMailClient(),
+        email="user@example.com",
+        password="pw",
+        account_id="mail-account-1",
+        proxy="http://proxy.test:8080",
+    )
+
+    assert ok is True
+    assert payload["status"] == 200
 
 
 def test_register_once_keeps_python_engine_as_default(monkeypatch):

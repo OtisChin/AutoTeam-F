@@ -191,6 +191,74 @@ def test_account_deactivated_stops_direct_registration_without_retry(monkeypatch
     assert outcomes[-1][1]["status"] == "account_deactivated"
 
 
+def test_icloud_code_timeout_marks_mailbox_unavailable(monkeypatch):
+    calls = {"register": 0}
+    unavailable_calls = []
+    failures = []
+
+    class FakeMailClient:
+        provider_name = "icloud"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mail-1", "timeout@icloud.com"
+
+    def fake_register_once(*_args, **_kwargs):
+        calls["register"] += 1
+        raise manager.DirectRegisterEmailCodeTimeout("iCloud 邮箱 180s 内未收到验证码")
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False})
+    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
+    monkeypatch.setattr(
+        manager,
+        "_mark_provider_unavailable_email",
+        lambda email, *args, **kwargs: unavailable_calls.append((email, kwargs)),
+    )
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: failures.append((args, kwargs)))
+    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
+
+    result = manager.create_account_direct(FakeMailClient(), password="pw-timeout", check_team_membership=False)
+
+    assert result is None
+    assert calls["register"] == 1
+    assert unavailable_calls == [("timeout@icloud.com", {"source": "email_code_timeout"})]
+    assert failures[0][0][:3] == (
+        "timeout@icloud.com",
+        "email_code_timeout",
+        "iCloud 邮箱 180s 内未收到验证码",
+    )
+
+
+def test_generic_api_code_timeout_marks_mailbox_unavailable(monkeypatch):
+    calls = {"register": 0}
+    unavailable_calls = []
+
+    class FakeMailClient:
+        provider_name = "generic-api"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mail-1", "timeout@example.com"
+
+    def fake_register_once(*_args, **_kwargs):
+        calls["register"] += 1
+        raise manager.DirectRegisterEmailCodeTimeout("通用API邮箱 180s 内未收到验证码")
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False})
+    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
+    monkeypatch.setattr(
+        manager,
+        "_mark_provider_unavailable_email",
+        lambda email, *args, **kwargs: unavailable_calls.append((email, kwargs)),
+    )
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
+
+    result = manager.create_account_direct(FakeMailClient(), password="pw-timeout", check_team_membership=False)
+
+    assert result is None
+    assert calls["register"] == 1
+    assert unavailable_calls == [("timeout@example.com", {"source": "email_code_timeout"})]
+
+
 def test_registration_precheck_skips_already_registered_email(monkeypatch):
     sync_calls = []
     register_calls = []
@@ -247,6 +315,7 @@ def test_direct_registration_failure_retries_after_30_seconds(monkeypatch, caplo
     progress_events = []
     sleeps = []
     register_calls = []
+    unavailable_calls = []
 
     class FakeMailClient:
         provider_name = "icloud"
@@ -261,6 +330,11 @@ def test_direct_registration_failure_retries_after_30_seconds(monkeypatch, caplo
     monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False})
     monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
     monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        manager,
+        "_mark_provider_unavailable_email",
+        lambda email, *args, **kwargs: unavailable_calls.append((email, kwargs)),
+    )
     monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
     monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
     monkeypatch.setattr(manager.time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -276,6 +350,7 @@ def test_direct_registration_failure_retries_after_30_seconds(monkeypatch, caplo
     assert result is None
     assert register_calls == ["retry@icloud.com", "retry@icloud.com", "retry@icloud.com"]
     assert sleeps == [30, 30]
+    assert unavailable_calls == [("retry@icloud.com", {"source": "register_failed"})]
     retry_messages = [event["message"] for event in progress_events if event.get("stage") == "register_retry_wait"]
     assert retry_messages == [
         "注册未完成，30 秒后重试: retry@icloud.com",
@@ -302,6 +377,7 @@ def test_direct_registration_honors_custom_retry_attempts(monkeypatch):
     monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *_args, **_kwargs: {"registered": False})
     monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
     monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "_mark_provider_unavailable_email", lambda *args, **kwargs: None)
     monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
     monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
     monkeypatch.setattr(manager.time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -316,3 +392,44 @@ def test_direct_registration_honors_custom_retry_attempts(monkeypatch):
     assert result is None
     assert register_calls == ["custom@icloud.com", "custom@icloud.com"]
     assert sleeps == [30]
+
+
+def test_about_you_submit_wait_defaults_to_fast_retry(monkeypatch):
+    monkeypatch.delenv("REGISTER_DIRECT_ABOUT_YOU_SUBMIT_WAIT_SECONDS", raising=False)
+
+    assert manager._direct_about_you_submit_wait_seconds() == 12
+
+
+def test_about_you_submit_wait_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("REGISTER_DIRECT_ABOUT_YOU_SUBMIT_WAIT_SECONDS", "25")
+
+    assert manager._direct_about_you_submit_wait_seconds() == 25
+
+
+def test_find_about_you_age_input_uses_fast_timeout():
+    calls = {}
+
+    class FakeLocator:
+        def is_visible(self, timeout=None):
+            calls["visible_timeout"] = timeout
+            return True
+
+        def is_editable(self, timeout=None):
+            calls["editable_timeout"] = timeout
+            return True
+
+    locator = FakeLocator()
+
+    class FakePage:
+        def locator(self, selector):
+            calls["selector"] = selector
+
+            class Collection:
+                first = locator
+
+            return Collection()
+
+    assert manager._find_about_you_age_input(FakePage(), timeout=650) is locator
+    assert 'input[name="age"]' in calls["selector"]
+    assert calls["visible_timeout"] == 650
+    assert calls["editable_timeout"] == 500

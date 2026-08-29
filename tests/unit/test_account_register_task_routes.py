@@ -162,6 +162,38 @@ def test_post_add_passes_use_roxybrowser_to_register_worker(monkeypatch):
     assert calls[0]["use_roxybrowser"] is True
 
 
+def test_post_add_passes_use_cloakbrowser_to_register_worker_and_makes_it_exclusive(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr(
+        "autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1}
+    )
+
+    routes = _routes(started)
+    result = routes["post_add"](
+        ManualRegisterParams(use_cloakbrowser=True, use_roxybrowser=True, protocol_register=True)
+    )
+
+    assert result["params"]["register_mode"] == "cloak"
+    assert result["params"]["use_cloakbrowser"] is True
+    assert result["params"]["use_roxybrowser"] is False
+    assert started[0]["kwargs"]["use_cloakbrowser"] is True
+    assert started[0]["kwargs"]["use_roxybrowser"] is False
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["use_cloakbrowser"] is True
+    assert calls[0]["use_roxybrowser"] is False
+
+
+def test_manual_register_params_accepts_camel_case_use_cloakbrowser():
+    params = ManualRegisterParams.model_validate({"useCloakBrowser": True})
+
+    assert params.use_cloakbrowser is True
+
+
 def test_post_add_rejects_unavailable_roxybrowser_before_starting_task(monkeypatch):
     started = []
     monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])

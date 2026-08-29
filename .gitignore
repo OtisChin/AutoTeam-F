@@ -77,3 +77,6 @@ tests/outputs/
 tests/.pytest_tmp*/
 src/autotoken/web/dist/
 open-reverselab/
+
+.superpowers/
+.superpowers/sdd/

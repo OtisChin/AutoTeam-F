@@ -21,6 +21,8 @@ from autotoken.services import chatgpt_session as chatgpt_session_service
 
 logger = logging.getLogger(__name__)
 
+GO_PROTOCOL_IMPERSONATE_DEFAULT = "chrome143,chrome144,chrome145,chrome146,chrome147,chrome148,chrome149,chrome150,chrome151,chrome152"
+
 
 def _phone_pool_failure_action(reason: str) -> str:
     text = str(reason or "").strip().lower()
@@ -1038,7 +1040,7 @@ def _register_once_go(mail_client, *, email: str, password: str, account_id=None
             "options": {
                 "timeout_seconds": timeout_seconds,
                 "trace": _env_flag("GO_PROTOCOL_TRACE", "0"),
-                "impersonate": os.environ.get("GO_PROTOCOL_IMPERSONATE", "chrome136"),
+                "impersonate": os.environ.get("GO_PROTOCOL_IMPERSONATE", GO_PROTOCOL_IMPERSONATE_DEFAULT),
             },
         }
     )

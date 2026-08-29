@@ -35,7 +35,6 @@ from autotoken.api_routes.account_login import (
 from autotoken.api_routes.account_login import (
     create_account_login_router,
 )
-from autotoken.auth.protocol_register import preflight_oauth_proxy_url as _preflight_oauth_proxy_url
 from autotoken.api_routes.account_management import create_account_management_router
 from autotoken.api_routes.account_overview import create_account_overview_router
 from autotoken.api_routes.account_refresh_quota import create_account_refresh_quota_router
@@ -59,6 +58,7 @@ from autotoken.api_routes.card_pool import create_card_pool_router
 from autotoken.api_routes.config_io import create_config_io_router
 from autotoken.api_routes.cpa_to_sub2api import create_cpa_to_sub2api_router
 from autotoken.api_routes.finished_account_import import create_finished_account_import_router
+from autotoken.api_routes.gcash_ph import create_gcash_ph_router
 from autotoken.api_routes.gopay_auto_signup_config import (
     create_gopay_auto_signup_config_router,
 )
@@ -163,6 +163,7 @@ from autotoken.api_routes.team_members import create_team_members_router
 from autotoken.api_routes.trade import create_trade_router
 from autotoken.api_routes.us_paypal import create_us_paypal_router
 from autotoken.api_routes.whatsapp_otp import create_whatsapp_otp_router
+from autotoken.auth.protocol_register import preflight_oauth_proxy_url as _preflight_oauth_proxy_url
 from autotoken.core.normalization import normalize_access_token as _core_normalize_access_token
 from autotoken.core.normalization import normalized_email as _core_normalized_email
 from autotoken.core.redaction import (
@@ -921,6 +922,7 @@ app.include_router(create_brazil_pix_router())
 app.include_router(create_india_upi_router())
 app.include_router(create_kakao_pay_router())
 app.include_router(create_momo_vn_router())
+app.include_router(create_gcash_ph_router())
 app.include_router(create_us_paypal_router())
 app.include_router(create_ideal_link_router())
 

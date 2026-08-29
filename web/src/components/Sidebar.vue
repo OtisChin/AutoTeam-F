@@ -74,6 +74,7 @@ const items = [
   { key: 'indiaUpi', group: 'Payments', glyph: 'UP', label: '印度UPI', mobileLabel: 'UPI' },
   { key: 'kakaoPay', group: 'Payments', glyph: 'KP', label: '韩国Kakao', mobileLabel: 'Kakao' },
   { key: 'momoVn', group: 'Payments', glyph: 'MM', label: '越南MoMo', mobileLabel: 'MoMo' },
+  { key: 'gcashPh', group: 'Payments', glyph: 'GC', label: '菲律宾GCash', mobileLabel: 'GCash' },
   { key: 'oauthPhones', group: 'OAuth', glyph: 'PH', label: 'OAuth 手机号', mobileLabel: '手机号' },
   { key: 'oauthPhoneRecords', group: 'OAuth', glyph: 'OR', label: 'OAuth 取号记录', mobileLabel: '取号' },
   { key: 'oauth', group: 'OAuth', glyph: 'OA', label: 'OAuth 登录', mobileLabel: 'OAuth' },

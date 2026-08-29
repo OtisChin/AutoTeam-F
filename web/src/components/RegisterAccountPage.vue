@@ -154,7 +154,7 @@
           <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
             <input
               v-model="registerForm.protocolRegister"
-              @change="registerForm.protocolRegister && (registerForm.useRoxyBrowser = false)"
+              @change="registerForm.protocolRegister && (registerForm.useRoxyBrowser = false, registerForm.useCloakBrowser = false)"
               type="checkbox"
               :disabled="registeringBusy"
               class="mt-1 rounded border-gray-600 bg-gray-800"
@@ -168,7 +168,7 @@
           <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
             <input
               v-model="registerForm.useRoxyBrowser"
-              @change="registerForm.useRoxyBrowser && (registerForm.protocolRegister = false)"
+              @change="registerForm.useRoxyBrowser && (registerForm.protocolRegister = false, registerForm.useCloakBrowser = false)"
               type="checkbox"
               :disabled="registeringBusy"
               class="mt-1 rounded border-gray-600 bg-gray-800"
@@ -176,6 +176,20 @@
             <span>
               <span class="text-gray-100">使用Roxy Browser</span>
               <span class="block text-xs text-gray-500">勾选后浏览器注册使用 RoxyBrowser 窗口，不启动本地 Playwright Chromium。</span>
+            </span>
+          </label>
+
+          <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+            <input
+              v-model="registerForm.useCloakBrowser"
+              @change="registerForm.useCloakBrowser && (registerForm.protocolRegister = false, registerForm.useRoxyBrowser = false)"
+              type="checkbox"
+              :disabled="registeringBusy"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span class="text-gray-100">使用 Cloak 无头模式</span>
+              <span class="block text-xs text-gray-500">勾选后标准邮箱注册使用 CloakBrowser 无头运行，可复用注册代理。</span>
             </span>
           </label>
 
@@ -1234,6 +1248,7 @@ const registerForm = ref({
   password: '',
   protocolRegister: false,
   useRoxyBrowser: false,
+  useCloakBrowser: false,
   postRegisterOauth: false,
   enableTotpMfa: false,
   phoneOnly: false,
@@ -1469,7 +1484,7 @@ const registerBehaviorLabel = computed(() => {
   if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
   const registerMode = registerForm.value.useRoxyBrowser
     ? 'Roxy Browser注册'
-    : registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
+    : registerForm.value.useCloakBrowser ? 'Cloak 无头注册' : registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
   const flowDesc = registerForm.value.phoneOnly && isPhoneCpaFlow.value
     ? '仅手机注册，不绑定邮箱、不 OAuth'
     : registerForm.value.postRegisterOauth
@@ -2090,8 +2105,9 @@ function loadSavedRegisterForm() {
       prefix: String(saved.prefix || ''),
       // 密码不持久化，避免明文留在本地存储
       password: '',
-      useRoxyBrowser: Boolean(saved.useRoxyBrowser),
-      protocolRegister: Boolean(saved.protocolRegister) && !Boolean(saved.useRoxyBrowser),
+      useCloakBrowser: Boolean(saved.useCloakBrowser),
+      useRoxyBrowser: Boolean(saved.useRoxyBrowser) && !Boolean(saved.useCloakBrowser),
+      protocolRegister: Boolean(saved.protocolRegister) && !Boolean(saved.useRoxyBrowser) && !Boolean(saved.useCloakBrowser),
       postRegisterOauth: Boolean(saved.postRegisterOauth),
       enableTotpMfa: Boolean(saved.enableTotpMfa),
       phoneOnly: Boolean(saved.phoneOnly),
@@ -2147,6 +2163,7 @@ function saveRegisterForm() {
       prefix: registerForm.value.prefix,
       protocolRegister: Boolean(registerForm.value.protocolRegister),
       useRoxyBrowser: Boolean(registerForm.value.useRoxyBrowser),
+      useCloakBrowser: Boolean(registerForm.value.useCloakBrowser),
       postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
       enableTotpMfa: Boolean(registerForm.value.enableTotpMfa),
       phoneOnly: Boolean(registerForm.value.phoneOnly),
@@ -2452,7 +2469,7 @@ async function submitManualRegister() {
   if (registeringBusy.value || registeringAccount.value) return
   registeringAccount.value = true
   try {
-    if (!isPhoneCpaFlow.value && Boolean(registerForm.value.useRoxyBrowser)) {
+    if (!isPhoneCpaFlow.value && Boolean(registerForm.value.useRoxyBrowser) && !Boolean(registerForm.value.useCloakBrowser)) {
       try {
         const roxy = await api.getRoxyBrowserWorkspaces()
         const workspaceCount = Number(roxy?.count ?? (Array.isArray(roxy?.workspaces) ? roxy.workspaces.length : 0))
@@ -2483,8 +2500,9 @@ async function submitManualRegister() {
       luckmail_preferred_domains: isLuckMailProvider.value && registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
-      protocol_register: isPhoneCpaFlow.value || (!Boolean(registerForm.value.useRoxyBrowser) && Boolean(registerForm.value.protocolRegister)),
-      use_roxybrowser: !isPhoneCpaFlow.value && Boolean(registerForm.value.useRoxyBrowser),
+      protocol_register: isPhoneCpaFlow.value || (!Boolean(registerForm.value.useRoxyBrowser) && !Boolean(registerForm.value.useCloakBrowser) && Boolean(registerForm.value.protocolRegister)),
+      use_roxybrowser: !isPhoneCpaFlow.value && !Boolean(registerForm.value.useCloakBrowser) && Boolean(registerForm.value.useRoxyBrowser),
+      use_cloakbrowser: !isPhoneCpaFlow.value && Boolean(registerForm.value.useCloakBrowser),
       enable2fa: !isPhoneCpaFlow.value && Boolean(registerForm.value.enableTotpMfa),
       phone_only: isPhoneCpaFlow.value && Boolean(registerForm.value.phoneOnly),
       post_register_oauth: (isPhoneCpaFlow.value && !Boolean(registerForm.value.phoneOnly)) || Boolean(registerForm.value.postRegisterOauth),

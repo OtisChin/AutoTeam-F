@@ -1,155 +1,325 @@
-### Task 2: mail.com API 与注册任务接入
+### Task 2: Go HTTP Service Skeleton and Bounded Admission
 
 **Files:**
-- Modify: `D:/code/OpenSource/AutoTeam-F/src/autotoken/api_routes/mail_accounts.py`
-- Modify: `D:/code/OpenSource/AutoTeam-F/src/autotoken/api_routes/account_register_task.py`
-- Test: `D:/code/OpenSource/AutoTeam-F/tests/unit/test_mail_accounts_routes.py`
-- Test: `D:/code/OpenSource/AutoTeam-F/tests/unit/test_account_register_task_routes.py`
+- Create: `go/protocol-register/go.mod`
+- Create: `go/protocol-register/cmd/protocol-registerd/main.go`
+- Create: `go/protocol-register/internal/model/request.go`
+- Create: `go/protocol-register/internal/model/response.go`
+- Create: `go/protocol-register/internal/server/server.go`
+- Create: `go/protocol-register/internal/server/routes.go`
+- Create: `go/protocol-register/internal/register/engine.go`
+- Create: `go/protocol-register/internal/register/errors.go`
+- Create: `go/protocol-register/internal/server/routes_test.go`
 
 **Interfaces:**
-- Produces: `GET /api/mail-accounts/pool-status`
-- Produces: `POST /api/mail-accounts/sync-account-pool`
-- Modifies: `POST /api/mail-accounts/import` response includes `pool_status` and `synced_account_pool`.
-- Consumes: `mail_accounts.sync_mail_accounts_to_account_pool()`
-- Consumes: `mail_accounts.mailcom_pool_status()`
+- Produces: Go module `autoteam-f/protocol-register`.
+- Produces: `server.New(addr string, maxConcurrency int, engine register.Engine) *http.Server`.
+- Produces: `/healthz` and `/v1/register`.
 
-- [ ] **Step 1: Write failing API route tests**
+- [ ] **Step 1: Write failing Go route tests**
 
-Append to `D:/code/OpenSource/AutoTeam-F/tests/unit/test_mail_accounts_routes.py`:
+Create `go/protocol-register/internal/server/routes_test.go`:
 
-```python
-def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeypatch):
-    app = _app()
-    monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "skipped": 0, "total": 1})
-    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
-    monkeypatch.setattr(
-        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
-        lambda emails=None: {"synced": 1, "emails": ["one@mail.com"], "skipped": []},
-    )
-    monkeypatch.setattr(
-        "autotoken.storage.mail_accounts.mailcom_pool_status",
-        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
-    )
+```go
+package server_test
 
-    result = _endpoint(app, "/api/mail-accounts/import", "POST")(MailAccountImportParams(text="one@mail.com----g----m----rt"))
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 
-    assert result["imported"] == 1
-    assert result["synced_account_pool"]["synced"] == 1
-    assert result["pool_status"]["total"] == 1
+	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/register"
+	"autoteam-f/protocol-register/internal/server"
+)
 
+type fakeEngine struct{ release <-chan struct{} }
 
-def test_mail_accounts_pool_status_and_sync_routes(monkeypatch):
-    app = _app()
-    monkeypatch.setattr(
-        "autotoken.storage.mail_accounts.mailcom_pool_status",
-        lambda: {"total": 2, "auth_session_ready": 1, "items": []},
-    )
-    monkeypatch.setattr(
-        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
-        lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
-    )
+func (e fakeEngine) Register(_ *http.Request, req model.RegisterRequest) model.RegisterResponse {
+	if e.release != nil {
+		<-e.release
+	}
+	return model.RegisterResponse{Success: true, Status: "success", Email: req.Email, Events: []model.Event{}}
+}
 
-    assert _endpoint(app, "/api/mail-accounts/pool-status", "GET")()["total"] == 2
-    synced = _endpoint(app, "/api/mail-accounts/sync-account-pool", "POST")(
-        MailAccountBatchParams(emails=["one@mail.com", "two@mail.com"])
-    )
-    assert synced["synced"] == 2
+var _ register.Engine = fakeEngine{}
+
+func TestHealthz(t *testing.T) {
+	h := server.NewHandler(7, fakeEngine{})
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["ok"] != true || body["service"] != "protocol-registerd" || int(body["max_concurrency"].(float64)) != 7 {
+		t.Fatalf("body=%#v", body)
+	}
+}
+
+func TestRegisterRouteRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
+	release := make(chan struct{})
+	h := server.NewHandler(1, fakeEngine{release: release})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader(`{"email":"one@example.com"}`))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader(`{"email":"two@example.com"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	close(release)
+	wg.Wait()
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 ```
 
-Append to `D:/code/OpenSource/AutoTeam-F/tests/unit/test_account_register_task_routes.py`:
-
-```python
-def test_post_add_mailcom_does_not_require_register_domain(monkeypatch):
-    started = []
-    calls = []
-    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: [])
-    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "")
-    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
-    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "mail.com")
-    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
-
-    routes = _routes(started)
-    result = routes["post_add"](ManualRegisterParams(mail_provider="mail.com", domain="", domains=[]))
-
-    assert result["command"] == "register"
-    assert started[0]["params"]["domain"] == ""
-    assert started[0]["params"]["domains"] == []
-    assert started[0]["kwargs"]["mail_provider"] == "mail.com"
-    assert started[0]["func"]("task-register") == {"created": 1}
-    assert calls[0]["mail_provider"] == "mail.com"
-```
-
-- [ ] **Step 2: Run API tests and verify failure**
+- [ ] **Step 2: Run Go tests to verify failure**
 
 Run:
 
 ```powershell
-pytest tests/unit/test_mail_accounts_routes.py tests/unit/test_account_register_task_routes.py -q
+cd go/protocol-register
+go test ./...
 ```
 
-Expected: FAIL because the new routes do not exist and mail.com still requires a domain.
+Expected: FAIL because Go module and packages are missing.
 
-- [ ] **Step 3: Implement mail account API routes**
+- [ ] **Step 3: Implement module, models, engine, errors, routes, CLI**
 
-In `D:/code/OpenSource/AutoTeam-F/src/autotoken/api_routes/mail_accounts.py`, modify `post_mail_accounts_import()` body after `result = mail_accounts.import_mail_accounts(params.text)`:
+Create `go/protocol-register/go.mod`:
 
-```python
-            sync_result = mail_accounts.sync_mail_accounts_to_account_pool()
-            pool_status = mail_accounts.mailcom_pool_status()
-            return {
-                **result,
-                **_response(mail_accounts.list_mail_accounts()),
-                "synced_account_pool": sync_result,
-                "pool_status": pool_status,
-            }
+```go
+module autoteam-f/protocol-register
+
+go 1.22
 ```
 
-Add routes after `post_mail_accounts_import()`:
+Create `go/protocol-register/internal/model/request.go`:
 
-```python
-    @router.get("/api/mail-accounts/pool-status")
-    def get_mail_accounts_pool_status():
-        from autotoken.storage import mail_accounts
+```go
+package model
 
-        return mail_accounts.mailcom_pool_status()
+type MailConfig struct {
+	Provider        string `json:"provider"`
+	AccountID       string `json:"account_id"`
+	ReceiveCodeURL string `json:"receive_code_url"`
+	IssuedAfterUnix int64  `json:"issued_after_unix"`
+}
 
-    @router.post("/api/mail-accounts/sync-account-pool")
-    def post_mail_accounts_sync_account_pool(params: MailAccountBatchParams):
-        from autotoken.storage import mail_accounts
+type RegisterOptions struct {
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	Trace          bool   `json:"trace"`
+	Impersonate    string `json:"impersonate"`
+}
 
-        _validate_batch(params.emails)
-        emails = params.emails or None
-        return mail_accounts.sync_mail_accounts_to_account_pool(emails)
+type RegisterRequest struct {
+	RequestID string          `json:"request_id"`
+	Email     string          `json:"email"`
+	Password  string          `json:"password"`
+	ProxyURL  string          `json:"proxy_url"`
+	Mail      MailConfig      `json:"mail"`
+	Options   RegisterOptions `json:"options"`
+}
 ```
 
-- [ ] **Step 4: Allow mail.com register task without domain**
+Create `go/protocol-register/internal/model/response.go`:
 
-In `D:/code/OpenSource/AutoTeam-F/src/autotoken/api_routes/account_register_task.py`, find:
+```go
+package model
 
-```python
-domain_required = mail_provider not in {"luckmail", "outlook"} and not phone_only
+type Event struct {
+	Stage   string         `json:"stage"`
+	Message string         `json:"message"`
+	Extra   map[string]any `json:"extra,omitempty"`
+}
+
+type ErrorInfo struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+	Step      string `json:"step"`
+}
+
+type RegisterResponse struct {
+	Success     bool           `json:"success"`
+	Status      string         `json:"status"`
+	Email       string         `json:"email"`
+	SessionData map[string]any `json:"session_data,omitempty"`
+	Error       *ErrorInfo     `json:"error,omitempty"`
+	Events      []Event        `json:"events"`
+}
 ```
 
-Replace with:
+Create `go/protocol-register/internal/register/engine.go`:
 
-```python
-domain_required = mail_provider not in {"luckmail", "outlook", "mail.com"} and not phone_only
+```go
+package register
+
+import (
+	"net/http"
+	"autoteam-f/protocol-register/internal/model"
+)
+
+type Engine interface {
+	Register(r *http.Request, req model.RegisterRequest) model.RegisterResponse
+}
 ```
 
-- [ ] **Step 5: Run API tests and verify pass**
+Create `go/protocol-register/internal/register/errors.go`:
+
+```go
+package register
+
+import "autoteam-f/protocol-register/internal/model"
+
+func BusyResponse(email string) model.RegisterResponse {
+	return model.RegisterResponse{
+		Success: false,
+		Status:  "busy",
+		Email:   email,
+		Error:   &model.ErrorInfo{Code: "busy", Message: "protocol-registerd concurrency limit reached", Retryable: true, Step: "admission"},
+		Events:  []model.Event{},
+	}
+}
+```
+
+Create `go/protocol-register/internal/server/routes.go`:
+
+```go
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/register"
+)
+
+type Handler struct {
+	maxConcurrency int
+	engine         register.Engine
+	sem            chan struct{}
+}
+
+func NewHandler(maxConcurrency int, engine register.Engine) http.Handler {
+	if maxConcurrency <= 0 {
+		maxConcurrency = 50
+	}
+	return &Handler{maxConcurrency: maxConcurrency, engine: engine, sem: make(chan struct{}, maxConcurrency)}
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "protocol-registerd", "version": "dev", "max_concurrency": h.maxConcurrency, "inflight": len(h.sem)})
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/register":
+		var req model.RegisterRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, model.RegisterResponse{Success: false, Status: "bad_request", Error: &model.ErrorInfo{Code: "bad_request", Message: err.Error(), Step: "decode"}, Events: []model.Event{}})
+			return
+		}
+		select {
+		case h.sem <- struct{}{}:
+			defer func() { <-h.sem }()
+		default:
+			writeJSON(w, http.StatusTooManyRequests, register.BusyResponse(req.Email))
+			return
+		}
+		writeJSON(w, http.StatusOK, h.engine.Register(r, req))
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+```
+
+Create `go/protocol-register/internal/server/server.go`:
+
+```go
+package server
+
+import (
+	"net/http"
+	"autoteam-f/protocol-register/internal/register"
+)
+
+func New(addr string, maxConcurrency int, engine register.Engine) *http.Server {
+	return &http.Server{Addr: addr, Handler: NewHandler(maxConcurrency, engine)}
+}
+```
+
+Create `go/protocol-register/cmd/protocol-registerd/main.go`:
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/server"
+)
+
+type notImplementedEngine struct{}
+
+func (notImplementedEngine) Register(_ *http.Request, req model.RegisterRequest) model.RegisterResponse {
+	return model.RegisterResponse{Success: false, Status: "not_implemented", Email: req.Email, Error: &model.ErrorInfo{Code: "not_implemented", Message: "registration engine not enabled", Step: "register"}, Events: []model.Event{}}
+}
+
+func main() {
+	addr := os.Getenv("GO_PROTOCOL_REGISTER_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:18787"
+	}
+	maxConcurrency := 50
+	if raw := os.Getenv("GO_PROTOCOL_MAX_CONCURRENCY"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			maxConcurrency = parsed
+		}
+	}
+	srv := server.New(addr, maxConcurrency, notImplementedEngine{})
+	log.Printf("protocol-registerd listening on %s max_concurrency=%d", addr, maxConcurrency)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+```
+
+- [ ] **Step 4: Run tests and commit**
 
 Run:
 
 ```powershell
-pytest tests/unit/test_mail_accounts_routes.py tests/unit/test_account_register_task_routes.py -q
+cd go/protocol-register
+go test ./...
+cd ..\..
+git add go/protocol-register
+git commit -m "feat(protocol): scaffold Go register service"
 ```
 
-Expected: PASS.
+Expected: Go tests PASS and commit succeeds.
 
-- [ ] **Step 6: Commit Task 2**
-
-```powershell
-git add src/autotoken/api_routes/mail_accounts.py src/autotoken/api_routes/account_register_task.py tests/unit/test_mail_accounts_routes.py tests/unit/test_account_register_task_routes.py
-git commit -m "feat: expose mailcom pool APIs"
-```
+---
 

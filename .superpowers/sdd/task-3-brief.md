@@ -1,163 +1,240 @@
-### Task 3: 注册成功和 auth_session 保存后同步 mail.com
+### Task 3: Go HTTP Client and Mail OTP Polling
 
 **Files:**
-- Modify: `D:/code/OpenSource/AutoTeam-F/src/autotoken/interfaces/manager.py`
-- Test: `D:/code/OpenSource/AutoTeam-F/tests/unit/test_manager_mailcom_sync.py`
+- Create: `go/protocol-register/internal/httpclient/client.go`
+- Create: `go/protocol-register/internal/mailbridge/client.go`
+- Create: `go/protocol-register/internal/mailbridge/otp.go`
+- Create: `go/protocol-register/internal/mailbridge/otp_test.go`
 
 **Interfaces:**
-- Produces: `manager._sync_provider_registered_email(email, mail_client=None, *, mail_provider=None, password="", refresh_token="", source="") -> None`
-- Replaces internal use of `_mark_outlook_email_registered()` with the generic helper.
-- Consumes: `mail_accounts.mark_mailcom_registered()`
+- Produces: `httpclient.New(proxyURL string, timeout time.Duration) (*http.Client, error)`.
+- Produces: `mailbridge.ExtractOTP(payload []byte) string`.
+- Produces: `mailbridge.Client.WaitForOTP(ctx context.Context, receiveCodeURL string) (string, error)`.
 
-- [ ] **Step 1: Write failing manager sync test**
+- [ ] **Step 1: Write failing OTP tests**
 
-Create `D:/code/OpenSource/AutoTeam-F/tests/unit/test_manager_mailcom_sync.py`:
+Create `go/protocol-register/internal/mailbridge/otp_test.go`:
 
-```python
-from autotoken.interfaces import manager
+```go
+package mailbridge_test
 
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+	"autoteam-f/protocol-register/internal/mailbridge"
+)
 
-def test_sync_provider_registered_email_marks_mailcom(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "autotoken.storage.mail_accounts.mark_mailcom_registered",
-        lambda email, **kwargs: calls.append((email, kwargs)) or {"email": email},
-    )
+func TestExtractOTPFromJSONAndHTML(t *testing.T) {
+	for _, input := range [][]byte{
+		[]byte(`{"ok":true,"code":"013555"}`),
+		[]byte(`{"mail":{"content":"Use 246810 to continue"}}`),
+		[]byte(`<html>Your OpenAI verification code is <b>135790</b></html>`),
+	} {
+		if got := mailbridge.ExtractOTP(input); got == "" {
+			t.Fatalf("missing code from %s", input)
+		}
+	}
+}
 
-    manager._sync_provider_registered_email(
-        "one@mail.com",
-        mail_provider="mail.com",
-        password="gpt-pass",
-        refresh_token="rt-new",
-        source="auth_session_saved",
-    )
-
-    assert calls == [
-        (
-            "one@mail.com",
-            {
-                "gpt_password": "gpt-pass",
-                "refresh_token": "rt-new",
-                "source": "auth_session_saved",
-            },
-        )
-    ]
-
-
-def test_sync_provider_registered_email_keeps_outlook_behavior(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "autotoken.storage.outlook_pool.mark_registered_email",
-        lambda email, source="": calls.append((email, source)),
-    )
-
-    manager._sync_provider_registered_email("one@outlook.com", mail_provider="outlook", source="register_success")
-
-    assert calls == [("one@outlook.com", "register_success")]
+func TestWaitForOTPPollsUntilCode(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 2 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"ok":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":"112233"}`))
+	}))
+	defer srv.Close()
+	client := mailbridge.NewClient(srv.Client(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	code, err := client.WaitForOTP(ctx, srv.URL)
+	if err != nil || code != "112233" {
+		t.Fatalf("code=%q err=%v", code, err)
+	}
+}
 ```
 
-- [ ] **Step 2: Run manager test and verify failure**
+- [ ] **Step 2: Run tests to verify failure**
 
 Run:
 
 ```powershell
-pytest tests/unit/test_manager_mailcom_sync.py -q
+cd go/protocol-register
+go test ./internal/mailbridge -run Test -v
 ```
 
-Expected: FAIL because `_sync_provider_registered_email` does not exist.
+Expected: FAIL because package implementation is missing.
 
-- [ ] **Step 3: Implement generic provider sync**
+- [ ] **Step 3: Implement HTTP client and mailbridge**
 
-In `D:/code/OpenSource/AutoTeam-F/src/autotoken/interfaces/manager.py`, replace `_mark_outlook_email_registered` with:
+Create `go/protocol-register/internal/httpclient/client.go`:
 
-```python
-def _sync_provider_registered_email(
-    email: str,
-    mail_client=None,
-    *,
-    mail_provider: str | None = None,
-    password: str = "",
-    refresh_token: str = "",
-    source: str = "",
-) -> None:
-    provider = (mail_provider or _mail_client_provider_name(mail_client)).strip().lower() if (mail_provider or mail_client) else ""
-    if provider == "outlook":
-        try:
-            from autotoken.storage.outlook_pool import mark_registered_email
+```go
+package httpclient
 
-            mark_registered_email(email, source=source)
-        except Exception as exc:
-            logger.debug("[outlook] 标记已注册邮箱失败: %s", exc, exc_info=True)
-        return
-    if provider in {"mail.com", "mailcom", "mail_com"}:
-        try:
-            from autotoken.storage.mail_accounts import mark_mailcom_registered
-
-            mark_mailcom_registered(
-                email,
-                gpt_password=password,
-                refresh_token=refresh_token,
-                source=source,
-            )
-        except Exception as exc:
-            logger.debug("[mail.com] 标记已注册邮箱失败: %s", exc, exc_info=True)
-        return
-
-
-def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
-    _sync_provider_registered_email(email, mail_client, mail_provider=mail_provider, source=source)
-```
-
-Then update call sites:
-
-```python
-_sync_provider_registered_email(
-    email,
-    mail_provider=mail_provider,
-    password=password,
-    source="auth_session_saved",
+import (
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"time"
 )
+
+func New(proxyURL string, timeout time.Duration) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if proxyURL != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		transport.Proxy = http.ProxyURL(parsed)
+	}
+	jar, _ := cookiejar.New(nil)
+	if timeout <= 0 {
+		timeout = 190 * time.Second
+	}
+	return &http.Client{Transport: transport, Jar: jar, Timeout: timeout}, nil
+}
 ```
 
-inside `_save_auth_from_session_page()`.
+Create `go/protocol-register/internal/mailbridge/otp.go`:
 
-Replace:
+```go
+package mailbridge
 
-```python
-_mark_outlook_email_registered(email, mail_client, source="register_success")
-```
-
-with:
-
-```python
-_sync_provider_registered_email(
-    email,
-    mail_client,
-    password=password,
-    source="register_success",
+import (
+	"encoding/json"
+	"regexp"
 )
+
+var otpPattern = regexp.MustCompile(`\b\d{6}\b`)
+
+func ExtractOTP(payload []byte) string {
+	var data any
+	if json.Unmarshal(payload, &data) == nil {
+		if code := findCode(data); code != "" {
+			return code
+		}
+	}
+	return otpPattern.FindString(string(payload))
+}
+
+func findCode(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"code", "otp", "verification_code", "verificationCode"} {
+			if raw, ok := typed[key].(string); ok {
+				if code := otpPattern.FindString(raw); code != "" {
+					return code
+				}
+			}
+		}
+		for _, raw := range typed {
+			if code := findCode(raw); code != "" {
+				return code
+			}
+		}
+	case []any:
+		for _, raw := range typed {
+			if code := findCode(raw); code != "" {
+				return code
+			}
+		}
+	case string:
+		return otpPattern.FindString(typed)
+	}
+	return ""
+}
 ```
 
-Update batch logging provider check:
+Create `go/protocol-register/internal/mailbridge/client.go`:
 
-```python
-if provider_label in {"luckmail", "outlook", "mail.com"}
+```go
+package mailbridge
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+type Client struct {
+	httpClient   *http.Client
+	pollInterval time.Duration
+}
+
+func NewClient(httpClient *http.Client, pollInterval time.Duration) *Client {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if pollInterval <= 0 {
+		pollInterval = 3 * time.Second
+	}
+	return &Client{httpClient: httpClient, pollInterval: pollInterval}
+}
+
+func (c *Client) WaitForOTP(ctx context.Context, receiveCodeURL string) (string, error) {
+	if receiveCodeURL == "" {
+		return "", fmt.Errorf("receive_code_url is empty")
+	}
+	ticker := time.NewTicker(c.pollInterval)
+	defer ticker.Stop()
+	for {
+		code, err := c.fetchOnce(ctx, receiveCodeURL)
+		if err == nil && code != "" {
+			return code, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Client) fetchOnce(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json,text/html,*/*")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if code := ExtractOTP(body); code != "" {
+		return code, nil
+	}
+	return "", fmt.Errorf("no otp in response status=%d", resp.StatusCode)
+}
 ```
 
-- [ ] **Step 4: Run manager test and targeted registration tests**
+- [ ] **Step 4: Run tests and commit**
 
 Run:
 
 ```powershell
-pytest tests/unit/test_manager_mailcom_sync.py tests/unit/test_manager_mail_timeout.py tests/unit/test_account_register_task_routes.py -q
+cd go/protocol-register
+go test ./...
+cd ..\..
+git add go/protocol-register/internal/httpclient go/protocol-register/internal/mailbridge
+git commit -m "feat(protocol): add Go mail OTP polling"
 ```
 
-Expected: PASS.
+Expected: Go tests PASS and commit succeeds.
 
-- [ ] **Step 5: Commit Task 3**
-
-```powershell
-git add src/autotoken/interfaces/manager.py tests/unit/test_manager_mailcom_sync.py
-git commit -m "feat: sync mailcom registration status"
-```
+---
 

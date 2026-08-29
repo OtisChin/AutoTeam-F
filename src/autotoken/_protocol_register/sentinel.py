@@ -11,8 +11,8 @@ silent-drop（200 OK 但不下发 OTP）。新实现的关键区别：
   2. 服务端返回 `{token, proofofwork: {required, seed, difficulty}}`，
      我们用 **服务端给的 seed/difficulty** 跑 FNV-1a 32-bit PoW。
   3. 第二次 PoW 解出来的 token 拼进 `{p, t:"", c: server_token, id, flow}` 才合法。
-  4. SDK 版本字符串从旧的 `prod-f501fe...` 升级到当前的
-     `https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js`。
+  4. SDK 地址通过 Sentinel 官方 frame 页面动态发现，并带本地缓存、
+     last-known-good 与内置版本回退，不再由两条实现路径分别写死。
 
 公开 API `get_sentinel_token(session, device_id, flow, user_agent)` 保持不变，
 auth_flow.py 的 4 处调用点不需要改。
@@ -29,12 +29,16 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+try:
+    from .sentinel_sdk import BUILTIN_SENTINEL_SDK_URL, resolve_sentinel_sdk
+except ImportError:  # pragma: no cover - bundled top-level import mode
+    from sentinel_sdk import BUILTIN_SENTINEL_SDK_URL, resolve_sentinel_sdk
+
 logger = logging.getLogger(__name__)
 
 
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 SENTINEL_REFERER = "https://sentinel.openai.com/backend-api/sentinel/frame.html"
-SENTINEL_SDK_URL = "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js"
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -56,9 +60,15 @@ class SentinelTokenGenerator:
     MAX_ATTEMPTS = 500000
     ERROR_PREFIX = "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D"
 
-    def __init__(self, device_id: str | None = None, user_agent: str | None = None):
+    def __init__(
+        self,
+        device_id: str | None = None,
+        user_agent: str | None = None,
+        sdk_url: str | None = None,
+    ):
         self.device_id = device_id or str(uuid.uuid4())
         self.user_agent = user_agent or DEFAULT_UA
+        self.sdk_url = sdk_url or BUILTIN_SENTINEL_SDK_URL
         self.requirements_seed = str(random.random())
         self.sid = str(uuid.uuid4())
 
@@ -94,7 +104,7 @@ class SentinelTokenGenerator:
             4294705152,
             random.random(),
             self.user_agent,
-            SENTINEL_SDK_URL,
+            self.sdk_url,
             None,
             None,
             "en-US",
@@ -150,9 +160,15 @@ def fetch_sentinel_challenge(
     sec_ch_ua: str | None = None,
     impersonate: str | None = None,
     request_p: str | None = None,
+    sdk_url: str | None = None,
 ) -> dict | None:
     """POST `/sentinel/req` 并返回响应 JSON。失败返回 None。"""
-    generator = SentinelTokenGenerator(device_id=device_id, user_agent=user_agent)
+    resolved_sdk_url = sdk_url or resolve_sentinel_sdk(session).url
+    generator = SentinelTokenGenerator(
+        device_id=device_id,
+        user_agent=user_agent,
+        sdk_url=resolved_sdk_url,
+    )
     req_body = {
         "p": str(request_p or "").strip() or generator.generate_requirements_token(),
         "id": device_id,
@@ -198,6 +214,7 @@ def build_sentinel_token(
 
     返回 JSON 字符串，失败返回 None。
     """
+    sdk = resolve_sentinel_sdk(session)
     challenge = fetch_sentinel_challenge(
         session,
         device_id,
@@ -205,6 +222,7 @@ def build_sentinel_token(
         user_agent=user_agent,
         sec_ch_ua=sec_ch_ua,
         impersonate=impersonate,
+        sdk_url=sdk.url,
     )
     if not challenge:
         return None
@@ -214,7 +232,11 @@ def build_sentinel_token(
         logger.warning("Sentinel 响应缺 token 字段")
         return None
 
-    generator = SentinelTokenGenerator(device_id=device_id, user_agent=user_agent)
+    generator = SentinelTokenGenerator(
+        device_id=device_id,
+        user_agent=user_agent,
+        sdk_url=sdk.url,
+    )
     pow_data = challenge.get("proofofwork") or {}
     if pow_data.get("required") and pow_data.get("seed"):
         p_value = generator.generate_token(
@@ -255,7 +277,10 @@ def get_sentinel_token(
     """
     if not os.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
         try:
-            from sentinel_quickjs import get_sentinel_token_via_quickjs
+            try:
+                from .sentinel_quickjs import get_sentinel_token_via_quickjs
+            except ImportError:  # pragma: no cover - bundled top-level import mode
+                from sentinel_quickjs import get_sentinel_token_via_quickjs
             qtoken = get_sentinel_token_via_quickjs(
                 session,
                 device_id=device_id,
@@ -280,8 +305,11 @@ def get_sentinel_token(
         return token
 
     logger.warning("Sentinel /req 也失败，回退到无 challenge 模式")
+    fallback_sdk = resolve_sentinel_sdk(session)
     fallback_p = SentinelTokenGenerator(
-        device_id=device_id, user_agent=user_agent
+        device_id=device_id,
+        user_agent=user_agent,
+        sdk_url=fallback_sdk.url,
     ).generate_requirements_token()
     return json.dumps({
         "p": fallback_p,

@@ -1,46 +1,68 @@
-状态: DONE_WITH_CONCERNS
+# Task 4 Report — Go Email-First Registration State Machine
 
-变更文件:
-- D:\code\OpenSource\AutoTeam-F\web\src\api.js
-- D:\code\OpenSource\AutoTeam-F\web\src\components\RegisterAccountPage.vue
+- **status:** DONE
+- **commit hash:** `0583a45e14bd54a95da26cec1102ffd470fdcda2`
 
-提交 hash:
-- 442a410
+## Modified files
 
-运行的构建命令和结果:
-- 命令: npm --prefix web run build
-- 结果: 成功（exit code 0）
-- 摘要: vite build 通过；产物生成到 src/autotoken/web/dist；仍有 1 条 chunk size warning（index-CAEOpnV3.js 约 820.70 kB）
+- `go/protocol-register/cmd/protocol-registerd/main.go`
+- `go/protocol-register/internal/openai/headers.go`
+- `go/protocol-register/internal/openai/auth_api.go`
+- `go/protocol-register/internal/register/progress.go`
+- `go/protocol-register/internal/register/state_machine.go`
+- `go/protocol-register/internal/register/state_machine_test.go`
 
-自审结论:
-- 已为 mail.com 注册供应商补齐邮箱池 API 调用与页面 UI。
-- 导入后的自动登录、管理弹窗里的“登录并入池/重试”均调用 login-batch，并固定传入：mail_provider='mail.com'、protocol_only=true、bind_email=false。
-- 未添加会触发浏览器/Playwright 登录的 mail.com 按钮或参数。
-- 任务完成后会在 provider 切换、页面挂载、任务结束时刷新 mail.com 邮箱池状态。
-- 提交时仅暂存并提交 brief 允许的两个代码文件，未碰用户列出的无关文件。
+## Tests
 
-顾虑:
-- brief 限制只改两个实现文件，未新增前端自动化测试；本次验证仅覆盖构建成功。
-- 构建存在既有 chunk size warning，但不影响本次 build 成功。
-## 2026-07-06 Task 4 follow-up fix (Important)
-- 修复 `web/src/components/RegisterAccountPage.vue` 中 `registerProviderUsesPool` 回归：恢复 LuckMail、Outlook、mail.com 三者都走邮箱池逻辑。
-- 恢复 `registerProviderPoolMessage` 的 LuckMail/Outlook 原有说明；保留 mail.com 的邮箱池说明。
-- 保持 `registerProviderUsesDomains` 依赖池逻辑，确保 LuckMail 不再显示或提交通用注册域名。
-- 未改动 mail.com 登录并入池调用参数；仍固定传 `mail_provider: 'mail.com'`、`protocol_only: true`、`bind_email: false`，未添加浏览器/Playwright 参数。
-- 未修改 `web/src/api.js` 的 ideal API minor 相关内容。
+1. RED (before implementation):
+   ```powershell
+   cd go/protocol-register
+   go test ./internal/register -run TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail -v
+   ```
+   Result: failed as expected because `register.NewHTTPRegisterEngine` and `register.HTTPRegisterEngineConfig` were undefined.
 
-### 验证
-- 命令：`npm --prefix web run build`
-- 结果：成功（exit code 0）
-- 摘要：Vite build 通过，产物输出到 `src/autotoken/web/dist/`；仍有既有 chunk size warning（`assets/index-CTrcR7hK.js` 约 820.89 kB）。
-## 2026-07-06 Task 4 second follow-up fix (Important)
-- 在 `web/src/components/RegisterAccountPage.vue` 的 `importMailComAccounts()` 增加前端预校验：逐行解析首字段邮箱，发现非 `@mail.com` 行时在调用 `api.importMailAccounts()` 前直接拒绝并提示行号/邮箱预览。
-- 将 `mailComPoolItems` 改为仅保留 `@mail.com` 记录，避免管理弹窗展示、选择或操作非 mail.com 数据；相关选择与登录候选邮箱也统一使用规范化后的 `mail.com` 邮箱值。
-- 为导入后自动登录入池补上兜底：当 `result.synced_account_pool?.emails` 为空时，额外调用 `api.syncMailAccountsToAccountPool()`，并优先传入导入内容中解析出的 `@mail.com` 邮箱列表；仅在 sync 返回邮箱后再调用 `loginAccountsBatch()`。
-- `loginAccountsBatch()` 调用保持固定参数：`mail_provider: 'mail.com'`、`protocol_only: true`、`bind_email: false`；未增加浏览器/Playwright 参数。
-- 未改动 `web/src/api.js` 的 ideal API minor 相关内容。
+2. Targeted state-machine tests:
+   ```powershell
+   cd go/protocol-register
+   go test ./internal/register -run 'TestHTTPRegisterEngine(SuccessWithMockOpenAIAndMail|NormalizesNetworkFailureStatus)' -v
+   ```
+   Result: PASS (mocked OpenAI/mail email-first flow and direct engine status normalization).
 
-### 验证
-- 命令：`npm --prefix web run build`
-- 结果：成功（exit code 0）
-- 摘要：Vite build 通过，产物输出到 `src/autotoken/web/dist/`；仍有既有 chunk size warning（`assets/index-DNiM5DUU.js` 约 821.98 kB）。
+3. Full Go suite:
+   ```powershell
+   cd go/protocol-register
+   go test ./...
+   ```
+   Result: PASS — command, mailbridge, register, and server packages pass; httpclient, model, and openai report no test files.
+
+## Self-review
+
+- The daemon remains loopback-by-default and now wires the opt-in Go HTTP register engine.
+- The state machine covers only email-first registration, obtains the session data in memory, and does not persist accounts or write `data/auth_session`.
+- Requests share the proxy-aware, cookie-jar HTTP client across OpenAI and mail polling.
+- Failure responses use supported statuses; network failures normalize to `register_failed` while retaining `network_error` in `error.code`.
+- No Codex OAuth, phone-first/phone-only, browser/cloak, or unrelated project files were changed.
+
+## Fix Report — Reject failed OpenAI OAuth signin responses
+
+- **Files changed:** `go/protocol-register/internal/openai/auth_api.go`, `go/protocol-register/internal/register/state_machine_test.go`
+- **Fix:** `SigninOpenAI` now rejects non-2xx OAuth signin responses with a status-only, non-secret error. Added a state-machine regression test for an OAuth endpoint returning HTTP 502.
+- **Tests:** `cd go/protocol-register; go test ./...` — PASS; all command, mailbridge, register, and server tests passed.
+- **Commit SHA:** `81479d602f24f352760e113c950f3577325cc7f3`
+- **Concerns:** None.
+
+## Fix Report — Sanitize register error responses
+
+- **Files changed:** `go/protocol-register/internal/register/state_machine.go`, `go/protocol-register/internal/register/state_machine_test.go`
+- **Fix:** Centralized state-machine failure messages to stable status/step text, discarding raw upstream, URL, transport, and proxy errors. Added OAuth URL and proxy credential redaction regression tests.
+- **Tests:** `cd go/protocol-register; go test ./...` — PASS; all available Go packages passed.
+- **Commit SHA:** `7aa4b28c505fe94415fb52742a007ad79b3ca220`
+- **Concerns:** None.
+
+## Fix Report — Redact upstream OpenAI error bodies
+
+- **Files changed:** `go/protocol-register/internal/openai/auth_api.go`, `go/protocol-register/internal/register/state_machine_test.go`
+- **Fix:** `doJSON` now returns only HTTP method, endpoint path, and status code for non-2xx responses. Added regression assertions covering password, access-token, and OTP-link response-body secrets.
+- **Tests:** `cd go/protocol-register; go test ./...` — PASS; all available Go packages passed.
+- **Commit SHA:** `7c1ab31d7556189c0146d3a5a38cbcb89ce5ddfb`
+- **Concerns:** None.

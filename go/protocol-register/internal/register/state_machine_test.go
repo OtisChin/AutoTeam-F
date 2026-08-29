@@ -7,13 +7,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
 func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
 	hits := map[string]int{}
+	userAgents := map[string]int{}
+	var mu sync.Mutex
 	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits[r.URL.Path]++
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			ua := r.Header.Get("User-Agent")
+			mu.Lock()
+			userAgents[ua]++
+			mu.Unlock()
+		}
 		switch r.URL.Path {
 		case "/api/auth/csrf":
 			_ = json.NewEncoder(w).Encode(map[string]any{"csrfToken": "csrf-1"})
@@ -52,6 +61,38 @@ func TestHTTPRegisterEngineSuccessWithMockOpenAIAndMail(t *testing.T) {
 	})
 	if !resp.Success || resp.Status != "success" || resp.SessionData["accessToken"] != "access-1" {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+	mu.Lock()
+	var userAgent string
+	for ua := range userAgents {
+		userAgent = ua
+	}
+	count := len(userAgents)
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected one user agent across the flow, got %#v", userAgents)
+	}
+	allowed := []string{
+		"Chrome/143.0.0.0",
+		"Chrome/144.0.0.0",
+		"Chrome/145.0.0.0",
+		"Chrome/146.0.0.0",
+		"Chrome/147.0.0.0",
+		"Chrome/148.0.0.0",
+		"Chrome/149.0.0.0",
+		"Chrome/150.0.0.0",
+		"Chrome/151.0.0.0",
+		"Chrome/152.0.0.0",
+	}
+	ok := false
+	for _, want := range allowed {
+		if strings.Contains(userAgent, want) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("user agent=%q, want one of 141+", userAgent)
 	}
 	for _, path := range []string{"/api/auth/csrf", "/api/auth/signin/openai", "/api/accounts/authorize/continue", "/api/accounts/user/register", "/api/accounts/email-otp/send", "/api/accounts/email-otp/verify", "/api/accounts/profile", "/api/auth/session"} {
 		if hits[path] == 0 {

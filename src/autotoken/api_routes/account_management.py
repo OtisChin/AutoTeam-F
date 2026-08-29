@@ -1,7 +1,7 @@
 """Account mutation HTTP routes."""
 
-import logging
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -11,9 +11,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from autotoken.api_routes.input_limits import validate_list_payload_limit
 from autotoken.core.normalization import normalized_email
 from autotoken.core.paths import PROJECT_ROOT
-from autotoken.api_routes.input_limits import validate_list_payload_limit
 
 logger = logging.getLogger(__name__)
 ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1_000
@@ -77,9 +77,9 @@ def _clean_account_status_or_raise(value: str) -> str:
         STATUS_PENDING,
         STATUS_PERSONAL,
         STATUS_PLUS,
-        STATUS_STASHED,
         STATUS_SESSION_ONLY,
         STATUS_STANDBY,
+        STATUS_STASHED,
     )
 
     next_status = (value or "").strip().lower()
@@ -112,6 +112,7 @@ def _clean_bind_provider_or_raise(value: str) -> str:
         "ideal",
         "kakao_pay",
         "momo_vn",
+        "gcash_ph",
         "gopay",
         "card",
         "external_import",
