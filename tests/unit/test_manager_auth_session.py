@@ -252,6 +252,52 @@ def test_protocol_register_redacts_go_failure_reason(monkeypatch):
     assert "redacted" in reason.lower()
 
 
+def test_protocol_register_redacts_json_go_failure_reason(monkeypatch):
+    outcome = {}
+
+    class FakeMailClient:
+        provider_name = "outlook"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mailbox-1", "user@example.com"
+
+        def delete_account(self, account_id):
+            return {"code": 0}
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", lambda *args, **kwargs: {})
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(
+        "autotoken.auth.protocol_register.register_once",
+        lambda *args, **kwargs: (
+            False,
+            {
+                "status": "register_failed",
+                "reason": '{"password":"Secret123","api_key":"XYZ","otp":"https://mail.test/code?token=abc"}',
+                "raw": {"source": "go_protocol_register"},
+            },
+        ),
+    )
+
+    result = manager.create_account_direct(
+        FakeMailClient(),
+        password="pw",
+        check_team_membership=False,
+        register_mode="protocol",
+        post_register_oauth=False,
+        retry_attempts=1,
+        out_outcome=outcome,
+    )
+
+    assert result is None
+    reason = outcome["reason"]
+    assert "Secret123" not in reason
+    assert "XYZ" not in reason
+    assert "token=abc" not in reason
+    assert "<redacted>" in reason
+
+
 class FakeContext:
     def cookies(self, url):
         assert url == "https://chatgpt.com"

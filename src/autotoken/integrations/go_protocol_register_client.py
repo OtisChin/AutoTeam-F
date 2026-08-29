@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ from urllib.request import Request, urlopen
 
 class GoProtocolRegisterUnavailable(RuntimeError):
     pass
+
+
+_AUTO_START_LOCK = threading.Lock()
+_AUTO_START_TRIGGERED = False
 
 
 def _base_url(value: str | None = None) -> str:
@@ -58,10 +63,12 @@ class GoProtocolRegisterClient:
 
     def health(self) -> dict[str, Any]:
         url = f"{self.base_url}/healthz"
+
         def _ensure_healthy(body: dict[str, Any]) -> dict[str, Any]:
             if not bool(body.get("ok")):
                 raise GoProtocolRegisterUnavailable("protocol-registerd health check failed")
             return body
+
         try:
             return _ensure_healthy(_json_request(url, timeout=min(self.timeout, 5.0)))
         except GoProtocolRegisterUnavailable:
@@ -72,7 +79,17 @@ class GoProtocolRegisterClient:
                 "on",
             }:
                 raise
-            self._start_configured_binary()
+            global _AUTO_START_TRIGGERED
+            with _AUTO_START_LOCK:
+                if not _AUTO_START_TRIGGERED:
+                    try:
+                        _ensure_healthy(_json_request(url, timeout=1.0))
+                        _AUTO_START_TRIGGERED = True
+                        self._started = True
+                        return {"ok": True}
+                    except GoProtocolRegisterUnavailable:
+                        self._start_configured_binary()
+                        _AUTO_START_TRIGGERED = True
             deadline = time.monotonic() + min(10.0, max(1.0, self.timeout))
             while True:
                 try:

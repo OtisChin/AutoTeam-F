@@ -54,9 +54,9 @@ from autotoken.auth.codex_auth import (
     refresh_main_auth_file,
     save_auth_file,
 )
-from autotoken.core.redaction import safe_error_summary
 from autotoken.core.identity import random_age, random_birthday, random_full_name, random_password
 from autotoken.core.normalization import normalized_email as _core_normalized_email
+from autotoken.core.redaction import safe_error_summary
 from autotoken.core.textio import write_text
 from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
 from autotoken.integrations.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa
@@ -367,18 +367,65 @@ def _mark_outlook_email_registered(
 
 
 def _sanitize_go_failure_reason(reason: object) -> str:
-    text = safe_error_summary(reason, limit=240)
-    text = re.sub(
-        r"(?i)\b(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)\b\s*[:=]\s*[^,\s;]+",
-        r"\1=<redacted>",
-        text,
-    )
-    text = re.sub(
-        r"(?i)\b(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)\b\s+[^,\s;]+",
-        r"\1 <redacted>",
-        text,
-    )
-    return text
+    sensitive_keys = {
+        "password",
+        "passwd",
+        "cookie",
+        "sessiontoken",
+        "session_token",
+        "session-token",
+        "apikey",
+        "otp",
+        "clientsecret",
+    }
+
+    def _redact_value(value: object) -> object:
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                key_text = re.sub(r"[^a-z0-9]+", "", str(key).lower())
+                if key_text in sensitive_keys:
+                    redacted[key] = "<redacted>"
+                else:
+                    redacted[key] = _redact_value(item)
+            return redacted
+        if isinstance(value, list):
+            return [_redact_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [_redact_value(item) for item in value]
+        text = safe_error_summary(value, limit=240)
+        text = re.sub(
+            r'(?i)"(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)"\s*:\s*"[^"]*"',
+            lambda m: f'"{m.group(1)}":"<redacted>"',
+            text,
+        )
+        text = re.sub(
+            r"(?i)'(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)'\s*:\s*'[^']*'",
+            lambda m: f"'{m.group(1)}':'<redacted>'",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b(password|passwd|cookie|session[_-]?token|api[_-]?key|otp|client_secret)\b\s*[:=]\s*[^,\s;]+",
+            r"\1=<redacted>",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b(otp|url|link)\b\s*[:=]\s*https?://\S+",
+            r"\1=<redacted>",
+            text,
+        )
+        return text
+
+    if isinstance(reason, (dict, list, tuple)):
+        return json.dumps(_redact_value(reason), ensure_ascii=False)
+    raw = str(reason or "")
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(_redact_value(parsed), ensure_ascii=False)
+    return str(_redact_value(raw))
 
 
 def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:

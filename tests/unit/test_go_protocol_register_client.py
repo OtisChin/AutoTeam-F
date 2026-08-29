@@ -1,5 +1,6 @@
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -63,11 +64,12 @@ def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tm
     binary.write_bytes(b"fixture")
     monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
     monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    monkeypatch.setattr("autotoken.integrations.go_protocol_register_client._AUTO_START_TRIGGERED", False)
     calls = []
 
     def fake_request(url, payload=None, *, timeout):
         calls.append(url)
-        if len(calls) == 1:
+        if len(calls) <= 2:
             raise GoProtocolRegisterUnavailable("connection refused")
         return {"ok": True}
 
@@ -91,3 +93,51 @@ def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tm
             "stdin": subprocess.DEVNULL,
         })
     ]
+
+
+def test_client_auto_start_is_process_wide(monkeypatch, tmp_path):
+    binary = tmp_path / "protocol-registerd.exe"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    monkeypatch.setattr("autotoken.integrations.go_protocol_register_client._AUTO_START_TRIGGERED", False)
+
+    state = {"calls": 0}
+    calls_lock = threading.Lock()
+    started = []
+
+    def fake_request(url, payload=None, *, timeout):
+        assert payload is None
+        with calls_lock:
+            state["calls"] += 1
+            call_number = state["calls"]
+        if call_number <= 3:
+            raise GoProtocolRegisterUnavailable("connection refused")
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "autotoken.integrations.go_protocol_register_client._json_request", fake_request
+    )
+    monkeypatch.setattr(
+        "autotoken.integrations.go_protocol_register_client.subprocess.Popen",
+        lambda args, **kwargs: started.append((args, kwargs)),
+    )
+
+    results = []
+    errors = []
+
+    def run_health():
+        try:
+            results.append(GoProtocolRegisterClient(timeout=1).health())
+        except Exception as exc:  # pragma: no cover - defensive
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_health) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert results == [{"ok": True}, {"ok": True}]
+    assert len(started) == 1
