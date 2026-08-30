@@ -28,3 +28,12 @@ export const oauthPhoneRecordStatusPresentation = value => {
 
 export const credentialExportPresentation = value => mapPresentation(Boolean(value) ? 'exported' : 'pending', { exported: ['已导出', 'success'], pending: ['未导出', 'neutral'] })
 export const accountHubSyncPresentation = value => mapPresentation(Boolean(value) ? 'synced' : 'pending', { synced: ['已同步', 'success'], pending: ['未同步', 'neutral'] })
+
+// Payment/workflow statuses intentionally return semantic tones rather than utility class names.
+export const paypalStatusPresentation = value => mapPresentation(value, {
+  pending: ['待处理', 'neutral'], queued: ['排队中', 'neutral'], running: ['进行中', 'info'], processing: ['处理中', 'info'],
+  success: ['成功', 'success'], paid: ['已支付', 'success'], completed: ['已完成', 'success'],
+  failed: ['失败', 'danger'], error: ['错误', 'danger'], cancelled: ['已取消', 'warning'],
+  unknown: ['结果待核对', 'warning'], unknown_outcome: ['结果待核对', 'warning'], needs_action: ['需要操作', 'warning'],
+})
+export const workflowStatusPresentation = paypalStatusPresentation

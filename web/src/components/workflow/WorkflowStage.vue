@@ -99,14 +99,14 @@ const props = defineProps({
   name: {
     type: String,
     required: true,
-    validator: value => WORKFLOW_STAGE_NAMES.includes(value),
+    validator: value => ['configuration', 'launch', 'progress', 'result', 'resources'].includes(value),
   },
   title: { type: String, required: true },
   description: { type: String, default: '' },
   state: {
     type: String,
     default: 'idle',
-    validator: value => WORKFLOW_STAGE_STATES.includes(value),
+    validator: value => ['idle', 'active', 'complete', 'warning', 'error'].includes(value),
   },
 })
 

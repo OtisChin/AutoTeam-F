@@ -91,7 +91,7 @@ defineProps({
   statusTone: {
     type: String,
     default: 'neutral',
-    validator: value => WORKFLOW_STATUS_TONES.includes(value),
+    validator: value => ['neutral', 'info', 'success', 'warning', 'danger'].includes(value),
   },
 })
 

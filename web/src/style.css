@@ -1141,3 +1141,4 @@ textarea:focus-visible,
 .log-entry strong[data-level="ERROR"] { color: var(--danger); }.log-entry strong[data-level="WARNING"] { color: var(--warning); }.log-entry strong[data-level="INFO"] { color: var(--info); }
 .log-entry > span { overflow-wrap: anywhere; color: var(--text-secondary); }
 @media (max-width: 767px) { .ui-form-grid, .ui-detail-grid { grid-template-columns: 1fr; }.ui-data-table { min-width: 960px; }.log-entry { grid-template-columns: 4.5rem 4.5rem minmax(14rem, 1fr); }.ui-modal-card { max-height: 92dvh; }.ui-inline-field { min-width: 100%; } }
+.ui-workflow-surface { background: var(--surface-inset); }
