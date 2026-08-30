@@ -21,3 +21,14 @@ type RegisterRequest struct {
 	Mail      MailConfig      `json:"mail"`
 	Options   RegisterOptions `json:"options"`
 }
+
+type ProxyProbeRequest struct {
+	ProxyURL       string `json:"proxy_url"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type ProxyProbeResponse struct {
+	OK                 bool   `json:"ok"`
+	FingerprintProfile string `json:"fingerprint_profile,omitempty"`
+	Error              string `json:"error,omitempty"`
+}

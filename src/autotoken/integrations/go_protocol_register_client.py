@@ -165,6 +165,19 @@ class GoProtocolRegisterClient:
             failure_type=GoProtocolRegisterIndeterminate,
         )
 
+    def probe_proxy(self, proxy_url: str, *, timeout_seconds: int = 20) -> dict[str, Any]:
+        self.health()
+        bounded_timeout = max(1, min(30, int(timeout_seconds or 20)))
+        return _json_request(
+            f"{self.base_url}/v1/probe",
+            {
+                "proxy_url": str(proxy_url or "").strip(),
+                "timeout_seconds": bounded_timeout,
+            },
+            timeout=float(bounded_timeout + 5),
+            failure_type=GoProtocolRegisterUnavailable,
+        )
+
 
 def go_response_to_protocol_result(response: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     if bool(response.get("success")):

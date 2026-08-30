@@ -61,10 +61,89 @@ func NewHTTPRegisterEngine(cfg HTTPRegisterEngineConfig) *HTTPRegisterEngine {
 	return &HTTPRegisterEngine{cfg: cfg, authGate: newAuthGate(cfg.AuthConcurrency)}
 }
 
+func (e *HTTPRegisterEngine) orderedProfiles() ([]fingerprint.Profile, error) {
+	first, err := e.cfg.FingerprintPool.Select(e.cfg.Draw)
+	if err != nil {
+		return nil, err
+	}
+	names := e.cfg.FingerprintPool.Names()
+	start := -1
+	for index, name := range names {
+		if name == first.Name {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		return nil, fingerprint.ErrUnsupportedProfile
+	}
+	profiles := make([]fingerprint.Profile, 0, len(names))
+	for offset := range names {
+		name := names[(start+offset)%len(names)]
+		profile, ok := fingerprint.Lookup(name)
+		if !ok {
+			return nil, fmt.Errorf("%w: %q", fingerprint.ErrUnsupportedProfile, name)
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, nil
+}
+
+func (e *HTTPRegisterEngine) selectProfile(preferred string) (fingerprint.Profile, error) {
+	preferred = strings.TrimSpace(preferred)
+	if preferred != "" {
+		for _, name := range e.cfg.FingerprintPool.Names() {
+			if name != preferred {
+				continue
+			}
+			if profile, ok := fingerprint.Lookup(name); ok {
+				return profile, nil
+			}
+			break
+		}
+	}
+	return e.cfg.FingerprintPool.Select(e.cfg.Draw)
+}
+
+func (e *HTTPRegisterEngine) ProbeProxy(r *http.Request, req model.ProxyProbeRequest) model.ProxyProbeResponse {
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	if timeout > 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	profiles, err := e.orderedProfiles()
+	if err != nil {
+		return model.ProxyProbeResponse{Error: "fingerprint pool unavailable"}
+	}
+	for _, profile := range profiles {
+		client, clientErr := e.cfg.ProfiledClientFactory(profile, req.ProxyURL, timeout)
+		if clientErr != nil || client == nil {
+			continue
+		}
+		token, probeErr := openai.NewClient(client, e.cfg.BaseURL, e.cfg.ChatGPTBaseURL, profile).GetCSRF(ctx)
+		client.CloseIdleConnections()
+		if probeErr == nil && strings.TrimSpace(token) != "" {
+			return model.ProxyProbeResponse{OK: true, FingerprintProfile: profile.Name}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return model.ProxyProbeResponse{Error: "csrf probe failed for configured Go profiles"}
+}
+
 func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest) model.RegisterResponse {
 	progress := &Progress{}
 	metadata := map[string]string{}
-	profile, err := e.cfg.FingerprintPool.Select(e.cfg.Draw)
+	profile, err := e.selectProfile(req.Options.Impersonate)
 	if err != nil {
 		return fail(req.Email, "network_error", err.Error(), "fingerprint", true, progress.Events(), metadata)
 	}

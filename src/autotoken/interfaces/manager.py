@@ -4058,6 +4058,7 @@ def create_account_direct(
     register_mode="browser",
     registration_flow="standard",
     proxy_url=None,
+    go_protocol_profile=None,
     use_roxybrowser=False,
     use_cloakbrowser=False,
     oauth_phone_sms_provider=None,
@@ -4405,6 +4406,8 @@ def create_account_direct(
                     "account_id": account_id,
                     "proxy": proxy_url,
                 }
+                if register_mode == "go_protocol":
+                    protocol_kwargs["fingerprint_profile"] = str(go_protocol_profile or "").strip() or None
                 if register_mode == "protocol":
                     protocol_kwargs.update(
                         oauth_phone_sms_provider=(
@@ -5564,6 +5567,8 @@ def cmd_register_accounts(
     fixed_proxy_url = str(proxy_url or "").strip()
     proxy_pool_list = [str(item).strip() for item in (proxy_pool or []) if str(item or "").strip()]
     register_proxy_meta = register_proxy_meta or {}
+    go_probe_profiles = {}
+    go_probe_lock = threading.Lock()
     oauth_provider = str(oauth_phone_sms_provider or "").strip().lower().replace("-", "_")
     oauth_max_price = str(oauth_phone_sms_max_price or "").strip()
 
@@ -5586,6 +5591,19 @@ def cmd_register_accounts(
         proxy = str(proxy_url or "").strip()
         if not proxy:
             return False, "代理为空"
+        if register_mode == "go_protocol":
+            try:
+                from autotoken.integrations.go_protocol_register_client import GoProtocolRegisterClient
+
+                result = GoProtocolRegisterClient(timeout=30).probe_proxy(proxy, timeout_seconds=20)
+                profile = str((result or {}).get("fingerprint_profile") or "").strip()
+                if bool((result or {}).get("ok")) and profile:
+                    with go_probe_lock:
+                        go_probe_profiles[proxy] = profile
+                    return True, ""
+                return False, str((result or {}).get("error") or "Go CSRF 代理探测失败")
+            except Exception as exc:
+                return False, str(exc)
         try:
             from autotoken._protocol_register.http_client import USER_AGENT, create_http_session
 
@@ -5820,6 +5838,8 @@ def cmd_register_accounts(
             )
             try:
                 selected_proxy_url = _select_working_register_proxy(job_index, total)
+                with go_probe_lock:
+                    go_protocol_profile = go_probe_profiles.get(selected_proxy_url, "")
                 raw_result = create_account_direct(
                     mail_client,
                     out_outcome=outcome,
@@ -5833,6 +5853,7 @@ def cmd_register_accounts(
                     register_mode=register_mode,
                     registration_flow=registration_flow,
                     proxy_url=selected_proxy_url,
+                    go_protocol_profile=go_protocol_profile,
                     use_roxybrowser=use_roxybrowser,
                     use_cloakbrowser=use_cloakbrowser,
                     oauth_phone_sms_provider=oauth_phone_sms_provider,

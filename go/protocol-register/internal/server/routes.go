@@ -60,6 +60,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"auth_concurrency":     h.cfg.AuthConcurrency,
 			"inflight":             len(h.sem),
 		})
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/probe":
+		snapshot := h.healthSnapshot()
+		if !snapshot.ProtocolReady {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, model.ProxyProbeResponse{Error: "service_not_ready"})
+			return
+		}
+		var req model.ProxyProbeRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, model.ProxyProbeResponse{Error: "bad_request"})
+			return
+		}
+		prober, ok := h.engine.(register.ProxyProber)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, model.ProxyProbeResponse{Error: "proxy_probe_unavailable"})
+			return
+		}
+		select {
+		case h.sem <- struct{}{}:
+			defer func() { <-h.sem }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusTooManyRequests, model.ProxyProbeResponse{Error: "busy"})
+			return
+		}
+		writeJSON(w, http.StatusOK, prober.ProbeProxy(r, req))
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/register":
 		snapshot := h.healthSnapshot()
 		if !snapshot.ProtocolReady {

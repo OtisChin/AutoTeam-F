@@ -45,10 +45,18 @@ def register_once(
     password: str,
     account_id: str | int | None = None,
     proxy: str | None = None,
+    fingerprint_profile: str | None = None,
 ) -> tuple[bool, dict]:
     timeout_seconds = max(30, int(os.environ.get("OTP_TIMEOUT", "60") or 60))
     client = GoProtocolRegisterClient(timeout=max(90.0, float(timeout_seconds + 30)))
     client.health()
+    options = {
+        "timeout_seconds": timeout_seconds,
+        "trace": _env_flag("GO_PROTOCOL_TRACE", "0"),
+    }
+    profile = str(fingerprint_profile or "").strip()
+    if profile:
+        options["impersonate"] = profile
     response = client.register(
         {
             "request_id": str(uuid.uuid4()),
@@ -56,10 +64,7 @@ def register_once(
             "password": password,
             "proxy_url": proxy or "",
             "mail": _mail_payload(mail_client, email=email, account_id=account_id),
-            "options": {
-                "timeout_seconds": timeout_seconds,
-                "trace": _env_flag("GO_PROTOCOL_TRACE", "0"),
-            },
+            "options": options,
         }
     )
     return go_response_to_protocol_result(response)
