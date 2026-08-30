@@ -31,10 +31,12 @@ let optionRefs = []
 onBeforeUpdate(() => { optionRefs = [] })
 function setOptionRef(element, index) { if (element) optionRefs[index] = element }
 async function select(index) { const value = selectionIntent(props.options, index); if (value === null) return; emit('update:modelValue', value); await nextTick(); optionRefs[index]?.focus() }
-// ArrowDown/ArrowUp and horizontal arrows use the shared keyboard transition.\nfunction handleKeydown(event) { const next = keyboardIndex(props.options, selectedIndex(props.options, props.modelValue), event.key); if (next === null) return; event.preventDefault(); void select(next) }
+// ArrowDown/ArrowUp and horizontal arrows use the shared keyboard transition.
+function handleKeydown(event) { const next = keyboardIndex(props.options, selectedIndex(props.options, props.modelValue), event.key); if (next === null) return; event.preventDefault(); void select(next) }
 function focusSelected() { optionRefs[selectedIndex(props.options, props.modelValue)]?.focus() }
 defineExpose({ focusSelected })
 </script>
+
 
 
 
