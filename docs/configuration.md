@@ -254,6 +254,7 @@ Python 只负责创建邮箱、调用本地 daemon 和持久化结果；认证�
 | `GO_PROTOCOL_REGISTER_URL` | `http://127.0.0.1:18787` | Local service endpoint |
 | `GO_PROTOCOL_REGISTER_AUTO_START` | `1` | Python may start the local binary |
 | `GO_PROTOCOL_REGISTER_BIN` | `bin/protocol-registerd.exe` | Windows binary path |
+| `GO_PROTOCOL_REGISTER_STARTUP_TIMEOUT_SECONDS` | `75` | 自动启动后等待 daemon 完成 Sentinel DryRun 并开始监听的最长秒数；仍受单次 client timeout 限制 |
 | `GO_PROTOCOL_MAX_CONCURRENCY` | `20` | Daemon 总 admission 上限，包含等待邮箱 OTP 的尝试 |
 | `GO_PROTOCOL_AUTH_CONCURRENCY` | `3` | 上游认证阶段的保守并发上限 |
 | `GO_PROTOCOL_FINGERPRINT_POOL` | `chrome144,chrome146,chrome150` | 唯一支持的 Go 指纹池；重复项去重，未知项使 readiness fail-closed |

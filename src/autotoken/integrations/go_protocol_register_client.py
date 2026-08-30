@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import threading
@@ -29,10 +30,22 @@ class GoProtocolRegisterIndeterminate(GoProtocolRegisterUnavailable):
 
 _AUTO_START_LOCK = threading.Lock()
 _AUTO_START_TRIGGERED = False
+_DEFAULT_STARTUP_TIMEOUT_SECONDS = 75.0
 
 
 def _base_url(value: str | None = None) -> str:
     return str(value or os.environ.get("GO_PROTOCOL_REGISTER_URL") or "http://127.0.0.1:18787").rstrip("/")
+
+
+def _startup_timeout_seconds() -> float:
+    raw = os.environ.get("GO_PROTOCOL_REGISTER_STARTUP_TIMEOUT_SECONDS")
+    try:
+        value = float(raw) if raw else _DEFAULT_STARTUP_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        return _DEFAULT_STARTUP_TIMEOUT_SECONDS
+    if not math.isfinite(value) or value <= 0:
+        return _DEFAULT_STARTUP_TIMEOUT_SECONDS
+    return value
 
 
 def _json_request(
@@ -126,7 +139,8 @@ class GoProtocolRegisterClient:
                     except GoProtocolRegisterStartupUnavailable:
                         self._start_configured_binary()
                         _AUTO_START_TRIGGERED = True
-            deadline = time.monotonic() + min(10.0, max(1.0, self.timeout))
+            startup_timeout = _startup_timeout_seconds()
+            deadline = time.monotonic() + min(startup_timeout, max(1.0, self.timeout))
             while True:
                 try:
                     return _ensure_healthy(

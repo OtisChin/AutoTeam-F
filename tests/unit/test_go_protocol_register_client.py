@@ -156,6 +156,107 @@ def test_client_auto_starts_configured_binary_and_retries_health(monkeypatch, tm
     ]
 
 
+def test_client_auto_start_waits_for_cold_daemon_beyond_ten_seconds(monkeypatch, tmp_path):
+    binary = tmp_path / "protocol-registerd.exe"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    monkeypatch.delenv("GO_PROTOCOL_REGISTER_STARTUP_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setattr(go_client, "_AUTO_START_TRIGGERED", False)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(go_client.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        go_client.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+
+    def fake_request(*_args, failure_type, **_kwargs):
+        if clock["now"] < 20.0:
+            raise failure_type("connection refused")
+        return {"ok": True, "protocol_ready": True}
+
+    started = []
+    monkeypatch.setattr(go_client, "_json_request", fake_request)
+    monkeypatch.setattr(
+        go_client.subprocess,
+        "Popen",
+        lambda args, **kwargs: started.append((args, kwargs)),
+    )
+
+    result = GoProtocolRegisterClient(timeout=30).health()
+
+    assert result == {"ok": True, "protocol_ready": True}
+    assert clock["now"] >= 20.0
+    assert len(started) == 1
+
+
+def test_client_auto_start_honors_startup_timeout_override(monkeypatch, tmp_path):
+    binary = tmp_path / "protocol-registerd.exe"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_STARTUP_TIMEOUT_SECONDS", "5")
+    monkeypatch.setattr(go_client, "_AUTO_START_TRIGGERED", False)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(go_client.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        go_client.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+
+    def fake_request(*_args, failure_type, **_kwargs):
+        raise failure_type("connection refused")
+
+    monkeypatch.setattr(go_client, "_json_request", fake_request)
+    monkeypatch.setattr(go_client.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(go_client.GoProtocolRegisterStartupUnavailable):
+        GoProtocolRegisterClient(timeout=30).health()
+
+    assert 5.0 <= clock["now"] < 6.0
+
+
+@pytest.mark.parametrize("configured_timeout", ["garbage", "0", "-5", "nan"])
+def test_client_auto_start_ignores_invalid_startup_timeout(
+    monkeypatch,
+    tmp_path,
+    configured_timeout,
+):
+    binary = tmp_path / "protocol-registerd.exe"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_AUTO_START", "1")
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_BIN", str(binary))
+    monkeypatch.setenv("GO_PROTOCOL_REGISTER_STARTUP_TIMEOUT_SECONDS", configured_timeout)
+    monkeypatch.setattr(go_client, "_AUTO_START_TRIGGERED", False)
+
+    clock = {"now": 0.0}
+    attempts = {"count": 0}
+    monkeypatch.setattr(go_client.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        go_client.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+
+    def fake_request(*_args, failure_type, **_kwargs):
+        attempts["count"] += 1
+        if attempts["count"] > 1000:
+            raise AssertionError("startup polling did not honor a bounded timeout")
+        raise failure_type("connection refused")
+
+    monkeypatch.setattr(go_client, "_json_request", fake_request)
+    monkeypatch.setattr(go_client.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(go_client.GoProtocolRegisterStartupUnavailable):
+        GoProtocolRegisterClient(timeout=30).health()
+
+    assert 30.0 <= clock["now"] < 31.0
+
+
 def test_client_auto_start_is_process_wide(monkeypatch, tmp_path):
     binary = tmp_path / "protocol-registerd.exe"
     binary.write_bytes(b"fixture")
