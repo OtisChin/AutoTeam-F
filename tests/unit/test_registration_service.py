@@ -1,3 +1,5 @@
+import pytest
+
 from autotoken.accounts import (
     ACCOUNT_SOURCE_MANAGED,
     ACCOUNT_TYPE_FREE,
@@ -6,7 +8,105 @@ from autotoken.accounts import (
     STATUS_ACTIVE,
     STATUS_PERSONAL,
 )
+from autotoken.auth import go_protocol_register, protocol_register
+from autotoken.interfaces import manager
 from autotoken.services import registration
+
+
+class FakeMailClient:
+    def login(self):
+        pass
+
+
+def test_register_by_mode_dispatches_go_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        go_protocol_register,
+        "register_once",
+        lambda *args, **kwargs: calls.append(("go", args, kwargs)) or (True, {}),
+    )
+    monkeypatch.setattr(
+        protocol_register,
+        "register_once",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Python called")),
+    )
+
+    ok, _ = manager._register_by_mode(
+        "go_protocol",
+        FakeMailClient(),
+        email="user@example.com",
+        password="pw",
+    )
+
+    assert ok is True
+    assert [call[0] for call in calls] == ["go"]
+
+
+def test_register_by_mode_dispatches_python_protocol_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        protocol_register,
+        "register_once",
+        lambda *args, **kwargs: calls.append(("python", args, kwargs)) or (True, {}),
+    )
+    monkeypatch.setattr(
+        go_protocol_register,
+        "register_once",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Go called")),
+    )
+
+    ok, _ = manager._register_by_mode(
+        "protocol",
+        FakeMailClient(),
+        email="user@example.com",
+        password="pw",
+    )
+
+    assert ok is True
+    assert [call[0] for call in calls] == ["python"]
+
+
+@pytest.mark.parametrize(
+    ("register_mode", "want_roxy", "want_cloak"),
+    [
+        ("browser", False, False),
+        ("protocol", False, False),
+        ("go_protocol", False, False),
+        ("roxy", True, False),
+        ("cloak", False, True),
+    ],
+)
+def test_cmd_register_accounts_propagates_normalized_mode(
+    monkeypatch,
+    register_mode,
+    want_roxy,
+    want_cloak,
+):
+    captured = {}
+
+    def fake_create_account_direct(_mail_client, **kwargs):
+        captured.update(kwargs)
+        kwargs["out_outcome"].update(status="success", email="new@example.com")
+        return "new@example.com"
+
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+
+    result = manager.cmd_register_accounts(
+        count=1,
+        concurrency=1,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+        register_mode=register_mode,
+        use_roxybrowser=want_roxy,
+        use_cloakbrowser=want_cloak,
+    )
+
+    assert result["ok"] == 1
+    assert captured["register_mode"] == register_mode
+    assert captured["use_roxybrowser"] is want_roxy
+    assert captured["use_cloakbrowser"] is want_cloak
 
 
 def test_replace_outcome_mutates_existing_dict_and_ignores_none():

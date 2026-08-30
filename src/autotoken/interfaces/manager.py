@@ -186,6 +186,19 @@ def _check_registration_email_registered(email, *, proxy_url=None, register_mode
     return {"known": False, "registered": False, "reason": "not_found_locally"}
 
 
+def _register_by_mode(register_mode, mail_client, **kwargs):
+    mode = str(register_mode or "").strip().lower()
+    if mode == "go_protocol":
+        from autotoken.auth.go_protocol_register import register_once
+
+        return register_once(mail_client, **kwargs)
+    if mode in {"protocol", "http", "api"}:
+        from autotoken.auth.protocol_register import register_once
+
+        return register_once(mail_client, **kwargs)
+    raise ValueError(f"unsupported protocol registration mode: {mode}")
+
+
 def sync_to_cpa():
     from autotoken.integrations.cpa_sync import sync_to_cpa as _sync_to_cpa
 
@@ -3535,6 +3548,7 @@ def _register_direct_once(
     return_session=False,
     proxy_url=None,
     use_roxybrowser=False,
+    use_cloakbrowser=False,
     enable_totp_mfa=False,
     progress_callback=None,
     out_outcome=None,
@@ -3581,7 +3595,16 @@ def _register_direct_once(
 
             cleanup_roxybrowser_launch(roxy_client, roxy_launch)
 
-        if use_roxybrowser:
+        if use_cloakbrowser:
+            from autotoken.integrations.cloakbrowser_runtime import launch_cloakbrowser_context
+
+            cloak_runtime = launch_cloakbrowser_context(proxy_url=proxy_url)
+            stack.callback(cloak_runtime.close)
+            browser = cloak_runtime.browser
+            context = cloak_runtime.context
+            page = cloak_runtime.page
+            logger.info("[直接注册] 使用 CloakBrowser 无头模式")
+        elif use_roxybrowser:
             from autotoken.roxybrowser_client import RoxyBrowserClient, pick_roxybrowser_endpoint
             from autotoken.settings.config import get_roxybrowser_config
 
@@ -4036,6 +4059,7 @@ def create_account_direct(
     registration_flow="standard",
     proxy_url=None,
     use_roxybrowser=False,
+    use_cloakbrowser=False,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
     oauth_phone_sms_max_price=None,
@@ -4078,8 +4102,19 @@ def create_account_direct(
             logger.debug("[直接注册] progress_callback failed", exc_info=True)
 
     register_mode = str(register_mode or "browser").strip().lower()
+    if register_mode in {"http", "api"}:
+        register_mode = "protocol"
+    if register_mode not in {"browser", "protocol", "go_protocol", "roxy", "cloak"}:
+        register_mode = "browser"
+    if register_mode == "browser":
+        if use_cloakbrowser:
+            register_mode = "cloak"
+        elif use_roxybrowser:
+            register_mode = "roxy"
     registration_flow = str(registration_flow or "standard").strip().lower()
-    use_protocol_register = register_mode in {"protocol", "http", "api"}
+    use_protocol_register = register_mode in {"protocol", "go_protocol"}
+    use_roxybrowser = register_mode == "roxy"
+    use_cloakbrowser = register_mode == "cloak"
     proxy_url = str(proxy_url or "").strip() or None
     resolved_prefix = _with_random_suffix_prefix(email_prefix)
     account_id = None
@@ -4356,25 +4391,33 @@ def create_account_direct(
         session_data = None
         try:
             if use_protocol_register:
-                logger.info("[协议注册] 使用协议注册流程: %s", email)
+                protocol_label = "Go 协议注册" if register_mode == "go_protocol" else "Python 协议注册"
+                logger.info("[协议注册] 使用%s流程: %s", protocol_label, email)
                 _progress(
                     "register_protocol_started",
-                    f"开始协议注册: {email}",
+                    f"开始{protocol_label}: {email}",
                     email=email,
-                    register_mode="protocol",
+                    register_mode=register_mode,
                 )
-                from autotoken.auth.protocol_register import register_once as _register_protocol_once
-
-                result = _register_protocol_once(
-                    mail_client,
-                    email=email,
-                    password=password,
-                    account_id=account_id,
-                    proxy=proxy_url,
-                    oauth_phone_sms_provider=oauth_phone_sms_provider if post_register_oauth_enabled else None,
-                    oauth_phone_sms_country=oauth_phone_sms_country if post_register_oauth_enabled else None,
-                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks if post_register_oauth_enabled else None,
-                )
+                protocol_kwargs = {
+                    "email": email,
+                    "password": password,
+                    "account_id": account_id,
+                    "proxy": proxy_url,
+                }
+                if register_mode == "protocol":
+                    protocol_kwargs.update(
+                        oauth_phone_sms_provider=(
+                            oauth_phone_sms_provider if post_register_oauth_enabled else None
+                        ),
+                        oauth_phone_sms_country=(
+                            oauth_phone_sms_country if post_register_oauth_enabled else None
+                        ),
+                        oauth_oasis_sms_cdks=(
+                            oauth_oasis_sms_cdks if post_register_oauth_enabled else None
+                        ),
+                    )
+                result = _register_by_mode(register_mode, mail_client, **protocol_kwargs)
             else:
                 result = _register_direct_once(
                     mail_client,
@@ -4384,6 +4427,7 @@ def create_account_direct(
                     return_session=not check_team_membership,
                     proxy_url=proxy_url,
                     use_roxybrowser=use_roxybrowser,
+                    use_cloakbrowser=use_cloakbrowser,
                     enable_totp_mfa=enable_totp_mfa,
                     progress_callback=progress_callback,
                     out_outcome=out_outcome,
@@ -5438,6 +5482,7 @@ def cmd_register_accounts(
     proxy_url=None,
     proxy_pool=None,
     use_roxybrowser=False,
+    use_cloakbrowser=False,
     register_proxy_selector=None,
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
@@ -5502,9 +5547,18 @@ def cmd_register_accounts(
     }
     post_register_oauth = bool(post_register_oauth)
     register_mode = str(register_mode or "browser").strip().lower()
+    if register_mode in {"http", "api"}:
+        register_mode = "protocol"
     registration_flow = str(registration_flow or "standard").strip().lower()
-    if register_mode not in {"browser", "protocol", "http", "api"}:
+    if register_mode not in {"browser", "protocol", "go_protocol", "roxy", "cloak"}:
         register_mode = "browser"
+    if register_mode == "browser":
+        if use_cloakbrowser:
+            register_mode = "cloak"
+        elif use_roxybrowser:
+            register_mode = "roxy"
+    use_cloakbrowser = register_mode == "cloak"
+    use_roxybrowser = register_mode == "roxy"
     if registration_flow not in {"standard", "phone_cpa"}:
         registration_flow = "standard"
     fixed_proxy_url = str(proxy_url or "").strip()
@@ -5780,6 +5834,7 @@ def cmd_register_accounts(
                     registration_flow=registration_flow,
                     proxy_url=selected_proxy_url,
                     use_roxybrowser=use_roxybrowser,
+                    use_cloakbrowser=use_cloakbrowser,
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",

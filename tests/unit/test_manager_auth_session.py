@@ -909,6 +909,50 @@ def test_browser_register_uses_roxybrowser_cdp_and_fresh_profile_by_default(monk
     assert calls["released"] == ["dir-1"]
 
 
+def test_browser_register_uses_cloak_runtime(monkeypatch):
+    calls = {"proxy": [], "events": [], "closed": 0}
+
+    class FakePage:
+        url = "https://chatgpt.com/auth/login"
+
+        def on(self, event, _callback):
+            calls["events"].append(event)
+
+        def goto(self, *_args, **_kwargs):
+            raise RuntimeError("connection closed")
+
+    class FakeRuntime:
+        browser = object()
+        context = object()
+        page = FakePage()
+
+        def close(self):
+            calls["closed"] += 1
+
+    def fake_launch(proxy_url=None):
+        calls["proxy"].append(proxy_url)
+        return FakeRuntime()
+
+    monkeypatch.setattr(
+        "autotoken.integrations.cloakbrowser_runtime.launch_cloakbrowser_context",
+        fake_launch,
+    )
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="打开 ChatGPT 登录页失败"):
+        manager._register_direct_once(
+            None,
+            "cloak@example.com",
+            "pw",
+            proxy_url="http://proxy",
+            use_cloakbrowser=True,
+        )
+
+    assert calls["proxy"] == ["http://proxy"]
+    assert calls["events"] == ["request", "response"]
+    assert calls["closed"] == 1
+
+
 def test_session_data_keeps_chatgpt_access_separate_from_codex_bundle(monkeypatch):
     from autotoken.auth import protocol_register as protocol_register_module
 

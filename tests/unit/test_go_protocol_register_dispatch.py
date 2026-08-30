@@ -1,11 +1,12 @@
+import inspect
 import uuid
 
 import pytest
 
+from autotoken.auth import go_protocol_register as go_bridge
 from autotoken.auth import protocol_register
-from autotoken.integrations import go_protocol_register_client as go_client
 from autotoken.integrations.go_protocol_register_client import (
-    GoProtocolRegisterUnavailable,
+    GoProtocolRegisterServiceNotReady,
     go_response_to_protocol_result,
 )
 
@@ -20,91 +21,115 @@ class FakeMailClient:
     accounts = [MailAccount()]
 
 
-class FakeGoClient:
-    expected_impersonate = "chrome-test"
-
-    def __init__(self, *args, **kwargs):
-        pass
+class CapturingGoClient:
+    def __init__(self, captured, **_kwargs):
+        self.captured = captured
 
     def health(self):
-        return {"ok": True}
+        return {"ok": True, "protocol_ready": True}
 
     def register(self, payload):
-        uuid.UUID(payload["request_id"])
-        assert payload["email"] == "user@example.com"
-        assert payload["password"] == "pw"
-        assert payload["mail"]["provider"] == "generic-api"
-        assert payload["mail"]["account_id"] == "mail-account-1"
-        assert payload["mail"]["receive_code_url"] == "https://mail.test/code"
-        assert payload["proxy_url"] == "http://proxy.test:8080"
-        assert payload["options"]["timeout_seconds"] == 45
-        assert payload["options"]["trace"] is True
-        assert payload["options"]["impersonate"] == self.expected_impersonate
+        self.captured["payload"] = payload
         return {
             "success": True,
             "status": "success",
-            "email": "user@example.com",
+            "email": payload["email"],
             "session_data": {
-                "email": "user@example.com",
-                "accessToken": "access",
-                "sessionToken": "session",
+                "email": payload["email"],
+                "accessToken": "go-access",
+                "sessionToken": "go-session",
             },
             "events": [],
         }
 
 
-def test_register_once_uses_go_engine_when_enabled(monkeypatch):
+class FailingGoClient:
+    def __init__(self, **_kwargs):
+        pass
+
+    def health(self):
+        raise GoProtocolRegisterServiceNotReady("not ready")
+
+
+def test_python_protocol_ignores_legacy_go_engine(monkeypatch):
     monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
-    monkeypatch.setenv("OTP_TIMEOUT", "45")
-    monkeypatch.setenv("GO_PROTOCOL_TRACE", "1")
-    monkeypatch.setenv("GO_PROTOCOL_IMPERSONATE", "chrome-test")
+    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "1")
     monkeypatch.setattr(
-        "autotoken.integrations.go_protocol_register_client.GoProtocolRegisterClient",
-        FakeGoClient,
+        protocol_register,
+        "_register_once_go",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Go bridge called")),
+        raising=False,
     )
-    ok, payload = protocol_register.register_once(
-        FakeMailClient(),
-        email="user@example.com",
-        password="pw",
-        account_id="mail-account-1",
-        proxy="http://proxy.test:8080",
-    )
-    assert ok is True
-    assert payload["status"] == 200
-    assert payload["data"]["accessToken"] == "access"
-    assert payload["data"]["sessionToken"] == "session"
-
-
-def test_register_once_go_defaults_to_chrome_143_plus_pool(monkeypatch):
-    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
-    monkeypatch.setenv("OTP_TIMEOUT", "45")
-    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "0")
-    monkeypatch.setenv("GO_PROTOCOL_TRACE", "1")
-    monkeypatch.delenv("GO_PROTOCOL_IMPERSONATE", raising=False)
-    monkeypatch.setattr(
-        "autotoken.integrations.go_protocol_register_client.GoProtocolRegisterClient",
-        FakeGoClient,
-    )
-    monkeypatch.setattr(FakeGoClient, "expected_impersonate", "chrome143,chrome144,chrome145,chrome146,chrome147,chrome148,chrome149,chrome150,chrome151,chrome152")
-
-    ok, payload = protocol_register.register_once(
-        FakeMailClient(),
-        email="user@example.com",
-        password="pw",
-        account_id="mail-account-1",
-        proxy="http://proxy.test:8080",
-    )
-
-    assert ok is True
-    assert payload["status"] == 200
-
-
-def test_register_once_keeps_python_engine_as_default(monkeypatch):
-    monkeypatch.delenv("PROTOCOL_REGISTER_ENGINE", raising=False)
     monkeypatch.setattr(protocol_register, "_load_protocol_classes", lambda: (_FakeAuthFlow, _FakeConfig))
-    ok, payload = protocol_register.register_once(FakeMailClient(), email="user@example.com", password="pw")
+
+    ok, payload = protocol_register.register_once(
+        FakeMailClient(),
+        email="user@example.com",
+        password="pw",
+    )
+
     assert ok is True
     assert payload["data"]["accessToken"] == "python-access"
+
+
+def test_go_bridge_builds_mail_payload_without_impersonate(monkeypatch):
+    monkeypatch.setenv("OTP_TIMEOUT", "45")
+    monkeypatch.setenv("GO_PROTOCOL_TRACE", "1")
+    monkeypatch.setenv("GO_PROTOCOL_IMPERSONATE", "chrome999")
+    captured = {}
+    monkeypatch.setattr(
+        go_bridge,
+        "GoProtocolRegisterClient",
+        lambda **kwargs: CapturingGoClient(captured, **kwargs),
+    )
+
+    ok, payload = go_bridge.register_once(
+        FakeMailClient(),
+        email="user@example.com",
+        password="pw",
+        account_id="mail-account-1",
+        proxy="http://proxy.test:8080",
+    )
+
+    request = captured["payload"]
+    uuid.UUID(request["request_id"])
+    assert ok is True
+    assert payload["data"]["accessToken"] == "go-access"
+    assert request["email"] == "user@example.com"
+    assert request["password"] == "pw"
+    assert request["mail"]["provider"] == "generic-api"
+    assert request["mail"]["account_id"] == "mail-account-1"
+    assert request["mail"]["receive_code_url"] == "https://mail.test/code"
+    assert request["proxy_url"] == "http://proxy.test:8080"
+    assert request["options"] == {"timeout_seconds": 45, "trace": True}
+
+
+def test_go_bridge_failure_never_loads_python_protocol(monkeypatch):
+    monkeypatch.setattr(
+        protocol_register,
+        "_load_protocol_classes",
+        lambda: (_ for _ in ()).throw(AssertionError("Python protocol loaded")),
+    )
+    monkeypatch.setattr(go_bridge, "GoProtocolRegisterClient", FailingGoClient)
+
+    with pytest.raises(GoProtocolRegisterServiceNotReady):
+        go_bridge.register_once(
+            FakeMailClient(),
+            email="user@example.com",
+            password="pw",
+        )
+
+
+def test_go_bridge_source_has_no_python_protocol_dependency():
+    source = inspect.getsource(go_bridge)
+
+    for forbidden in (
+        "autotoken.auth.protocol_register",
+        "autotoken._protocol_register",
+        "AuthFlow",
+        "Config",
+    ):
+        assert forbidden not in source
 
 
 @pytest.mark.parametrize(
@@ -114,6 +139,7 @@ def test_go_failure_status_is_preserved(status):
     ok, payload = go_response_to_protocol_result(
         {"success": False, "status": status, "error": {"code": status, "message": "failure"}}
     )
+
     assert ok is False
     assert payload["status"] == status
 
@@ -122,79 +148,9 @@ def test_go_unknown_failure_status_maps_to_register_failed():
     ok, payload = go_response_to_protocol_result(
         {"success": False, "status": "provider_secret_internal", "error": {"message": "failure"}}
     )
+
     assert ok is False
     assert payload["status"] == "register_failed"
-
-
-def test_register_once_go_without_fallback_raises(monkeypatch):
-    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
-    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "0")
-    monkeypatch.setattr(protocol_register, "_register_once_go", lambda *args, **kwargs: (_ for _ in ()).throw(
-        GoProtocolRegisterUnavailable("service unavailable")
-    ))
-    with pytest.raises(GoProtocolRegisterUnavailable):
-        protocol_register.register_once(FakeMailClient(), email="user@example.com", password="pw")
-
-
-def test_register_once_go_fallback_uses_python_path(monkeypatch):
-    calls = []
-    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
-    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "1")
-    monkeypatch.setattr(protocol_register, "_register_once_go", lambda *args, **kwargs: (_ for _ in ()).throw(
-        go_client.GoProtocolRegisterStartupUnavailable("service unavailable")
-    ))
-    monkeypatch.setattr(protocol_register, "_load_protocol_classes", lambda: (_FakeAuthFlow, _FakeConfig))
-    monkeypatch.setattr(protocol_register, "_attach_flow_stage_logs", lambda flow: calls.append("python"))
-    ok, payload = protocol_register.register_once(FakeMailClient(), email="user@example.com", password="pw")
-    assert ok is True
-    assert calls == ["python"]
-    assert payload["data"]["accessToken"] == "python-access"
-
-
-def test_indeterminate_go_failure_does_not_fallback_to_python(monkeypatch):
-    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
-    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "1")
-    monkeypatch.setattr(
-        protocol_register,
-        "_register_once_go",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            go_client.GoProtocolRegisterIndeterminate("reset")
-        ),
-    )
-    monkeypatch.setattr(
-        protocol_register,
-        "_load_protocol_classes",
-        lambda: (_ for _ in ()).throw(AssertionError("Python fallback must not run")),
-    )
-
-    with pytest.raises(go_client.GoProtocolRegisterIndeterminate):
-        protocol_register.register_once(
-            FakeMailClient(),
-            email="user@example.com",
-            password="pw",
-        )
-
-
-def test_register_once_go_skips_phone_sms_flows(monkeypatch):
-    calls = []
-    monkeypatch.setenv("PROTOCOL_REGISTER_ENGINE", "go")
-    monkeypatch.setenv("GO_PROTOCOL_FALLBACK_PYTHON", "0")
-    monkeypatch.setattr(protocol_register, "_register_once_go", lambda *args, **kwargs: calls.append("go") or (_ for _ in ()).throw(
-        AssertionError("Go path must not run for phone/SMS protocol flows")
-    ))
-    monkeypatch.setattr(protocol_register, "_load_protocol_classes", lambda: (_FakeAuthFlow, _FakeConfig))
-    monkeypatch.setattr(protocol_register, "_attach_flow_stage_logs", lambda flow: calls.append("python"))
-    ok, payload = protocol_register.register_once(
-        FakeMailClient(),
-        email="user@example.com",
-        password="pw",
-        oauth_phone_sms_provider="phone_pool",
-        oauth_phone_sms_country="US",
-        oauth_oasis_sms_cdks="cdk-1",
-    )
-    assert ok is True
-    assert calls == ["python"]
-    assert payload["data"]["accessToken"] == "python-access"
 
 
 class _FakeConfig:
@@ -203,7 +159,11 @@ class _FakeConfig:
 
 class _FakeAuthResult:
     def to_dict(self):
-        return {"access_token": "python-access", "session_token": "python-session", "email": "user@example.com"}
+        return {
+            "access_token": "python-access",
+            "session_token": "python-session",
+            "email": "user@example.com",
+        }
 
     def is_valid(self):
         return True
