@@ -1,5 +1,5 @@
 <template>
-  <div class="space-y-5">
+  <div class="space-y-5 workflow-hero-surface">
     <WorkflowWorkspace title="印度 UPI" eyebrow="支付 / India" description="按配置、启动、进度和结果组织业务操作" :status-label="workflowStatusPresentation(busy ? 'running' : 'success').label" :status-tone="workflowStatusPresentation(busy ? 'running' : 'success').tone">
     <UiSegmentedControl v-model="activeUpiTab" :options="[{ value: 'extract', label: '提链' },{ value: 'tempExtract', label: '临时提链' },{ value: 'payment', label: '支付' }]" aria-label="印度 UPI模式" />
       <template #configuration>
