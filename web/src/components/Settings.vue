@@ -1,18 +1,22 @@
 <template>
-  <div class="mt-6 space-y-6">
-    <section class="settings-appearance" aria-labelledby="settings-appearance-title">
-      <div>
-        <span class="workspace-eyebrow">个性化</span>
-        <h2 id="settings-appearance-title">外观</h2>
-        <p>跟随设备，或为当前浏览器固定明亮/深色模式。</p>
+  <div class="mt-6 space-y-6 settings-page">
+    <SettingsWorkspace v-model="activeSettingsSection" :sections="settingsSections" aria-label="设置工作区">
+    <SettingsGroup id="appearance" title="外观" description="跟随设备，或为当前浏览器固定明亮/深色模式。" :open="true" v-show="activeSettingsSection === 'appearance'">
+      <div class="settings-appearance" aria-labelledby="settings-appearance-title">
+        <div>
+          <span class="workspace-eyebrow">个性化</span>
+          <h2 id="settings-appearance-title">外观</h2>
+          <p>跟随设备，或为当前浏览器固定明亮/深色模式。</p>
+        </div>
+        <ThemeSwitcher mode="group" />
       </div>
-      <ThemeSwitcher mode="group" />
-    </section>
+    </SettingsGroup>
     <div v-if="message" class="rounded-lg border px-4 py-3 text-sm" :class="messageClass">
       {{ message }}
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <SettingsGroup id="phone" title="OAuth 手机号接码" description="OAuth 手机号接码相关配置" tone="neutral" :disclosure="false" :open="settingsDisclosure.phone" v-show="activeSettingsSection === 'phone'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">OAuth 手机号接码</h2>
@@ -341,10 +345,14 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="maintenance" title="配置导入 / 导出" description="配置导入 / 导出相关配置" tone="danger" :disclosure="true" :open="settingsDisclosure.maintenance" @update:open="settingsDisclosure.maintenance = $event" v-show="activeSettingsSection === 'maintenance'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-start justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">配置导入 / 导出</h2>
+          <button type="button" class="ui-button ui-button-quiet" @click="emit('navigate', 'logs')">查看运行日志</button>
           <p class="text-sm text-gray-400 mt-1">
             导出设置页相关配置为 JSON，包含 API Key、短信服务商、代理、Rekberinaja 等敏感密钥，只在可信设备间传递。
           </p>
@@ -402,7 +410,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="integrations" title="RoxyBrowser" description="RoxyBrowser相关配置" tone="neutral" :disclosure="false" :open="settingsDisclosure.integrations" v-show="activeSettingsSection === 'integrations'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">RoxyBrowser</h2>
@@ -468,7 +479,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="payments" title="GoPay 自动注册" description="GoPay 自动注册相关配置" tone="warning" :disclosure="true" :open="settingsDisclosure.payments" @update:open="settingsDisclosure.payments = $event" v-show="activeSettingsSection === 'payments'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">GoPay 自动注册</h2>
@@ -824,7 +838,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="payments-rekberinaja" title="Rekberinaja GoPay 充值" description="Rekberinaja GoPay 充值相关配置" tone="warning" :disclosure="true" :open="settingsDisclosure.payments" @update:open="settingsDisclosure.payments = $event" v-show="activeSettingsSection === 'payments'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">Rekberinaja GoPay 充值</h2>
@@ -917,7 +934,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="accounts" title="邮件 Provider" description="邮件 Provider相关配置" tone="neutral" :disclosure="false" :open="settingsDisclosure.accounts" v-show="activeSettingsSection === 'accounts'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">邮件 Provider</h2>
@@ -1000,7 +1020,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="accounts-hub" title="远程账号 Hub" description="远程账号 Hub相关配置" tone="neutral" :disclosure="true" :open="settingsDisclosure.accounts" @update:open="settingsDisclosure.accounts = $event" v-show="activeSettingsSection === 'accounts'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">远程账号 Hub</h2>
@@ -1073,7 +1096,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="accounts-domains" title="注册域名设置" description="注册域名设置相关配置" tone="neutral" :disclosure="false" :open="settingsDisclosure.accounts" v-show="activeSettingsSection === 'accounts'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">注册域名设置</h2>
@@ -1111,7 +1137,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="automation" title="自动刷新额度" description="自动刷新额度相关配置" tone="neutral" :disclosure="false" :open="settingsDisclosure.automation" v-show="activeSettingsSection === 'automation'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">自动刷新额度</h2>
@@ -1156,7 +1185,10 @@
       </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    </SettingsGroup>
+
+    <SettingsGroup id="automation-inspection" title="巡检设置" description="巡检设置相关配置" tone="neutral" :disclosure="true" :open="settingsDisclosure.automation" @update:open="settingsDisclosure.automation = $event" v-show="activeSettingsSection === 'automation'">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 settings-legacy-panel">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold text-white">巡检设置</h2>
         <span v-if="saved" class="text-xs text-green-400 transition">已保存</span>
@@ -1199,6 +1231,9 @@
         </button>
       </div>
     </div>
+    </SettingsGroup>
+
+    </SettingsWorkspace>
   </div>
 </template>
 
@@ -1206,6 +1241,22 @@
 import { computed, ref, onMounted } from 'vue'
 import { api } from '../api.js'
 import ThemeSwitcher from './ThemeSwitcher.vue'
+import SettingsWorkspace from './settings/SettingsWorkspace.vue'
+import SettingsGroup from './settings/SettingsGroup.vue'
+
+const emit = defineEmits(['refresh', 'admin-progress', 'navigate'])
+
+const settingsSections = Object.freeze([
+  { id: 'appearance', label: '外观', description: '主题与显示' },
+  { id: 'accounts', label: '账号与邮件', description: 'Hub、域名、邮件 Provider' },
+  { id: 'phone', label: 'OAuth 手机号', description: '接码来源与国家' },
+  { id: 'payments', label: '支付与钱包', description: 'GoPay、Rekberinaja' },
+  { id: 'integrations', label: '集成', description: 'RoxyBrowser 与外部服务' },
+  { id: 'automation', label: '自动化', description: '额度刷新与巡检' },
+  { id: 'maintenance', label: '维护', description: '配置导入导出与日志' },
+])
+const activeSettingsSection = ref('appearance')
+const settingsDisclosure = ref({ maintenance: false, payments: false, accounts: true, integrations: true, phone: true, automation: true, appearance: true })
 
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)
