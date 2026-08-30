@@ -1,5 +1,9 @@
 """Account overview, access token, and ChatGPT subscription HTTP routes."""
 
+import gzip
+import hashlib
+import json
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -7,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 CHATGPT_SUBSCRIPTIONS_PATH = "/backend-api/subscriptions"
@@ -17,6 +21,183 @@ CHATGPT_ACCOUNT_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 CHATGPT_ACCOUNT_CHECK_URL = f"https://chatgpt.com{CHATGPT_ACCOUNT_CHECK_PATH}"
 CHATGPT_ACCOUNT_CHECK_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_ACCOUNT_CHECK_PATH}"
 CHATGPT_SUBSCRIPTION_MAX_ATTEMPTS = 3
+DASHBOARD_GZIP_MINIMUM_SIZE = 1024
+DASHBOARD_GZIP_COMPRESSLEVEL = 5
+DASHBOARD_CACHE_MAX_AGE_SECONDS = 30.0
+
+DASHBOARD_ACCOUNT_FIELDS = (
+    "email",
+    "display_email",
+    "original_email",
+    "status",
+    "raw_status",
+    "account_type",
+    "seat_type",
+    "trial_eligible",
+    "is_main_account",
+    "created_at",
+    "registered_at",
+    "register_at",
+    "plus_bound_at",
+    "activated_at",
+    "activation_at",
+    "upgraded_at",
+    "last_bind_at",
+    "last_bind_provider",
+    "last_bind_status",
+    "last_bind_task_id",
+    "last_bind_message",
+    "last_bind_failure_stage",
+    "last_checkout_url",
+    "last_proxy_label",
+    "kakao_link_extracted",
+    "kakao_link_extracted_at",
+    "kakao_link_expires_at",
+    "kakao_link_cs_id",
+    "kakao_link_job_id",
+    "credentials_exported",
+    "credentials_exported_at",
+    "account_hub_synced",
+    "account_hub_synced_at",
+    "hub_source_name",
+    "auth_file",
+    "auth_session_file",
+    "codex_auth_file",
+    "codex_auth_synthetic",
+    "has_codex_auth_file",
+    "needs_codex_login",
+    "quota_exhausted_at",
+    "quota_resets_at",
+    "last_quota_check_at",
+    "last_quota",
+)
+
+DASHBOARD_QUOTA_FIELDS = (
+    "checked_at",
+    "primary_pct",
+    "primary_resets_at",
+    "primary_window_seconds",
+    "primary_reset_after_seconds",
+    "weekly_pct",
+    "weekly_resets_at",
+    "weekly_window_seconds",
+    "weekly_reset_after_seconds",
+    "monthly_window_seconds",
+    "kakao_link_extracted",
+)
+
+DASHBOARD_QUOTA_WINDOW_FIELDS = (
+    "used_percent",
+    "reset_at",
+    "reset_after_seconds",
+    "limit_window_seconds",
+)
+
+
+def _dashboard_quota_view(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    projected = {field: value[field] for field in DASHBOARD_QUOTA_FIELDS if field in value}
+    source_windows = value.get("windows")
+    if isinstance(source_windows, dict):
+        windows: dict[str, dict[str, Any]] = {}
+        for name in ("primary", "weekly"):
+            source_window = source_windows.get(name)
+            if not isinstance(source_window, dict):
+                continue
+            window = {
+                field: source_window[field]
+                for field in DASHBOARD_QUOTA_WINDOW_FIELDS
+                if field in source_window
+            }
+            if window:
+                windows[name] = window
+        if windows:
+            projected["windows"] = windows
+    return projected
+
+
+def _dashboard_account_view(account: dict[str, Any]) -> dict[str, Any]:
+    projected = {field: account[field] for field in DASHBOARD_ACCOUNT_FIELDS if field in account}
+    if "last_quota" in projected:
+        projected["last_quota"] = _dashboard_quota_view(projected["last_quota"])
+    return projected
+
+
+def _dashboard_account_row(account: dict[str, Any]) -> list[Any]:
+    projected = _dashboard_account_view(account)
+    row = [projected.get(field) for field in DASHBOARD_ACCOUNT_FIELDS]
+    while row and row[-1] is None:
+        row.pop()
+    return row
+
+
+def _dashboard_accounts_payload(accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "fields": list(DASHBOARD_ACCOUNT_FIELDS),
+        "rows": [_dashboard_account_row(account) for account in accounts],
+    }
+
+
+def _dashboard_payload_bytes(payload: Any) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode()
+
+
+def _dashboard_payload_etag(payload_bytes: bytes) -> str:
+    return f'W/"{hashlib.sha256(payload_bytes).hexdigest()}"'
+
+
+def _dashboard_accounts_etag(payload: Any) -> str:
+    return _dashboard_payload_etag(_dashboard_payload_bytes(payload))
+
+
+def _dashboard_cache_headers(etag: str) -> dict[str, str]:
+    return {
+        "Cache-Control": "private, no-cache",
+        "ETag": etag,
+        "Vary": "Authorization, Accept-Encoding",
+    }
+
+
+def _weak_etag_value(value: str) -> str | None:
+    candidate = str(value or "").strip()
+    if candidate[:2].lower() == "w/":
+        candidate = candidate[2:].lstrip()
+    if len(candidate) >= 2 and candidate.startswith('"') and candidate.endswith('"'):
+        return candidate
+    return None
+
+
+def _request_accepts_etag(request: Request | None, etag: str) -> bool:
+    if request is None:
+        return False
+    candidates = {value.strip() for value in request.headers.get("if-none-match", "").split(",") if value.strip()}
+    expected = _weak_etag_value(etag)
+    return "*" in candidates or bool(expected and any(_weak_etag_value(candidate) == expected for candidate in candidates))
+
+
+def _request_accepts_gzip(request: Request | None) -> bool:
+    if request is None:
+        return False
+    qualities: dict[str, float] = {}
+    for raw_coding in request.headers.get("accept-encoding", "").split(","):
+        parts = [part.strip() for part in raw_coding.split(";")]
+        coding = parts[0].lower()
+        if not coding:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            name, separator, value = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+                if not 0.0 <= quality <= 1.0:
+                    quality = 0.0
+                break
+        qualities[coding] = quality
+    return qualities.get("gzip", qualities.get("*", 0.0)) > 0.0
 
 
 class ExportAccessTokensParams(BaseModel):
@@ -659,21 +840,98 @@ def create_account_overview_router(
     sanitize_accounts_batch: Callable[[list[dict], dict | None], list[dict]],
     sanitize_account: Callable[[dict], dict],
     is_main_account_email: Callable[[str], bool],
+    dashboard_revision: Callable[[], Any] | None = None,
+    dashboard_cache_clock: Callable[[], float] | None = None,
+    dashboard_cache_max_age: float = DASHBOARD_CACHE_MAX_AGE_SECONDS,
 ) -> APIRouter:
     router = APIRouter()
+    dashboard_cache: dict[bool, dict[str, Any]] = {}
+    dashboard_cache_lock = threading.RLock()
+    cache_clock = dashboard_cache_clock or time.monotonic
+    cache_max_age = max(0.0, float(dashboard_cache_max_age))
+
+    def dashboard_response(snapshot: dict[str, Any], request: Request | None) -> Response:
+        headers = _dashboard_cache_headers(snapshot["etag"])
+        if _request_accepts_etag(request, snapshot["etag"]):
+            return Response(status_code=304, headers=headers)
+        payload_bytes = snapshot["payload_bytes"]
+        if len(payload_bytes) >= DASHBOARD_GZIP_MINIMUM_SIZE and _request_accepts_gzip(request):
+            compressed_bytes = snapshot.get("gzip_bytes")
+            if compressed_bytes is None:
+                compressed_bytes = gzip.compress(
+                    payload_bytes,
+                    compresslevel=DASHBOARD_GZIP_COMPRESSLEVEL,
+                    mtime=0,
+                )
+                snapshot["gzip_bytes"] = compressed_bytes
+            payload_bytes = compressed_bytes
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=payload_bytes, media_type="application/json", headers=headers)
 
     @router.get("/api/accounts")
     def get_accounts(
         include_session_stubs: bool = True,
+        view: str | None = None,
+        request: Request = None,
+        response: Response = None,
     ):
         """获取所有账号列表；仪表盘分页、筛选和排序在前端完成。"""
+        dashboard_view = str(view or "").strip().lower() == "dashboard"
+        if dashboard_view:
+            with dashboard_cache_lock:
+                revision_available = callable(dashboard_revision)
+                revision = None
+                if revision_available:
+                    try:
+                        revision = dashboard_revision()
+                    except Exception:
+                        revision_available = False
+                now = cache_clock()
+                cache_key = bool(include_session_stubs)
+                snapshot = dashboard_cache.get(cache_key)
+                if (
+                    revision_available
+                    and snapshot is not None
+                    and snapshot["revision"] == revision
+                    and now - snapshot["built_at"] <= cache_max_age
+                ):
+                    return dashboard_response(snapshot, request)
+
+                if snapshot is not None:
+                    dashboard_cache.pop(cache_key, None)
+                    del snapshot
+
+                accounts = load_accounts_with_session_stubs(include_session_stubs=include_session_stubs)
+                quota_cache = {
+                    account["email"]: account.get("last_quota")
+                    for account in accounts
+                    if isinstance(account.get("last_quota"), dict) and account.get("email")
+                }
+                sanitized_accounts = sanitize_accounts_batch(accounts, quota_cache)
+                del accounts, quota_cache
+                dashboard_payload = _dashboard_accounts_payload(sanitized_accounts)
+                del sanitized_accounts
+                payload_bytes = _dashboard_payload_bytes(dashboard_payload)
+                del dashboard_payload
+                snapshot = {
+                    "revision": revision,
+                    "built_at": now,
+                    "payload_bytes": payload_bytes,
+                    "gzip_bytes": None,
+                    "etag": _dashboard_payload_etag(payload_bytes),
+                }
+                if revision_available:
+                    dashboard_cache[cache_key] = snapshot
+                return dashboard_response(snapshot, request)
+
         accounts = load_accounts_with_session_stubs(include_session_stubs=include_session_stubs)
         quota_cache = {
             account["email"]: account.get("last_quota")
             for account in accounts
             if isinstance(account.get("last_quota"), dict) and account.get("email")
         }
-        return sanitize_accounts_batch(accounts, quota_cache)
+        sanitized_accounts = sanitize_accounts_batch(accounts, quota_cache)
+        return sanitized_accounts
 
     @router.get("/api/accounts/{email}/codex-auth")
     def get_codex_auth(email: str):

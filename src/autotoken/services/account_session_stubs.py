@@ -55,15 +55,15 @@ def load_accounts_with_session_stubs(
     """Load accounts and persist auth-session-only records when requested."""
     from autotoken.storage.accounts import (
         ACCOUNT_SOURCE_AUTH_SESSION_STUB,
-        ACCOUNT_SOURCE_MANAGED,
         ACCOUNT_TYPE_FREE,
         ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+        ACCOUNT_TYPE_TEAM,
         SEAT_CODEX,
         STATUS_ACTIVE,
-        add_account,
-        ensure_session_only_account,
+        STATUS_SESSION_ONLY,
         load_accounts,
-        update_account,
+        reconcile_auth_session_accounts,
     )
 
     accounts = load_accounts()
@@ -72,8 +72,14 @@ def load_accounts_with_session_stubs(
 
     from autotoken.storage.auth_session_store import list_auth_session_emails
 
-    session_emails = [normalize_email(email) for email in list_auth_session_emails()]
-    session_emails = [email for email in session_emails if email]
+    session_emails = []
+    seen_session_emails = set()
+    for value in list_auth_session_emails():
+        email = normalize_email(value)
+        if not email or email in seen_session_emails:
+            continue
+        seen_session_emails.add(email)
+        session_emails.append(email)
     try:
         from autotoken.storage.auth_index import codex_auth_files_by_email
 
@@ -82,46 +88,53 @@ def load_accounts_with_session_stubs(
         indexed_auth_files = {}
     gopay_success_emails = gopay_success_emails_from_bind_audit(normalize_email=normalize_email)
 
-    existing_emails = {normalize_email(acc.get("email")) for acc in accounts if normalize_email(acc.get("email"))}
-    for acc in list(accounts):
-        normalized = normalize_email(acc.get("email"))
-        if not normalized:
-            continue
-        indexed_auth_file = indexed_auth_files.get(normalized) or ""
-        if str(acc.get("account_source") or "").strip().lower() == ACCOUNT_SOURCE_AUTH_SESSION_STUB and (
-            indexed_auth_file or normalized in gopay_success_emails
-        ):
-            updated = update_account(
-                normalized,
-                status=STATUS_ACTIVE,
-                account_type=ACCOUNT_TYPE_PLUS
-                if normalized in gopay_success_emails
-                else (acc.get("account_type") or ACCOUNT_TYPE_FREE),
-                seat_type=acc.get("seat_type") or SEAT_CODEX,
-                auth_file=indexed_auth_file or acc.get("auth_file"),
-                account_source=ACCOUNT_SOURCE_MANAGED,
-            )
-            if updated:
-                acc.update(updated)
-
+    positions = {
+        email: index
+        for index, account in enumerate(accounts)
+        if (email := normalize_email(account.get("email")))
+    }
+    candidate_emails = []
     for email in session_emails:
-        normalized = normalize_email(email)
-        if not normalized or normalized in existing_emails:
+        account = accounts[positions[email]] if email in positions else None
+        if account is None:
+            candidate_emails.append(email)
             continue
-        indexed_auth_file = indexed_auth_files.get(normalized) or ""
-        if indexed_auth_file or normalized in gopay_success_emails:
-            add_account(normalized, "", seat_type=SEAT_CODEX)
-            restored = update_account(
-                normalized,
-                status=STATUS_ACTIVE,
-                account_type=ACCOUNT_TYPE_PLUS if normalized in gopay_success_emails else ACCOUNT_TYPE_FREE,
-                seat_type=SEAT_CODEX,
-                auth_file=indexed_auth_file or None,
-                account_source=ACCOUNT_SOURCE_MANAGED,
-            )
-            accounts.append(restored or session_only_account_stub_func(normalized))
+        source = str(account.get("account_source") or "").strip().lower()
+        status = str(account.get("status") or "").strip().lower()
+        if status == STATUS_SESSION_ONLY:
+            candidate_emails.append(email)
+            continue
+        if source != ACCOUNT_SOURCE_AUTH_SESSION_STUB:
+            continue
+        account_type = str(account.get("account_type") or "").strip().lower()
+        has_managed_evidence = bool(
+            indexed_auth_files.get(email)
+            or email in gopay_success_emails
+            or account.get("auth_file")
+            or account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}
+        )
+        is_normalized_stub = (
+            status == STATUS_ACTIVE
+            and account_type == ACCOUNT_TYPE_FREE
+            and str(account.get("seat_type") or "").strip().lower() == SEAT_CODEX
+        )
+        if has_managed_evidence or not is_normalized_stub:
+            candidate_emails.append(email)
+
+    reconciled = (
+        reconcile_auth_session_accounts(
+            candidate_emails,
+            indexed_auth_files=indexed_auth_files,
+            gopay_success_emails=gopay_success_emails,
+        )
+        if candidate_emails
+        else {}
+    )
+    for email in candidate_emails:
+        account = reconciled.get(email) or session_only_account_stub_func(email)
+        if email in positions:
+            accounts[positions[email]] = account
         else:
-            stub = ensure_session_only_account(normalized) or session_only_account_stub_func(normalized)
-            accounts.append(stub)
-        existing_emails.add(normalized)
+            positions[email] = len(accounts)
+            accounts.append(account)
     return accounts

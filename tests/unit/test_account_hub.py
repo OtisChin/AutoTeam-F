@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from pathlib import Path
 
 from autotoken import account_hub, auth_session_store
@@ -277,7 +279,73 @@ def test_build_upload_payload_reuses_bounded_auth_file_indexes(tmp_path, monkeyp
     payload = account_hub.build_upload_payload(selected_emails=[row["email"] for row in rows])
 
     assert [item["email"] for item in payload["auths"]] == ["user0@example.com", "user1@example.com"]
-    assert scan_count == 2
+    assert scan_count == 1
+
+
+def test_build_upload_payload_loads_auth_sessions_in_one_bulk_query(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+
+    rows = [
+        {"email": f"user{index}@example.com", "status": "active", "account_type": "free"}
+        for index in range(200)
+    ]
+    accounts_mod.save_accounts(rows)
+    bulk_calls = []
+    per_account_calls = []
+    session_records = [
+        {
+            "email": row["email"],
+            "data": {"accessToken": f"access-{index}"},
+        }
+        for index, row in enumerate(rows)
+        if index % 50 == 0
+    ]
+
+    def list_records():
+        bulk_calls.append(True)
+        return session_records
+
+    def load_one(email):
+        per_account_calls.append(email)
+        return {}
+
+    monkeypatch.setattr(auth_session_store, "list_auth_session_records", list_records)
+    monkeypatch.setattr(auth_session_store, "load_auth_session", load_one)
+
+    payload = account_hub.build_upload_payload()
+
+    assert [item["email"] for item in payload["auth_sessions"]] == [
+        "user0@example.com",
+        "user50@example.com",
+        "user100@example.com",
+        "user150@example.com",
+    ]
+    assert bulk_calls == [True]
+    assert per_account_calls == []
+
+
+def test_build_upload_payload_skips_auth_session_query_without_accounts(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    accounts_mod.save_accounts([])
+    bulk_calls = []
+
+    def list_records():
+        bulk_calls.append(True)
+        return []
+
+    monkeypatch.setattr(auth_session_store, "list_auth_session_records", list_records)
+
+    payload = account_hub.build_upload_payload()
+
+    assert payload["accounts"] == []
+    assert payload["auth_sessions"] == []
+    assert bulk_calls == []
 
 
 def test_account_hub_private_email_normalizer_matches_core_helper():
@@ -543,6 +611,83 @@ def test_build_upload_payload_restores_missing_luckmail_token_from_purchases(tmp
     assert saved["user@outlook.com"]["mail_provider"] == "luckmail"
 
 
+def test_luckmail_restore_preserves_account_added_during_persistence(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    luckmail_file = tmp_path / "luckmail_accounts.txt"
+    luckmail_file.write_text("restore@example.com----tok_restored\n", encoding="utf-8")
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    monkeypatch.setenv("LUCKMAIL_ACCOUNTS_FILE", str(luckmail_file))
+    monkeypatch.delenv("LUCKMAIL_ACCOUNTS", raising=False)
+
+    accounts_mod.save_accounts(
+        [
+            {
+                "email": "restore@example.com",
+                "status": "active",
+                "account_type": "free",
+                "cloudmail_account_id": None,
+                "mail_provider": "luckmail",
+            }
+        ]
+    )
+
+    real_save_accounts = accounts_mod.save_accounts
+    real_update_account = accounts_mod.update_account
+    persistence_calls = {"save": 0, "update": 0}
+    persistence_started = threading.Event()
+    release_persistence = threading.Event()
+
+    def wait_for_concurrent_write():
+        persistence_started.set()
+        assert release_persistence.wait(2)
+
+    def racing_save_accounts(accounts):
+        persistence_calls["save"] += 1
+        wait_for_concurrent_write()
+        return real_save_accounts(accounts)
+
+    def racing_update_account(email, **changes):
+        persistence_calls["update"] += 1
+        wait_for_concurrent_write()
+        return real_update_account(email, **changes)
+
+    monkeypatch.setattr(accounts_mod, "save_accounts", racing_save_accounts)
+    monkeypatch.setattr(accounts_mod, "update_account", racing_update_account)
+
+    payloads = []
+    errors = []
+
+    def build_payload():
+        try:
+            payloads.append(account_hub.build_upload_payload(selected_emails=["restore@example.com"]))
+        except Exception as exc:  # pragma: no cover - asserted below for clearer thread failures
+            errors.append(exc)
+
+    build_thread = threading.Thread(target=build_payload)
+    build_thread.start()
+    assert persistence_started.wait(2)
+
+    add_thread = threading.Thread(
+        target=lambda: accounts_mod.add_account("created-during-restore@example.com", "secret")
+    )
+    add_thread.start()
+    add_thread.join(2)
+    assert not add_thread.is_alive()
+
+    release_persistence.set()
+    build_thread.join(2)
+    assert not build_thread.is_alive()
+    assert errors == []
+
+    saved = {item["email"]: item for item in accounts_mod.load_accounts()}
+    assert payloads[0]["accounts"][0]["cloudmail_account_id"] == "tok_restored"
+    assert saved["restore@example.com"]["cloudmail_account_id"] == "tok_restored"
+    assert "created-during-restore@example.com" in saved
+    assert persistence_calls == {"save": 0, "update": 1}
+
+
 def test_build_upload_payload_does_not_restore_luckmail_for_providerless_outlook_account(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     auth_dir = tmp_path / "data" / "auths"
@@ -613,3 +758,109 @@ def test_receive_payload_preserves_existing_luckmail_token_when_incoming_is_empt
     saved = {acc["email"]: acc for acc in accounts_mod.load_accounts()}
     assert saved["user@example.com"]["cloudmail_account_id"] == "tok_existing"
     assert saved["user@example.com"]["mail_provider"] == "luckmail"
+
+
+def test_upload_to_hub_rejects_overlapping_snapshots_before_building_payload(monkeypatch):
+    monkeypatch.setattr(
+        account_hub,
+        "build_upload_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("a rejected overlap must not build a stale snapshot")),
+    )
+
+    assert account_hub._upload_lock.acquire(blocking=False)
+    try:
+        try:
+            account_hub.upload_to_hub(
+                {"url": "http://hub.local", "token": "secret", "name": "pc-01"},
+                selected_emails=["user@example.com"],
+            )
+        except account_hub.AccountHubSyncBusyError as exc:
+            assert "正在进行" in str(exc)
+        else:
+            raise AssertionError("overlapping Hub upload must be rejected")
+    finally:
+        account_hub._upload_lock.release()
+
+
+def test_mark_accounts_synced_delegates_to_atomic_storage_update(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        accounts_mod,
+        "mark_accounts_hub_synced",
+        lambda emails, *, synced_at: calls.append((list(emails), synced_at)) or len(emails),
+    )
+
+    result = account_hub._mark_accounts_synced(
+        [
+            {"email": "UPLOADED@example.com", "updated_at": 123},
+            {"email": "uploaded@example.com", "updated_at": 123},
+        ],
+        synced_at=456,
+    )
+
+    assert result == 1
+    assert calls == [([{"email": "uploaded@example.com", "updated_at": 123}], 456.0)]
+
+
+def test_mark_accounts_synced_skips_account_changed_after_upload_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", tmp_path / "accounts.json")
+    accounts_mod.save_accounts([{"email": "uploaded@example.com", "status": "active"}])
+    uploaded_account = accounts_mod.load_accounts()[0]
+
+    time.sleep(0.01)
+    accounts_mod.update_account("uploaded@example.com", status="standby")
+
+    marked = account_hub._mark_accounts_synced([uploaded_account], synced_at=789)
+
+    current = accounts_mod.load_accounts()[0]
+    assert current["updated_at"] != uploaded_account["updated_at"]
+    assert marked == 0
+    assert not current.get("account_hub_synced")
+
+
+def test_mark_accounts_hub_synced_serializes_a_concurrent_account_add(tmp_path, monkeypatch):
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", tmp_path / "accounts.json")
+    accounts_mod.save_accounts([{"email": "uploaded@example.com", "status": "active"}])
+    uploaded_account = accounts_mod.load_accounts()[0]
+
+    entered_update = threading.Event()
+    release_update = threading.Event()
+    original_upsert = accounts_mod._upsert_account
+
+    def blocking_upsert(conn, account):
+        if account.get("email") == "uploaded@example.com" and account.get("account_hub_synced") is True:
+            entered_update.set()
+            assert release_update.wait(2)
+        return original_upsert(conn, account)
+
+    monkeypatch.setattr(accounts_mod, "_upsert_account", blocking_upsert)
+    marked = []
+    mark_thread = threading.Thread(
+        target=lambda: marked.append(
+            accounts_mod.mark_accounts_hub_synced(
+                [{"email": "uploaded@example.com", "updated_at": uploaded_account["updated_at"]}],
+                synced_at=789,
+            )
+        ),
+    )
+    mark_thread.start()
+    assert entered_update.wait(2)
+
+    add_thread = threading.Thread(
+        target=lambda: accounts_mod.add_account("created-during-sync@example.com", "secret"),
+    )
+    add_thread.start()
+    time.sleep(0.05)
+    assert add_thread.is_alive(), "the concurrent writer should wait for the atomic Hub update transaction"
+
+    release_update.set()
+    mark_thread.join(2)
+    add_thread.join(2)
+    assert not mark_thread.is_alive()
+    assert not add_thread.is_alive()
+
+    saved = {item["email"]: item for item in accounts_mod.load_accounts()}
+    assert marked == [1]
+    assert saved["uploaded@example.com"]["account_hub_synced"] is True
+    assert saved["uploaded@example.com"]["account_hub_synced_at"] == 789
+    assert "created-during-sync@example.com" in saved

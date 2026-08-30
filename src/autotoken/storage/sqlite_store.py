@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from autotoken.core.paths import PROJECT_ROOT
@@ -21,6 +22,55 @@ DB_FILE = PROJECT_ROOT / "data" / "autotoken.sqlite3"
 LEGACY_DB_FILE = PROJECT_ROOT / "data" / "autoteam.sqlite3"
 
 _LOCK = threading.RLock()
+
+
+class SQLiteDataVersionReader:
+    """Read SQLite's connection-local data version across external commits."""
+
+    def __init__(self, path_provider: Callable[[], str | Path] | None = None):
+        self._path_provider = path_provider
+        self._lock = threading.RLock()
+        self._path: Path | None = None
+        self._connection: sqlite3.Connection | None = None
+
+    def _resolved_path(self) -> Path:
+        provider = self._path_provider or default_db_path
+        return Path(provider()).resolve()
+
+    def _close_locked(self) -> None:
+        if self._connection is not None:
+            self._connection.close()
+        self._connection = None
+        self._path = None
+
+    def _open_locked(self, path: Path) -> sqlite3.Connection:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(path), timeout=5, check_same_thread=False)
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA busy_timeout=5000")
+        self._connection = connection
+        self._path = path
+        return connection
+
+    def __call__(self) -> tuple[str, int]:
+        path = self._resolved_path()
+        with self._lock:
+            if self._connection is None or self._path != path:
+                self._close_locked()
+                connection = self._open_locked(path)
+            else:
+                connection = self._connection
+            try:
+                row = connection.execute("PRAGMA data_version").fetchone()
+            except sqlite3.Error:
+                self._close_locked()
+                connection = self._open_locked(path)
+                row = connection.execute("PRAGMA data_version").fetchone()
+            return str(path), int(row[0] if row else 0)
+
+    def close(self) -> None:
+        with self._lock:
+            self._close_locked()
 
 
 def _account_row_count(path: Path) -> int | None:
@@ -148,6 +198,7 @@ def initialize(path: str | Path | None = None) -> None:
                 )
                 """
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_file_path ON auth_sessions(file_path)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_updated_at ON auth_sessions(updated_at)")
             conn.execute(
                 """

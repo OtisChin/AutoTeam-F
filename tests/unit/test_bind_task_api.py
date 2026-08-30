@@ -134,28 +134,21 @@ def test_delete_accounts_batch_reports_missing_only_when_no_record_or_session(mo
     assert result["results"] == [{"email": "missing@example.com", "ok": False, "error": "账号不存在"}]
 
 def test_update_accounts_export_status_marks_selected_accounts(monkeypatch):
-    saved = {}
-    existing = [
-        {"email": "first@example.com", "credentials_exported": False},
-        {"email": "second@example.com", "credentials_exported": False},
-    ]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: existing)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((acc for acc in rows if acc["email"] == email), None),
-    )
+    captured = {}
     monkeypatch.setattr(api, "_is_main_account_email", lambda email: email == "owner@example.com")
+
+    def fake_update_accounts_export_status_batch(emails, *, exported, exported_at):
+        captured.update(emails=emails, exported=exported, exported_at=exported_at)
+        return {
+            "accounts": [{"email": "first@example.com", "credentials_exported": True}],
+            "missing": ["missing@example.com"],
+            "trade_allocations": {"cleared": 0, "codes": []},
+        }
+
     monkeypatch.setattr(
-        "autotoken.trade.clear_trade_allocations_for_emails",
-        lambda _emails: (_ for _ in ()).throw(AssertionError("should not clear allocations")),
+        "autotoken.accounts.update_accounts_export_status_batch",
+        fake_update_accounts_export_status_batch,
     )
-
-    def fake_update_account(email, **kwargs):
-        saved[email] = kwargs
-        return {"email": email, **kwargs}
-
-    monkeypatch.setattr("autotoken.accounts.update_account", fake_update_account)
 
     result = _update_accounts_export_status(
         emails=["first@example.com", "first@example.com", "owner@example.com", "missing@example.com"],
@@ -165,41 +158,36 @@ def test_update_accounts_export_status_marks_selected_accounts(monkeypatch):
     assert result["updated"] == 1
     assert result["exported"] is True
     assert result["missing"] == ["owner@example.com", "missing@example.com"]
-    assert saved["first@example.com"]["credentials_exported"] is True
-    assert isinstance(saved["first@example.com"]["credentials_exported_at"], float)
+    assert captured["emails"] == ["first@example.com", "missing@example.com"]
+    assert captured["exported"] is True
+    assert isinstance(captured["exported_at"], float)
 
 def test_update_accounts_export_status_can_clear_export_flag(monkeypatch):
-    account = {"email": "first@example.com", "credentials_exported": True, "credentials_exported_at": 123.0}
     captured = {}
-    cleared = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: account if email == "first@example.com" else None
-    )
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
 
-    def fake_update_account(email, **kwargs):
-        captured[email] = kwargs
-        return {"email": email, **kwargs}
+    def fake_update_accounts_export_status_batch(emails, *, exported, exported_at):
+        captured.update(emails=emails, exported=exported, exported_at=exported_at)
+        return {
+            "accounts": [{"email": "first@example.com", "credentials_exported": False}],
+            "missing": [],
+            "trade_allocations": {"cleared": 1, "codes": ["PLUS-ABCDEF123456"]},
+        }
 
-    monkeypatch.setattr("autotoken.accounts.update_account", fake_update_account)
-
-    def fake_clear_trade_allocations(emails):
-        cleared["emails"] = emails
-        return {"cleared": len(emails), "codes": ["PLUS-ABCDEF123456"]}
-
-    monkeypatch.setattr("autotoken.trade.clear_trade_allocations_for_emails", fake_clear_trade_allocations)
+    monkeypatch.setattr(
+        "autotoken.accounts.update_accounts_export_status_batch",
+        fake_update_accounts_export_status_batch,
+    )
 
     result = _update_accounts_export_status(emails=["first@example.com"], exported=False)
 
     assert result["updated"] == 1
     assert result["exported"] is False
     assert result["trade_allocations"] == {"cleared": 1, "codes": ["PLUS-ABCDEF123456"]}
-    assert cleared["emails"] == ["first@example.com"]
-    assert captured["first@example.com"] == {
-        "credentials_exported": False,
-        "credentials_exported_at": None,
+    assert captured == {
+        "emails": ["first@example.com"],
+        "exported": False,
+        "exported_at": None,
     }
 
 def test_post_bind_card_task_starts_background_task(monkeypatch):
@@ -2692,13 +2680,8 @@ def test_export_account_credentials_uses_fixed_three_column_format(monkeypatch):
     assert result["missing"] == ["missing@example.com"]
     assert result["filename"].endswith(".txt")
     assert result["exported_emails"] == ["second@example.com"]
-    assert result["exported_at"] == 1777777777.0
-    assert captured["updates"] == [
-        (
-            "second@example.com",
-            {"credentials_exported": True, "credentials_exported_at": 1777777777.0},
-        )
-    ]
+    assert result["exported_at"] is None
+    assert captured["updates"] == []
 
 def test_export_account_credentials_skips_session_only_stubs(monkeypatch):
     from autotoken import accounts as accounts_module
@@ -2726,12 +2709,8 @@ def test_export_account_credentials_skips_session_only_stubs(monkeypatch):
     assert result["count"] == 1
     assert result["skipped_session_only"] == ["stub@example.com"]
     assert result["exported_emails"] == ["real@example.com"]
-    assert captured["updates"] == [
-        (
-            "real@example.com",
-            {"credentials_exported": True, "credentials_exported_at": 1777777777.0},
-        )
-    ]
+    assert result["exported_at"] is None
+    assert captured["updates"] == []
 
 def test_export_account_credentials_uses_luckmail_token_as_password(monkeypatch):
     monkeypatch.setattr(
@@ -2866,13 +2845,8 @@ def test_export_account_cpa_auths_returns_existing_data_auths_file(tmp_path, mon
     assert result["count"] == 1
     assert result["missing"] == []
     assert result["exported_emails"] == ["user@example.com"]
-    assert result["exported_at"] == 1778888888.0
-    assert captured["updates"] == [
-        (
-            "user@example.com",
-            {"credentials_exported": True, "credentials_exported_at": 1778888888.0},
-        )
-    ]
+    assert result["exported_at"] is None
+    assert captured["updates"] == []
     decoded = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
     assert decoded == payload
 
@@ -2919,13 +2893,8 @@ def test_export_account_sub_auths_returns_sub2api_json(tmp_path, monkeypatch):
     assert result["missing"] == []
     assert result["invalid"] == []
     assert result["exported_emails"] == ["user@example.com"]
-    assert result["exported_at"] == 1779999999.0
-    assert captured["updates"] == [
-        (
-            "user@example.com",
-            {"credentials_exported": True, "credentials_exported_at": 1779999999.0},
-        )
-    ]
+    assert result["exported_at"] is None
+    assert captured["updates"] == []
     decoded = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
     assert decoded["accounts"][0]["name"] == "user"
     assert decoded["accounts"][0]["platform"] == "openai"

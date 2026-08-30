@@ -67,7 +67,7 @@ def create_account_hub_router(*, normalize_email: Callable[[str | None], str]) -
 
     @router.post("/api/account-hub/sync")
     def post_account_hub_sync(params: AccountHubSyncParams):
-        from autotoken.integrations.account_hub import upload_to_hub
+        from autotoken.integrations.account_hub import AccountHubSyncBusyError, upload_to_hub
 
         validate_list_payload_limit(params.emails, max_items=ACCOUNT_HUB_SYNC_MAX_EMAILS, label="账号 Hub 同步")
         emails = [normalize_email(email) for email in (params.emails or []) if normalize_email(email)]
@@ -75,6 +75,8 @@ def create_account_hub_router(*, normalize_email: Callable[[str | None], str]) -
             raise HTTPException(status_code=400, detail="请选择要同步到账号 Hub 的账号")
         try:
             return upload_to_hub(selected_emails=emails)
+        except AccountHubSyncBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

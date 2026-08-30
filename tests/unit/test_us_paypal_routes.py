@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -28,6 +31,12 @@ def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(us_paypal, "ACCOUNT_STATUS_FILE", tmp_path / "us_paypal_account_status.json")
     monkeypatch.setattr(us_paypal, "PAY153_REMOTE_TASKS_FILE", tmp_path / "us_paypal_pay153_remote_tasks.json")
     monkeypatch.setattr(us_paypal, "GROK_BRAINTREE_CONTEXTS_FILE", tmp_path / "grok_braintree_contexts.json")
+    monkeypatch.setattr(
+        us_paypal,
+        "PAYMENT_IDEMPOTENCY_FILE",
+        tmp_path / "us_paypal_payment_idempotency.json",
+        raising=False,
+    )
     monkeypatch.setattr(us_paypal.account_store, "ACCOUNTS_FILE", tmp_path / "accounts.json")
     monkeypatch.setattr(us_paypal.pix_routes, "AUTH_SESSION_DIR", tmp_path / "auth_session")
     monkeypatch.setattr("autotoken.storage.auth_session_store.AUTH_SESSION_DIR", tmp_path / "auth_session")
@@ -57,6 +66,26 @@ def test_accounts_default_to_pending_paypal_status(monkeypatch):
     assert result["accounts"][0]["paypal_selectable"] is True
     assert result["accounts"][1]["paypal_status"] == "paid"
     assert result["accounts"][1]["paypal_selectable"] is False
+
+
+@pytest.mark.parametrize("payment_status", ["running", "unknown_outcome"])
+def test_accounts_with_live_or_unknown_payment_are_not_selectable(monkeypatch, payment_status):
+    email = "occupied@example.com"
+    app = _app()
+    monkeypatch.setattr(us_paypal.account_store, "load_accounts", lambda: [
+        {"email": email, "status": "active", "account_type": "free"},
+    ])
+    monkeypatch.setattr(
+        us_paypal,
+        "_iter_auth_accounts",
+        lambda include_paid=False: [{"email": email, "auth_file": "auth-occupied.json"}],
+    )
+    us_paypal._set_account_status(email, payment_status, job_id="payment-job")
+
+    account = _endpoint(app, "/api/us-paypal/accounts", "GET")()["accounts"][0]
+
+    assert account["paypal_status"] == payment_status
+    assert account["paypal_selectable"] is False
 
 
 def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
@@ -1121,11 +1150,16 @@ def test_pay153_batch_job_assigns_account_link_phone_country_and_proxy(monkeypat
 
     assert us_paypal.JOBS[job_id]["status"] == "success"
     assert us_paypal.JOBS[job_id]["completed"] == 2
-    assert captured_create_payloads[0]["paypal_url"].endswith("BA-A12345")
-    assert captured_create_payloads[0]["phone"] == "+447700900001"
-    assert captured_create_payloads[0]["country"] == "GB"
-    assert captured_create_payloads[0]["proxies"] == ["proxy-one", "proxy-two"]
-    assert captured_create_payloads[0]["buyer_mode"] == "identity_elevation"
+    captured_by_ba = {
+        us_paypal.extract_protocol_ba_token(item["paypal_url"]): item
+        for item in captured_create_payloads
+    }
+    assert captured_by_ba["BA-A12345"]["phone"] == "+447700900001"
+    assert captured_by_ba["BA-A12345"]["country"] == "GB"
+    assert captured_by_ba["BA-A12345"]["proxies"] == ["proxy-one", "proxy-two"]
+    assert captured_by_ba["BA-A12345"]["buyer_mode"] == "identity_elevation"
+    assert captured_by_ba["BA-B12345"]["phone"] == "+6281234567890"
+    assert captured_by_ba["BA-B12345"]["country"] == "ID"
     statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses["gb@example.com"]["status"] == "paid"
     assert statuses["id@example.com"]["status"] == "paid"
@@ -1511,9 +1545,11 @@ def test_pay153_hero_sms_auto_changes_number_after_60s_without_code(monkeypatch)
     assert provider.confirmed == ("+447700900002", True)
 
 
-def test_pay153_smsbower_auto_change_number_stops_after_three_changes(monkeypatch):
+def test_pay153_smsbower_otp_exhaustion_keeps_remote_and_quarantines_if_confirmation_fails(monkeypatch):
     submitted_values = []
     abandoned = []
+    create_calls = []
+    poll_calls = []
 
     class FakeActivation:
         def __init__(self, phone):
@@ -1543,8 +1579,19 @@ def test_pay153_smsbower_auto_change_number_stops_after_three_changes(monkeypatc
     provider = FakeOtpProvider()
 
     monkeypatch.setattr(us_paypal, "_build_pay153_otp_provider", lambda sms_provider, phone, country, req: provider)
-    monkeypatch.setattr(us_paypal, "_pay153_create_job", lambda paypal_url, phone, country, proxies, buyer_mode, client=None: {"job": {"id": "remote-max-change", "status": "awaiting_otp", "stage": "Waiting for SMS code / new phone", "awaiting_otp": True, "logs": []}})
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_create_job",
+        lambda paypal_url, phone, country, proxies, buyer_mode, client=None: create_calls.append(phone)
+        or {"job": {"id": "remote-max-change", "status": "awaiting_otp", "stage": "Waiting for SMS code / new phone", "awaiting_otp": True, "logs": []}},
+    )
     monkeypatch.setattr(us_paypal, "_pay153_submit_otp", lambda remote_job_id, value, client=None: submitted_values.append(value) or {"job": {"id": remote_job_id, "status": "awaiting_otp", "stage": "otp", "awaiting_otp": True, "logs": []}})
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_get_job",
+        lambda remote_job_id, client=None: poll_calls.append(remote_job_id)
+        or (_ for _ in ()).throw(TimeoutError("status GET timeout after OTP exhaustion")),
+    )
     monkeypatch.setattr(us_paypal.time, "sleep", lambda seconds: None)
 
     job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
@@ -1571,7 +1618,11 @@ def test_pay153_smsbower_auto_change_number_stops_after_three_changes(monkeypatc
     )
 
     assert result["ok"] is False
-    assert "已换号 3 次" in result["error"]["error"]
+    assert result["unknown_outcome"] is True
+    assert result["error"]["unknown_outcome"] is True
+    assert result["error"]["remote_job_id"] == "remote-max-change"
+    assert create_calls == ["+447700900001"]
+    assert poll_calls == ["remote-max-change"] * (us_paypal.PAY153_REMOTE_CONFIRM_MAX_FAILURES - 1)
     assert submitted_values == ["+447700900002", "+447700900003", "+447700900004"]
     assert len(abandoned) == 4
 
@@ -1735,6 +1786,8 @@ def test_pay153_snapshot_hides_client_and_remote_sensitive_fields():
 
 
 def test_pay153_batch_account_cancel_requested_maps_to_skipped_not_failed(monkeypatch):
+    remote_cancelled = []
+
     def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
         return {"job": {"id": "remote-cancel", "status": "running", "stage": "created", "logs": []}}
 
@@ -1745,6 +1798,12 @@ def test_pay153_batch_account_cancel_requested_maps_to_skipped_not_failed(monkey
 
     monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
     monkeypatch.setattr(us_paypal, "_pay153_get_job", fake_get_job)
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_cancel_job",
+        lambda remote_job_id, client=None: remote_cancelled.append((remote_job_id, client))
+        or {"job": {"id": remote_job_id, "status": "cancelled", "logs": []}},
+    )
     monkeypatch.setattr(us_paypal.time, "sleep", lambda seconds: None)
 
     job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
@@ -1770,9 +1829,538 @@ def test_pay153_batch_account_cancel_requested_maps_to_skipped_not_failed(monkey
     )
 
     assert result["skipped"] is True
-    assert result["reason"] == "任务已取消"
+    assert result["reason"] == "153支付已取消"
     assert result["status"]["status"] == us_paypal.PAYPAL_STATUS_SUCCESS
     assert us_paypal.JOBS[job_id]["children"]["remote-cancel"]["status"] == "cancelled"
+    assert len(remote_cancelled) == 1
+    assert remote_cancelled[0][0] == "remote-cancel"
+
+
+def test_pay153_ambiguous_create_outcome_is_not_resubmitted(monkeypatch):
+    create_calls = []
+
+    def ambiguous_create(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        create_calls.append(phone)
+        raise TimeoutError("timed out after remote accepted the create")
+
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", ambiguous_create)
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {"jobs": []})
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "accountEmails": ["gb@example.com"],
+        "phonePool": "+447700900001----https://api.sms8.net/api/record?token=one\n+447700900002----https://api.sms8.net/api/record?token=two",
+        "proxies": "proxy-one",
+    })
+    pool = us_paypal._pay153_sms_record_pool(req)
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-A12345",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+        [],
+        pool,
+        us_paypal.threading.Lock(),
+    )
+
+    assert create_calls == ["+447700900001"]
+    assert result["ok"] is False
+    assert result["unknown_outcome"] is True
+    assert result["error"]["unknown_outcome"] is True
+    assert result["status"]["status"] == "unknown_outcome"
+    assert us_paypal._load_account_statuses()["gb@example.com"]["status"] == "unknown_outcome"
+    assert us_paypal._pay153_account_failure_retryable(result) is False
+
+
+def test_pay153_server_error_after_create_is_not_resubmitted(monkeypatch):
+    create_calls = []
+
+    def ambiguous_create(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        create_calls.append(phone)
+        http_error = urllib.error.HTTPError(
+            paypal_url,
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(b'{"error":"accepted before response failed"}'),
+        )
+        raise RuntimeError("accepted before response failed") from http_error
+
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", ambiguous_create)
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {"jobs": []})
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "accountEmails": ["gb@example.com"],
+        "phonePool": "+447700900001----https://api.sms8.net/api/record?token=one\n+447700900002----https://api.sms8.net/api/record?token=two",
+        "proxies": "proxy-one",
+    })
+    pool = us_paypal._pay153_sms_record_pool(req)
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-A12345",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+        [],
+        pool,
+        us_paypal.threading.Lock(),
+    )
+
+    assert create_calls == ["+447700900001"]
+    assert result["unknown_outcome"] is True
+    assert us_paypal._pay153_account_failure_retryable(result) is False
+
+
+def test_pay153_poll_failures_after_remote_id_never_recreate_and_quarantine(monkeypatch):
+    email = "gb@example.com"
+    ba_token = "BA-POLL-UNKNOWN"
+    remote_job_id = "remote-poll-unknown"
+    create_calls = []
+    poll_calls = []
+    sleeps = []
+
+    class FakeActivation:
+        phone_number = "+447700900001"
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+        def abandon(self, activation, reason):
+            return None
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        create_calls.append(remote_job_id)
+        return {
+            "job": {
+                "id": remote_job_id,
+                "status": "running",
+                "stage": "created",
+                "logs": [],
+            }
+        }
+
+    def failed_poll(value, client=None):
+        poll_calls.append(value)
+        raise TimeoutError("status GET timed out")
+
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {
+                    "account_email": email,
+                    "paypal_link": f"https://www.paypal.com/agreements/approve?ba_token={ba_token}",
+                    "country": "GB",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        us_paypal,
+        "_build_pay153_otp_provider",
+        lambda sms_provider, phone, country, req: FakeOtpProvider(),
+    )
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+    monkeypatch.setattr(us_paypal, "_pay153_get_job", failed_poll)
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_persisted_jobs_for_ba", lambda value: [])
+    monkeypatch.setattr(us_paypal.time, "sleep", sleeps.append)
+
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "clientRequestId": "poll-unknown-owner",
+            "accountEmails": [email],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+    job_id = us_paypal._new_pay153_batch_job(
+        [email],
+        concurrency=1,
+        client_request_id=req.client_request_id,
+        request_fingerprint="poll-unknown-owner-fingerprint",
+        target_emails=[email],
+        target_ba_tokens=[ba_token],
+    )
+
+    us_paypal._run_pay153_batch_payment_job(job_id, req)
+
+    assert create_calls == [remote_job_id]
+    assert poll_calls == [remote_job_id] * us_paypal.PAY153_REMOTE_CONFIRM_MAX_FAILURES
+    assert sleeps[-3:] == [1.0, 2.0, 4.0]
+    snapshot = us_paypal._job_snapshot(job_id)
+    assert snapshot["status"] == "unknown_outcome"
+    assert snapshot["unknown_outcome"] is True
+    assert snapshot["error_code"] == "pay153_remote_confirmation_unknown_outcome"
+    assert snapshot["children"][remote_job_id]["status"] == "unknown_outcome"
+    assert snapshot["children"][remote_job_id]["remote_job_id"] == remote_job_id
+    assert us_paypal._load_account_statuses()[email]["status"] == "unknown_outcome"
+
+    with pytest.raises(HTTPException) as occupied:
+        us_paypal._get_or_create_pay153_batch_job(
+            [email],
+            client_request_id="poll-unknown-blocked",
+            request_fingerprint="poll-unknown-blocked-fingerprint",
+            target_emails=[email],
+            target_ba_tokens=[ba_token],
+        )
+    assert occupied.value.status_code == 409
+    assert occupied.value.detail["code"] == "payment_target_occupied"
+    assert occupied.value.detail["job_id"] == job_id
+
+    released = us_paypal._release_reconciled_payment_occupancy(
+        us_paypal.UsPaypalPaymentOccupancyReleaseRequest(jobId=job_id)
+    )
+    assert released["released_job_ids"] == [job_id]
+    assert released["target_emails"] == [email]
+    assert released["target_ba_tokens"] == [ba_token]
+    assert us_paypal.JOBS[job_id]["status"] == "cancelled"
+
+    next_job_id, created = us_paypal._get_or_create_pay153_batch_job(
+        [email],
+        client_request_id="poll-unknown-released",
+        request_fingerprint="poll-unknown-released-fingerprint",
+        target_emails=[email],
+        target_ba_tokens=[ba_token],
+    )
+    assert created is True
+    assert next_job_id != job_id
+    assert create_calls == [remote_job_id]
+
+
+def test_pay153_transient_poll_failures_keep_same_remote_id_until_success(monkeypatch):
+    remote_job_id = "remote-transient-poll"
+    create_calls = []
+    poll_calls = []
+    sleeps = []
+
+    class FakeActivation:
+        phone_number = "+447700900001"
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        create_calls.append(remote_job_id)
+        return {"job": {"id": remote_job_id, "status": "running", "logs": []}}
+
+    def flaky_poll(value, client=None):
+        poll_calls.append(value)
+        if len(poll_calls) == 1:
+            raise TimeoutError("first status timeout")
+        if len(poll_calls) == 2:
+            raise RuntimeError("HTTP 502 from status endpoint")
+        return {
+            "id": value,
+            "status": "completed",
+            "stage": "done",
+            "logs": [],
+            "result": {"status": "success"},
+        }
+
+    monkeypatch.setattr(
+        us_paypal,
+        "_build_pay153_otp_provider",
+        lambda sms_provider, phone, country, req: FakeOtpProvider(),
+    )
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+    monkeypatch.setattr(us_paypal, "_pay153_get_job", flaky_poll)
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_persisted_jobs_for_ba", lambda value: [])
+    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message="": {"email": email})
+    monkeypatch.setattr(us_paypal.time, "sleep", sleeps.append)
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "accountEmails": ["gb@example.com"],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-TRANSIENT-POLL",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-TRANSIENT-POLL",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+    )
+
+    assert result["ok"] is True
+    assert create_calls == [remote_job_id]
+    assert poll_calls == [remote_job_id, remote_job_id, remote_job_id]
+    assert sleeps[-2:] == [1.0, 2.0]
+
+
+def test_pay153_otp_submit_timeout_confirms_same_remote_before_any_recreate(monkeypatch):
+    remote_job_id = "remote-otp-submit-timeout"
+    create_calls = []
+    submitted = []
+    polled = []
+
+    class FakeActivation:
+        phone_number = "+447700900001"
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+        def mark_sms_sent(self, activation):
+            return None
+
+        def wait_for_code(self, activation, timeout_seconds=None):
+            return "654321"
+
+        def register_confirmation_result(self, activation, confirmed):
+            assert confirmed is True
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        create_calls.append(remote_job_id)
+        return {
+            "job": {
+                "id": remote_job_id,
+                "status": "awaiting_otp",
+                "awaiting_otp": True,
+                "logs": [],
+            }
+        }
+
+    def ambiguous_submit(value, code, client=None):
+        submitted.append((value, code))
+        raise TimeoutError("OTP submit response timed out after acceptance")
+
+    def confirm_completed(value, client=None):
+        polled.append(value)
+        return {
+            "id": value,
+            "status": "completed",
+            "stage": "done",
+            "logs": [],
+            "result": {"status": "success"},
+        }
+
+    monkeypatch.setattr(
+        us_paypal,
+        "_build_pay153_otp_provider",
+        lambda sms_provider, phone, country, req: FakeOtpProvider(),
+    )
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+    monkeypatch.setattr(us_paypal, "_pay153_submit_otp", ambiguous_submit)
+    monkeypatch.setattr(us_paypal, "_pay153_get_job", confirm_completed)
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_persisted_jobs_for_ba", lambda value: [])
+    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message="": {"email": email})
+    monkeypatch.setattr(us_paypal.time, "sleep", lambda seconds: None)
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "accountEmails": ["gb@example.com"],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-OTP-SUBMIT-TIMEOUT",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-OTP-SUBMIT-TIMEOUT",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+    )
+
+    assert result["ok"] is True
+    assert create_calls == [remote_job_id]
+    assert submitted == [(remote_job_id, "654321")]
+    assert polled == [remote_job_id]
+
+
+def test_pay153_success_response_without_remote_id_is_unknown_and_not_retried(monkeypatch):
+    create_calls = []
+
+    class FakeActivation:
+        phone_number = "+447700900001"
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+        def abandon(self, activation, reason):
+            return None
+
+    def create_without_remote_id(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        create_calls.append(phone)
+        return {"ok": True, "job": {"status": "running", "stage": "created"}}
+
+    monkeypatch.setattr(
+        us_paypal,
+        "_build_pay153_otp_provider",
+        lambda sms_provider, phone, country, req: FakeOtpProvider(),
+    )
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", create_without_remote_id)
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_persisted_jobs_for_ba", lambda value: [])
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "accountEmails": ["gb@example.com"],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-MISSING-REMOTE-ID",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-MISSING-REMOTE-ID",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+    )
+
+    assert create_calls == ["+447700900001"]
+    assert result["unknown_outcome"] is True
+    assert result["error"]["unknown_outcome"] is True
+    assert result["error"]["unknown_outcome_code"] == "pay153_missing_remote_id_unknown_outcome"
+    assert result["status"]["status"] == "unknown_outcome"
+    assert us_paypal._pay153_account_failure_retryable(result) is False
+
+
+def test_pay153_post_create_checkpoint_failure_is_unknown_and_not_retried(monkeypatch):
+    create_calls = []
+
+    class FakeActivation:
+        phone_number = "+447700900001"
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+        def abandon(self, activation, reason):
+            return None
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        remote_job_id = f"remote-{len(create_calls) + 1}"
+        create_calls.append(remote_job_id)
+        return {"job": {"id": remote_job_id, "status": "running", "stage": "created", "logs": []}}
+
+    monkeypatch.setattr(
+        us_paypal,
+        "_build_pay153_otp_provider",
+        lambda sms_provider, phone, country, req: FakeOtpProvider(),
+    )
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_persisted_jobs_for_ba", lambda value: [])
+    monkeypatch.setattr(
+        us_paypal,
+        "_persist_pay153_remote_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("remote checkpoint disk full")),
+    )
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "accountEmails": ["gb@example.com"],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-CHECKPOINT-FAIL",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-CHECKPOINT-FAIL",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+    )
+
+    assert create_calls == ["remote-1"]
+    assert result["unknown_outcome"] is True
+    assert result["error"]["remote_job_id"] == "remote-1"
+    assert result["error"]["unknown_outcome_code"] == "pay153_post_create_checkpoint_unknown_outcome"
+    assert us_paypal._pay153_account_failure_retryable(result) is False
+
+
+def test_pay153_batch_promotes_any_ambiguous_create_to_unknown_outcome(monkeypatch):
+    monkeypatch.setattr(us_paypal, "_validate_pay153_batch_start", lambda req: [{
+        "email": "gb@example.com",
+        "ba_token": "BA-A12345",
+        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345",
+        "country": "GB",
+    }])
+    monkeypatch.setattr(
+        us_paypal,
+        "_run_pay153_batch_account",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "unknown_outcome": True,
+            "email": "gb@example.com",
+            "error": {"email": "gb@example.com", "error": "create result unknown", "unknown_outcome": True},
+            "status": {"status": us_paypal.PAYPAL_STATUS_FAILED},
+        },
+    )
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "accountEmails": ["gb@example.com"],
+        "phone": "+447700900001",
+        "proxies": "proxy-one",
+    })
+    with us_paypal.JOBS_LOCK:
+        us_paypal.JOBS[job_id]["cancel_requested"] = True
+
+    us_paypal._run_pay153_batch_payment_job(job_id, req)
+
+    snapshot = us_paypal._job_snapshot(job_id)
+    assert snapshot["status"] == "unknown_outcome"
+    assert snapshot["unknown_outcome"] is True
+    assert snapshot["error_code"] == "pay153_create_unknown_outcome"
+    assert snapshot["account_statuses"]["gb@example.com"]["status"] == "unknown_outcome"
+    assert us_paypal._load_account_statuses()["gb@example.com"]["status"] == "unknown_outcome"
 
 
 def test_pay153_batch_account_failure_marks_account_payment_failed(monkeypatch):
@@ -2030,6 +2618,75 @@ def test_pay153_cancel_existing_jobs_for_ba_skips_failed_persisted_cancel_and_co
     assert tasks["remote-good"]["status"] == "cancelled"
 
 
+def test_pay153_stale_remote_cancel_failure_blocks_new_remote_create(monkeypatch):
+    us_paypal._save_pay153_remote_tasks(
+        {
+            "remote-stale": {
+                "remote_job_id": "remote-stale",
+                "ba_token": "BA-STALE-CANCEL-FAIL",
+                "status": "running",
+                "base_url": "https://pay153.test/api",
+                "cookies": [],
+            }
+        }
+    )
+    create_calls = []
+
+    class FakeActivation:
+        phone_number = "+447700900001"
+
+    class FakeOtpProvider:
+        def reserve_number(self):
+            return FakeActivation()
+
+        def abandon(self, activation, reason):
+            return None
+
+    monkeypatch.setattr(
+        us_paypal,
+        "_build_pay153_otp_provider",
+        lambda sms_provider, phone, country, req: FakeOtpProvider(),
+    )
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_cancel_job",
+        lambda remote_job_id, client=None: (_ for _ in ()).throw(TimeoutError("stale cancel timed out")),
+    )
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_create_job",
+        lambda *args, **kwargs: create_calls.append(args[0]) or {"job": {"id": "remote-new", "status": "running"}},
+    )
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "accountEmails": ["gb@example.com"],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-STALE-CANCEL-FAIL",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-STALE-CANCEL-FAIL",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+    )
+
+    assert create_calls == []
+    assert result["unknown_outcome"] is True
+    assert result["error"]["unknown_outcome_code"] == "pay153_stale_cancel_unknown_outcome"
+    assert us_paypal._load_pay153_remote_tasks()["remote-stale"]["status"] == "running"
+
+
 def test_pay153_already_processing_retries_after_cancelled_stale_remote(monkeypatch):
     calls = []
     monkeypatch.setattr(us_paypal, "_pay153_cancel_existing_jobs_for_ba", lambda paypal_link, client=None: ["remote-stale"])
@@ -2158,6 +2815,481 @@ def test_pay153_batch_start_route_returns_local_job_id(monkeypatch):
     assert captured["args"][0] == result["job_id"]
 
 
+def test_payment_batch_start_routes_are_idempotent_by_client_request_id(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "buyer@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345", "country": "GB"},
+            {"account_email": "buyer-153@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-B12345", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    app = _app()
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+
+    protocol_req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "protocol-submit-1",
+        "accountEmails": ["buyer@example.com"],
+        "smsProvider": "hero_sms",
+    })
+    protocol_endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    protocol_first = protocol_endpoint(protocol_req)
+    protocol_second = protocol_endpoint(protocol_req)
+
+    pay153_req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "clientRequestId": "pay153-submit-1",
+        "accountEmails": ["buyer-153@example.com"],
+        "phone": "+447700900001",
+        "smsRecordUrl": "https://sms.example/gb",
+        "proxies": "proxy-one",
+    })
+    pay153_endpoint = _endpoint(app, "/api/us-paypal/pay153/batch/start", "POST")
+    pay153_first = pay153_endpoint(pay153_req)
+    pay153_second = pay153_endpoint(pay153_req)
+
+    assert protocol_first == protocol_second
+    assert pay153_first == pay153_second
+    assert len(started) == 2
+    assert us_paypal.JOBS[protocol_first["job_id"]]["client_request_id"] == "protocol-submit-1"
+    assert us_paypal.JOBS[pay153_first["job_id"]]["client_request_id"] == "pay153-submit-1"
+
+
+def test_new_client_request_cannot_submit_an_account_occupied_by_another_payment_engine(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "buyer@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-OCCUPIED1", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    app = _app()
+    protocol_endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    pay153_endpoint = _endpoint(app, "/api/us-paypal/pay153/batch/start", "POST")
+    first_request = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "account-owner-request",
+        "accountEmails": ["buyer@example.com"],
+        "smsProvider": "hero_sms",
+    })
+    first = protocol_endpoint(first_request)
+
+    with pytest.raises(HTTPException) as exc:
+        pay153_endpoint(us_paypal.UsPaypal153BatchStartRequest.model_validate({
+            "clientRequestId": "different-request-same-account",
+            "accountEmails": ["buyer@example.com"],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "payment_target_occupied"
+    assert exc.value.detail["job_id"] == first["job_id"]
+    assert len(started) == 1
+    assert protocol_endpoint(first_request) == first
+
+
+def test_new_client_request_cannot_submit_an_occupied_manual_ba(monkeypatch):
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    app = _app()
+    protocol_endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    pay153_endpoint = _endpoint(app, "/api/us-paypal/pay153/batch/start", "POST")
+    ba_link = "https://www.paypal.com/agreements/approve?ba_token=BA-MANUAL-OCCUPIED"
+    first = protocol_endpoint(us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "manual-ba-owner",
+        "paypalLinks": [ba_link],
+        "smsProvider": "hero_sms",
+    }))
+
+    with pytest.raises(HTTPException) as exc:
+        pay153_endpoint(us_paypal.UsPaypal153BatchStartRequest.model_validate({
+            "clientRequestId": "manual-ba-duplicate",
+            "paypalLinks": [ba_link],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "payment_target_occupied"
+    assert exc.value.detail["job_id"] == first["job_id"]
+    assert len(started) == 1
+
+
+def test_payment_target_check_and_insert_are_atomic_for_different_request_ids(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "buyer@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-ATOMIC1", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(us_paypal, "_start_payment_job_worker", lambda job_id, target, args: None)
+    endpoint = _endpoint(_app(), "/api/us-paypal/protocol/batch/start", "POST")
+
+    def submit(index):
+        request = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+            "clientRequestId": f"atomic-request-{index}",
+            "accountEmails": ["buyer@example.com"],
+            "smsProvider": "hero_sms",
+        })
+        try:
+            return endpoint(request)["job_id"]
+        except HTTPException as exc:
+            return exc.status_code, exc.detail.get("code")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        outcomes = list(executor.map(submit, range(16)))
+
+    created = [item for item in outcomes if isinstance(item, str)]
+    rejected = [item for item in outcomes if isinstance(item, tuple)]
+    assert len(created) == 1
+    assert rejected == [(409, "payment_target_occupied")] * 15
+
+
+def test_payment_targets_survive_restart_and_block_a_new_request(monkeypatch):
+    email = "buyer@example.com"
+    ba_token = "BA-RESTART-OCCUPIED"
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": email, "paypal_link": f"https://www.paypal.com/agreements/approve?ba_token={ba_token}", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(us_paypal.account_store, "load_accounts", lambda: [
+        {"email": email, "status": "active", "account_type": "free"},
+    ])
+    monkeypatch.setattr(
+        us_paypal,
+        "_iter_auth_accounts",
+        lambda include_paid=False: [{"email": email, "auth_file": "auth-buyer.json"}],
+    )
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    app = _app()
+    protocol_endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    request = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "restart-target-owner",
+        "accountEmails": [email],
+        "smsProvider": "hero_sms",
+    })
+    first = protocol_endpoint(request)
+    persisted = json.loads(us_paypal.PAYMENT_IDEMPOTENCY_FILE.read_text(encoding="utf-8"))
+    persisted_job = persisted["paypal_protocol_payment:restart-target-owner"]["job"]
+    assert persisted_job["target_emails"] == [email]
+    assert persisted_job["target_ba_tokens"] == [ba_token]
+
+    us_paypal.JOBS.clear()
+    assert protocol_endpoint(request) == first
+    with pytest.raises(HTTPException) as exc:
+        _endpoint(app, "/api/us-paypal/pay153/batch/start", "POST")(
+            us_paypal.UsPaypal153BatchStartRequest.model_validate({
+                "clientRequestId": "restart-target-duplicate",
+                "accountEmails": [email],
+                "smsProvider": "hero_sms",
+                "proxies": "proxy-one",
+            })
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "payment_target_occupied"
+    account = _endpoint(app, "/api/us-paypal/accounts", "GET")()["accounts"][0]
+    assert account["paypal_status"] == "unknown_outcome"
+    assert account["paypal_selectable"] is False
+
+
+def test_idempotency_pruning_never_expires_an_unknown_payment_occupancy(monkeypatch):
+    monkeypatch.setattr(us_paypal.time, "time", lambda: 100_000_000.0)
+    records = {
+        "paypal_protocol_payment:unknown-old": {
+            "updated_at": 1.0,
+            "job": {
+                "status": "unknown_outcome",
+                "target_emails": ["unknown@example.com"],
+                "target_ba_tokens": ["BA-UNKNOWN-OLD"],
+            },
+        },
+        "paypal_protocol_payment:terminal-old": {
+            "updated_at": 1.0,
+            "job": {"status": "cancelled"},
+        },
+    }
+
+    retained = us_paypal._prune_payment_idempotency_records(records)
+
+    assert "paypal_protocol_payment:unknown-old" in retained
+    assert "paypal_protocol_payment:terminal-old" not in retained
+
+
+def test_payment_jobs_can_be_recovered_by_client_request_id():
+    protocol_job = us_paypal._new_protocol_batch_job(
+        ["buyer@example.com"],
+        1,
+        client_request_id="protocol-recover-1",
+    )
+    pay153_job = us_paypal._new_pay153_batch_job(
+        ["buyer-153@example.com"],
+        1,
+        client_request_id="pay153-recover-1",
+    )
+    app = _app()
+
+    protocol = _endpoint(app, "/api/us-paypal/protocol/jobs/by-client-request/{client_request_id}", "GET")(
+        "protocol-recover-1"
+    )
+    pay153 = _endpoint(app, "/api/us-paypal/pay153/jobs/by-client-request/{client_request_id}", "GET")(
+        "pay153-recover-1"
+    )
+
+    assert protocol["id"] == protocol_job
+    assert pay153["id"] == pay153_job
+
+    with pytest.raises(HTTPException) as exc:
+        _endpoint(app, "/api/us-paypal/protocol/jobs/by-client-request/{client_request_id}", "GET")(
+            "missing-request"
+        )
+    assert exc.value.status_code == 404
+
+
+def test_payment_client_request_id_survives_process_restart(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "buyer@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    app = _app()
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    request = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "restart-safe-submit",
+        "accountEmails": ["buyer@example.com"],
+        "smsProvider": "hero_sms",
+    })
+
+    first = endpoint(request)
+    us_paypal.JOBS.clear()
+    replay = endpoint(request)
+
+    assert replay == first
+    assert len(started) == 1
+    snapshot = _endpoint(app, "/api/us-paypal/protocol/jobs/{job_id}", "GET")(first["job_id"])
+    assert snapshot["status"] == "unknown_outcome"
+    assert snapshot["error_code"] == "backend_restart_unknown_outcome"
+
+    conflicting = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "restart-safe-submit",
+        "accountEmails": [],
+        "paypalLinks": ["https://www.paypal.com/agreements/approve?ba_token=BA-B67890"],
+        "smsProvider": "hero_sms",
+    })
+    with pytest.raises(HTTPException) as exc:
+        endpoint(conflicting)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "idempotency_conflict"
+
+
+def test_payment_client_request_id_rejects_a_different_payload(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "first@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345", "country": "GB"},
+            {"account_email": "second@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-B12345", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    app = _app()
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    endpoint(us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "shared-submit-key",
+        "accountEmails": ["first@example.com"],
+        "smsProvider": "hero_sms",
+    }))
+
+    with pytest.raises(HTTPException) as exc:
+        endpoint(us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+            "clientRequestId": "shared-submit-key",
+            "accountEmails": ["second@example.com"],
+            "smsProvider": "hero_sms",
+        }))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "idempotency_conflict"
+
+
+def test_payment_start_fails_closed_when_idempotency_store_is_corrupt(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "buyer@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    us_paypal.PAYMENT_IDEMPOTENCY_FILE.write_text('{"truncated":', encoding="utf-8")
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    endpoint = _endpoint(_app(), "/api/us-paypal/protocol/batch/start", "POST")
+    request = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "must-not-fail-open",
+        "accountEmails": ["buyer@example.com"],
+        "smsProvider": "hero_sms",
+    })
+
+    with pytest.raises(HTTPException) as exc:
+        endpoint(request)
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail["code"] == "idempotency_store_unavailable"
+    assert started == []
+    assert us_paypal.PAYMENT_IDEMPOTENCY_FILE.read_text(encoding="utf-8") == '{"truncated":'
+
+
+def test_concurrent_payment_job_creation_uses_one_idempotent_job():
+    def create_once(_index):
+        return us_paypal._get_or_create_protocol_batch_job(
+            ["buyer@example.com"],
+            1,
+            client_request_id="concurrent-submit",
+            request_fingerprint="same-payload",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(create_once, range(32)))
+
+    assert len({job_id for job_id, _created in results}) == 1
+    assert sum(1 for _job_id, created in results if created) == 1
+
+
+def test_payment_batch_start_removes_unstarted_job_and_returns_503(monkeypatch):
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": "buyer@example.com", "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+    app = _app()
+
+    class FailingThread:
+        def __init__(self, target, args, daemon):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread quota exhausted")
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FailingThread)
+    cases = [
+        (
+            "/api/us-paypal/protocol/batch/start",
+            us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+                "clientRequestId": "protocol-thread-failure",
+                "accountEmails": ["buyer@example.com"],
+                "smsProvider": "hero_sms",
+            }),
+        ),
+        (
+            "/api/us-paypal/pay153/batch/start",
+            us_paypal.UsPaypal153BatchStartRequest.model_validate({
+                "clientRequestId": "pay153-thread-failure",
+                "accountEmails": ["buyer@example.com"],
+                "phone": "+447700900001",
+                "smsRecordUrl": "https://sms.example/gb",
+                "proxies": "proxy-one",
+            }),
+        ),
+    ]
+
+    for path, request in cases:
+        with pytest.raises(HTTPException) as exc:
+            _endpoint(app, path, "POST")(request)
+
+        assert exc.value.status_code == 503
+        assert exc.value.detail["code"] == "background_worker_start_failed"
+        assert not any(
+            job.get("client_request_id") == request.client_request_id
+            for job in us_paypal.JOBS.values()
+        )
+
+
+def test_payment_job_creation_rolls_back_when_account_status_reservation_fails(monkeypatch):
+    monkeypatch.setattr(
+        us_paypal,
+        "_set_account_status",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("account status disk full")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        us_paypal._get_or_create_pay153_batch_job(
+            ["stuck@example.com"],
+            client_request_id="status-reservation-failure",
+            request_fingerprint="same-payload",
+            target_emails=["stuck@example.com"],
+            target_ba_tokens=["BA-STATUS-FAIL"],
+        )
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail["code"] == "payment_status_persistence_failed"
+    assert us_paypal.JOBS == {}
+    assert us_paypal._read_payment_idempotency_records() == {}
+
+
 def test_pay153_otp_and_captcha_forward_only_owned_remote_job(monkeypatch):
     app = _app()
     job_id = "p153-local"
@@ -2280,6 +3412,271 @@ def test_pay153_cancel_forwards_to_active_remote_children(monkeypatch):
     assert result["status"] == "cancelling"
     assert cancelled == ["remote-1"]
     assert us_paypal.JOBS[job_id]["cancel_requested"] is True
+
+
+def test_pay153_cancel_failure_quarantines_the_job_and_its_account(monkeypatch):
+    email = "gb@example.com"
+    job_id = "p153-cancel-unknown"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id,
+        "kind": "paypal_153_payment",
+        "client_request_id": "cancel-unknown-request",
+        "request_fingerprint": "fingerprint",
+        "status": "running",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1.0,
+        "finished_at": None,
+        "account_email": email,
+        "target_emails": [email],
+        "target_ba_tokens": ["BA-CANCEL-UNKNOWN"],
+        "total": 1,
+        "completed": 0,
+        "concurrency": 1,
+        "cancel_requested": False,
+        "running_count": 1,
+        "skipped": [],
+        "account_statuses": {},
+        "children": {
+            "remote-unknown": {
+                "remote_job_id": "remote-unknown",
+                "email": email,
+                "ba_token": "BA-CANCEL-UNKNOWN",
+                "status": "running",
+            },
+        },
+        "pay153_clients": {"remote-unknown": object()},
+    }
+    us_paypal._persist_payment_idempotency_job(us_paypal.JOBS[job_id])
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_cancel_job",
+        lambda remote_job_id, client=None: (_ for _ in ()).throw(TimeoutError("remote cancel timed out")),
+    )
+
+    result = _endpoint(_app(), "/api/us-paypal/pay153/jobs/{job_id}/cancel", "POST")(job_id)
+
+    assert result["status"] == "unknown_outcome"
+    assert us_paypal.JOBS[job_id]["status"] == "unknown_outcome"
+    assert us_paypal.JOBS[job_id]["unknown_outcome"] is True
+    assert us_paypal._load_account_statuses()[email]["status"] == "unknown_outcome"
+    persisted = json.loads(us_paypal.PAYMENT_IDEMPOTENCY_FILE.read_text(encoding="utf-8"))
+    assert persisted["paypal_153_payment:cancel-unknown-request"]["job"]["status"] == "unknown_outcome"
+
+
+def test_rehydrated_unknown_payment_job_drops_stale_worker_count_and_can_be_released():
+    email = "restart-release@example.com"
+    job_id = "p153-restart-release"
+    job = {
+        "id": job_id,
+        "kind": "paypal_153_payment",
+        "client_request_id": "restart-release-request",
+        "request_fingerprint": "fingerprint",
+        "status": "unknown_outcome",
+        "logs": [],
+        "result": None,
+        "error": "remote cancel result unknown",
+        "error_code": "pay153_cancel_unknown_outcome",
+        "unknown_outcome": True,
+        "created_at": 1.0,
+        "finished_at": 2.0,
+        "account_email": email,
+        "target_emails": [email],
+        "target_ba_tokens": ["BA-RESTART-RELEASE"],
+        "total": 1,
+        "completed": 0,
+        "concurrency": 1,
+        "running_count": 1,
+        "cancel_requested": True,
+        "skipped": [],
+        "account_statuses": {},
+        "children": {},
+        "pay153_clients": {},
+    }
+    us_paypal._persist_payment_idempotency_job(job)
+    us_paypal.JOBS.clear()
+
+    us_paypal._restore_interrupted_payment_jobs_for_occupancy()
+    restored = us_paypal.JOBS[job_id]
+    released = us_paypal._release_reconciled_payment_occupancy(
+        us_paypal.UsPaypalPaymentOccupancyReleaseRequest(jobId=job_id)
+    )
+
+    assert restored["running_count"] == 0
+    assert released["released_job_ids"] == [job_id]
+    assert restored["status"] == "cancelled"
+    assert restored["error_code"] == "manual_reconciled_release"
+
+
+def test_pay153_manual_release_waits_for_worker_and_old_worker_cannot_overwrite_it(monkeypatch):
+    email = "race@example.com"
+    ba_token = "BA-CANCEL-RELEASE-RACE"
+    remote_job_id = "remote-cancel-release-race"
+    account_started = us_paypal.threading.Event()
+    stop_account_work = us_paypal.threading.Event()
+    account_idle = us_paypal.threading.Event()
+    allow_worker_result = us_paypal.threading.Event()
+
+    monkeypatch.setattr(
+        us_paypal,
+        "_validate_pay153_batch_start",
+        lambda req: [
+            {
+                "email": email,
+                "ba_token": ba_token,
+                "paypal_link": f"https://www.paypal.com/agreements/approve?ba_token={ba_token}",
+                "country": "GB",
+            }
+        ],
+    )
+
+    def controlled_account(*args, **kwargs):
+        with us_paypal.JOBS_LOCK:
+            job = us_paypal.JOBS[job_id]
+            job["running_count"] = 1
+            job["children"] = {
+                remote_job_id: {
+                    "remote_job_id": remote_job_id,
+                    "email": email,
+                    "ba_token": ba_token,
+                    "status": "running",
+                }
+            }
+            job["pay153_clients"] = {remote_job_id: object()}
+        account_started.set()
+        assert stop_account_work.wait(2), "test did not stop the controlled account worker"
+        with us_paypal.JOBS_LOCK:
+            us_paypal.JOBS[job_id]["running_count"] = 0
+        account_idle.set()
+        assert allow_worker_result.wait(2), "test did not release the controlled worker result"
+        return {
+            "skipped": True,
+            "email": email,
+            "reason": "任务已取消",
+            "status": us_paypal._job_only_payment_status(us_paypal.PAYPAL_STATUS_SUCCESS, job_id=job_id),
+        }
+
+    monkeypatch.setattr(us_paypal, "_run_pay153_batch_account", controlled_account)
+    monkeypatch.setattr(
+        us_paypal,
+        "_pay153_cancel_job",
+        lambda value, client=None: (_ for _ in ()).throw(TimeoutError("remote cancel timed out")),
+    )
+
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate(
+        {
+            "clientRequestId": "cancel-release-race-owner",
+            "accountEmails": [email],
+            "smsProvider": "hero_sms",
+            "proxies": "proxy-one",
+        }
+    )
+    job_id = us_paypal._new_pay153_batch_job(
+        [email],
+        concurrency=1,
+        client_request_id=req.client_request_id,
+        request_fingerprint="cancel-release-race-fingerprint",
+        target_emails=[email],
+        target_ba_tokens=[ba_token],
+    )
+    worker = us_paypal.threading.Thread(
+        target=us_paypal._run_pay153_batch_payment_job,
+        args=(job_id, req),
+        daemon=True,
+    )
+    worker.start()
+    assert account_started.wait(2), "controlled account worker did not start"
+
+    cancel_result = _endpoint(_app(), "/api/us-paypal/pay153/jobs/{job_id}/cancel", "POST")(job_id)
+    assert cancel_result["status"] == "unknown_outcome"
+    release_request = us_paypal.UsPaypalPaymentOccupancyReleaseRequest(jobId=job_id)
+    try:
+        with pytest.raises(HTTPException) as active_release:
+            us_paypal._release_reconciled_payment_occupancy(release_request)
+        assert active_release.value.status_code == 409
+        assert active_release.value.detail["code"] == "payment_job_still_running"
+
+        stop_account_work.set()
+        assert account_idle.wait(2), "controlled account worker did not become idle"
+        released = us_paypal._release_reconciled_payment_occupancy(release_request)
+        assert released["released_job_ids"] == [job_id]
+        assert us_paypal.JOBS[job_id]["status"] == "cancelled"
+        assert us_paypal.JOBS[job_id]["error_code"] == "manual_reconciled_release"
+
+        allow_worker_result.set()
+        worker.join(2)
+        assert worker.is_alive() is False
+        assert us_paypal.JOBS[job_id]["status"] == "cancelled"
+        assert us_paypal.JOBS[job_id]["error_code"] == "manual_reconciled_release"
+        assert us_paypal.JOBS[job_id]["unknown_outcome"] is False
+        assert us_paypal._load_account_statuses()[email]["status"] == "success"
+        persisted = json.loads(us_paypal.PAYMENT_IDEMPOTENCY_FILE.read_text(encoding="utf-8"))
+        stored_job = persisted["paypal_153_payment:cancel-release-race-owner"]["job"]
+        assert stored_job["status"] == "cancelled"
+        assert stored_job["error_code"] == "manual_reconciled_release"
+    finally:
+        stop_account_work.set()
+        allow_worker_result.set()
+        worker.join(2)
+
+
+def test_manual_reconciliation_releases_unknown_account_and_ba_occupancy(monkeypatch):
+    email = "buyer@example.com"
+    ba_token = "BA-MANUAL-RELEASE"
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps([
+            {"account_email": email, "paypal_link": f"https://www.paypal.com/agreements/approve?ba_token={ba_token}", "country": "GB"},
+        ]),
+        encoding="utf-8",
+    )
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    app = _app()
+    endpoint = _endpoint(app, "/api/us-paypal/protocol/batch/start", "POST")
+    first = endpoint(us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "unknown-before-manual-review",
+        "accountEmails": [email],
+        "smsProvider": "hero_sms",
+    }))
+    with us_paypal.JOBS_LOCK:
+        job = us_paypal.JOBS[first["job_id"]]
+        job["status"] = "unknown_outcome"
+        job["unknown_outcome"] = True
+        job["error"] = "remote result unknown"
+        job["error_code"] = "remote_unknown"
+    us_paypal._set_account_status(email, "unknown_outcome", error="remote result unknown", job_id=first["job_id"])
+    us_paypal._persist_payment_idempotency_job(us_paypal.JOBS[first["job_id"]])
+
+    class ReleaseRequest:
+        job_id = first["job_id"]
+        kind = "paypal_protocol_payment"
+        client_request_id = "unknown-before-manual-review"
+        account_emails = []
+
+    released = _endpoint(app, "/api/us-paypal/payment-jobs/reconcile-release", "POST")(ReleaseRequest())
+
+    assert released["ok"] is True
+    assert released["released_job_ids"] == [first["job_id"]]
+    assert released["target_emails"] == [email]
+    assert released["target_ba_tokens"] == [ba_token]
+    assert us_paypal.JOBS[first["job_id"]]["status"] == "cancelled"
+    assert us_paypal.JOBS[first["job_id"]]["unknown_outcome"] is False
+    assert us_paypal._load_account_statuses()[email]["status"] == "success"
+
+    second = endpoint(us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({
+        "clientRequestId": "new-request-after-manual-review",
+        "accountEmails": [email],
+        "smsProvider": "hero_sms",
+    }))
+    assert second["job_id"] != first["job_id"]
 
 
 def test_pay153_supported_countries_and_stats_proxy(monkeypatch):

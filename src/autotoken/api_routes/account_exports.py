@@ -30,9 +30,12 @@ def create_account_exports_router(
     normalize_email: Callable[[str | None], str],
     is_main_account_email: Callable[[str], bool],
     sanitize_account: Callable[[dict], dict],
+    sanitize_accounts_batch: Callable[[list[dict]], list[dict]] | None = None,
+    get_main_account_email: Callable[[], str] | None = None,
     current_time: Callable[[], float] = time.time,
 ) -> APIRouter:
     router = APIRouter()
+    batch_sanitizer = sanitize_accounts_batch or (lambda accounts: [sanitize_account(account) for account in accounts])
 
     @router.post("/api/accounts/export-credentials")
     def export_account_credentials(params: AccountCredentialExportParams):
@@ -42,12 +45,12 @@ def create_account_exports_router(
             generic_api_accounts_by_email,
             icloud_accounts_by_email,
             outlook_accounts_by_email,
+            outlook_mailapi_urls_by_email,
         )
         from autotoken.storage.accounts import (
             ACCOUNT_SOURCE_AUTH_SESSION_STUB,
             get_totp_credentials,
             load_accounts,
-            update_account,
         )
 
         validate_list_payload_limit(params.emails, max_items=ACCOUNT_EXPORT_MAX_EMAILS, label="账号导出")
@@ -82,11 +85,7 @@ def create_account_exports_router(
             export_rows.append(account)
 
         outlook_accounts = outlook_accounts_by_email()
-        outlook_mailapi_urls = {
-            email: item["mailapi_url"]
-            for email, item in outlook_accounts.items()
-            if str(item.get("mailapi_url") or "").strip()
-        }
+        outlook_mailapi_urls = outlook_mailapi_urls_by_email()
         icloud_accounts = icloud_accounts_by_email()
         generic_api_accounts = generic_api_accounts_by_email()
         include_totp_secret = bool(params.include_totp_secret)
@@ -104,25 +103,21 @@ def create_account_exports_router(
                 line = f"{line}-----{credentials.get('secret') or ''}"
             lines.append(line)
         content = "\n".join(lines)
-        exported_at = current_time()
-        exported_emails = []
-        for account in export_rows:
-            exported_email = normalize_email(account.get("email"))
-            if not exported_email:
-                continue
-            update_account(
-                exported_email,
-                credentials_exported=True,
-                credentials_exported_at=exported_at,
-            )
-            exported_emails.append(exported_email)
+        # Preparing a response is not proof that the browser received or saved it.
+        # The frontend confirms these emails through /export-status only after it
+        # successfully dispatches the download, keeping a lost response retryable.
+        exported_emails = [
+            exported_email
+            for account in export_rows
+            if (exported_email := normalize_email(account.get("email")))
+        ]
         return {
             "content": content,
             "count": len(export_rows),
             "missing": missing,
             "skipped_session_only": [email for email in skipped_session_only if email],
             "exported_emails": exported_emails,
-            "exported_at": exported_at,
+            "exported_at": None,
             "filename": "accounts-credentials.txt",
             "format": "{email}-----{password_or_token}-----{mail_url}"
             + ("-----{totp_secret}" if include_totp_secret else ""),
@@ -132,7 +127,7 @@ def create_account_exports_router(
     @router.post("/api/accounts/export-status")
     def update_accounts_export_status(params: AccountExportStatusUpdateParams):
         """批量修改本地账号账密导出状态。"""
-        from autotoken.storage.accounts import find_account, load_accounts, update_account
+        from autotoken.storage.accounts import update_accounts_export_status_batch
 
         validate_list_payload_limit(params.emails, max_items=ACCOUNT_EXPORT_MAX_EMAILS, label="账号导出状态更新")
         requested = []
@@ -145,32 +140,21 @@ def create_account_exports_router(
         if not requested:
             raise HTTPException(status_code=400, detail="emails 不能为空")
 
-        accounts = load_accounts()
         exported_at = current_time() if params.exported else None
-        updated = []
-        updated_emails = []
-        missing = []
-        for email in requested:
-            if is_main_account_email(email):
-                missing.append(email)
-                continue
-            account = find_account(accounts, email)
-            if not account:
-                missing.append(email)
-                continue
-            saved = update_account(
-                email,
-                credentials_exported=bool(params.exported),
-                credentials_exported_at=exported_at,
-            )
-            if saved:
-                updated_emails.append(email)
-                updated.append(sanitize_account(saved))
-        trade_allocations = {"cleared": 0, "codes": []}
-        if not params.exported and updated_emails:
-            from autotoken.commerce.trade import clear_trade_allocations_for_emails
-
-            trade_allocations = clear_trade_allocations_for_emails(updated_emails)
+        main_email = normalize_email(get_main_account_email()) if get_main_account_email else ""
+        if get_main_account_email:
+            main_emails = {main_email} & set(requested) if main_email else set()
+        else:
+            main_emails = {email for email in requested if is_main_account_email(email)}
+        eligible = [email for email in requested if email not in main_emails]
+        batch_result = update_accounts_export_status_batch(
+            eligible,
+            exported=bool(params.exported),
+            exported_at=exported_at,
+        )
+        updated = batch_sanitizer(batch_result["accounts"])
+        missing_set = main_emails | set(batch_result["missing"])
+        missing = [email for email in requested if email in missing_set]
 
         return {
             "message": f"已更新 {len(updated)} 个账号导出状态",
@@ -178,7 +162,7 @@ def create_account_exports_router(
             "exported": bool(params.exported),
             "exported_at": exported_at,
             "missing": missing,
-            "trade_allocations": trade_allocations,
+            "trade_allocations": batch_result["trade_allocations"],
             "accounts": updated,
         }
 

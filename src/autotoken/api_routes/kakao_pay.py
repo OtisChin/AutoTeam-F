@@ -11,7 +11,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import requests
 from fastapi import APIRouter, HTTPException, Query
@@ -2287,7 +2287,11 @@ def create_kakao_pay_router() -> APIRouter:
             raise HTTPException(status_code=502, detail={"ok": False, "code": "remote_api_unreachable", "message": str(exc)}) from exc
 
     @router.get("/api/kakao-pay/temp/orders/{order_id}")
-    def get_kakao_pay_temp_order(order_id: str, cdk: str = Query(""), channel: str = Query("masi")) -> dict[str, Any]:
+    def get_kakao_pay_temp_order(
+        order_id: str,
+        cdk: Annotated[str, Query()] = "",
+        channel: Annotated[str, Query()] = "masi",
+    ) -> dict[str, Any]:
         clean_order_id = str(order_id or "").strip()
         clean_cdk = str(cdk or "").strip()
         if not clean_order_id or not clean_cdk:
@@ -2304,7 +2308,10 @@ def create_kakao_pay_router() -> APIRouter:
         return _kakao_temp_ticket_status(req.cdk, req.channel)
 
     @router.get("/api/kakao-pay/temp/tickets/status")
-    def get_kakao_pay_temp_ticket_status_get(cdk: str = Query(""), channel: str = Query("masi")) -> dict[str, Any]:
+    def get_kakao_pay_temp_ticket_status_get(
+        cdk: Annotated[str, Query()] = "",
+        channel: Annotated[str, Query()] = "masi",
+    ) -> dict[str, Any]:
         return _kakao_temp_ticket_status(cdk, channel)
 
     @router.post("/api/kakao-pay/kk-payment/orders")
@@ -2357,11 +2364,16 @@ def create_kakao_pay_router() -> APIRouter:
         return _kk_payment_cdk_status(req.cdk)
 
     @router.get("/api/kakao-pay/kk-payment/cdk/status")
-    def get_kakao_pay_kk_payment_cdk_status_get(cdk: str = Query("")) -> dict[str, Any]:
+    def get_kakao_pay_kk_payment_cdk_status_get(cdk: Annotated[str, Query()] = "") -> dict[str, Any]:
         return _kk_payment_cdk_status(cdk)
 
     @router.get("/api/kakao-pay/kk-payment/orders/{order_id}")
-    def get_kakao_pay_customer_order(order_id: str, token: str = Query(""), cdk: str = Query(""), accountEmail: str = Query("")) -> dict[str, Any]:
+    def get_kakao_pay_customer_order(
+        order_id: str,
+        token: Annotated[str, Query()] = "",
+        cdk: Annotated[str, Query()] = "",
+        accountEmail: Annotated[str, Query()] = "",
+    ) -> dict[str, Any]:
         clean_order_id = str(order_id or "").strip()
         clean_cdk = str(cdk or "").strip()
         if not clean_order_id or not clean_cdk:

@@ -54,8 +54,13 @@ _auto_upload_stop = threading.Event()
 _auto_upload_lock = threading.Lock()
 _auto_upload_thread_lock = threading.Lock()
 _auto_upload_thread: threading.Thread | None = None
+_upload_lock = threading.Lock()
 _luckmail_purchase_cache_lock = threading.Lock()
 _luckmail_purchase_cache: tuple[float, dict[str, str]] | None = None
+
+
+class AccountHubSyncBusyError(RuntimeError):
+    """Raised before snapshotting when another outbound Hub upload owns the lane."""
 
 
 def _normalize_url(value: str) -> str:
@@ -363,6 +368,8 @@ def _restore_luckmail_tokens_for_accounts(accounts: list[dict]) -> int:
                 "[account_hub] 从 LuckMail 购买记录恢复 token 失败: missing=%s error=%s", len(missing_after_local), exc
             )
 
+    from autotoken.storage.accounts import update_account
+
     restored = 0
     for acc in accounts:
         if not isinstance(acc, dict) or not _is_luckmail_token_missing(acc):
@@ -371,8 +378,14 @@ def _restore_luckmail_tokens_for_accounts(accounts: list[dict]) -> int:
         token = tokens.get(email, "")
         if not token:
             continue
-        acc["cloudmail_account_id"] = token
-        acc["mail_provider"] = "luckmail"
+        updated = update_account(
+            email,
+            cloudmail_account_id=token,
+            mail_provider="luckmail",
+        )
+        if not updated:
+            continue
+        acc.update(updated)
         restored += 1
     if restored:
         logger.info("[account_hub] 已自动恢复 LuckMail token: restored=%s missing_before=%s", restored, len(missing))
@@ -434,8 +447,13 @@ def _normalize_plus_auth_plan_types_for_hub(
         auth_file = str(result.get("auth_file") or "").strip()
         if result.get("status") == "updated" and auth_file and auth_file != str(acc.get("auth_file") or ""):
             acc["auth_file"] = auth_file
+            if auth_files_by_email is not None:
+                existing_paths = auth_files_by_email.get(email, [])
+                auth_files_by_email[email] = [Path(auth_file), *existing_paths]
             try:
-                update_account(email, auth_file=auth_file)
+                updated_account = update_account(email, auth_file=auth_file)
+                if updated_account:
+                    acc.update(updated_account)
             except Exception as exc:
                 logger.warning("[account_hub] 保存 Plus auth_file 路径失败: email=%s error=%s", email, exc)
             updated += 1
@@ -457,26 +475,9 @@ def build_upload_payload(
     if syncable_only:
         accounts = _syncable_accounts(accounts, auth_files_by_email)
     _normalize_plus_auth_plan_types_for_hub(accounts, auth_files_by_email)
-    restored = _restore_luckmail_tokens_for_accounts(accounts)
-    if restored:
-        from autotoken.storage.accounts import save_accounts
-
-        all_accounts = load_accounts()
-        restored_by_email = {
-            _normalized_email(acc.get("email")): acc
-            for acc in accounts
-            if isinstance(acc, dict) and _normalized_email(acc.get("email"))
-        }
-        for acc in all_accounts:
-            email = _normalized_email(acc.get("email"))
-            restored_acc = restored_by_email.get(email)
-            if restored_acc:
-                acc["cloudmail_account_id"] = restored_acc.get("cloudmail_account_id")
-                acc["mail_provider"] = restored_acc.get("mail_provider")
-        save_accounts(all_accounts)
+    _restore_luckmail_tokens_for_accounts(accounts)
     luckmail_tokens = _luckmail_tokens_by_email()
     accounts_payload = [_account_payload_for_hub(acc, luckmail_tokens) for acc in accounts]
-    auth_files_by_email = _auth_file_index_for_accounts(accounts_payload)
     auths = []
     for acc in accounts_payload:
         email = _normalized_email(acc.get("email"))
@@ -489,21 +490,33 @@ def build_upload_payload(
             auths.append({"email": email, "filename": path.name, "data": data})
     auth_sessions = []
     try:
-        from autotoken.storage.auth_session_store import load_auth_session
+        from autotoken.storage.auth_session_store import list_auth_session_records
     except Exception:
-        load_auth_session = None
-    if load_auth_session:
-        for acc in accounts_payload:
-            email = _normalized_email(acc.get("email"))
-            if not email:
-                continue
-            try:
-                data = load_auth_session(email)
-            except Exception as exc:
-                logger.warning("[account_hub] 跳过无法读取的 auth_session %s: %s", email, exc)
-                continue
-            if isinstance(data, dict) and data:
-                auth_sessions.append({"email": email, "data": data})
+        list_auth_session_records = None
+    if list_auth_session_records and accounts_payload:
+        wanted_emails = {
+            email
+            for acc in accounts_payload
+            if (email := _normalized_email(acc.get("email")))
+        }
+        try:
+            records = list_auth_session_records()
+        except Exception as exc:
+            logger.warning("[account_hub] 批量读取 auth_session 失败: %s", exc)
+            records = []
+        sessions_by_email = {
+            email: data
+            for record in records
+            if isinstance(record, dict)
+            and (email := _normalized_email(record.get("email"))) in wanted_emails
+            and isinstance((data := record.get("data")), dict)
+            and data
+        }
+        auth_sessions = [
+            {"email": email, "data": sessions_by_email[email]}
+            for acc in accounts_payload
+            if (email := _normalized_email(acc.get("email"))) in sessions_by_email
+        ]
     return {
         "source": {
             "name": name,
@@ -586,35 +599,24 @@ def _split_upload_payload_batches(payload: dict) -> list[dict]:
 
 
 def _mark_accounts_synced(accounts_payload: list[dict], *, synced_at: float | None = None):
-    from autotoken.storage.accounts import find_account, load_accounts, save_accounts
+    from autotoken.storage.accounts import mark_accounts_hub_synced
 
-    emails = []
+    account_versions = []
     seen = set()
     for acc in accounts_payload:
         email = _normalized_email(acc.get("email")) if isinstance(acc, dict) else ""
-        if not email or email in seen:
+        if not email or email in seen or acc.get("updated_at") is None:
             continue
         seen.add(email)
-        emails.append(email)
-    if not emails:
+        account_versions.append({"email": email, "updated_at": acc.get("updated_at")})
+    if not account_versions:
         return 0
 
-    accounts = load_accounts()
     now = float(synced_at or time.time())
-    updated = 0
-    for email in emails:
-        acc = find_account(accounts, email)
-        if not acc:
-            continue
-        acc["account_hub_synced"] = True
-        acc["account_hub_synced_at"] = now
-        updated += 1
-    if updated:
-        save_accounts(accounts)
-    return updated
+    return mark_accounts_hub_synced(account_versions, synced_at=now)
 
 
-def upload_to_hub(
+def _upload_to_hub_unlocked(
     config: dict | None = None,
     *,
     syncable_only: bool = False,
@@ -665,6 +667,24 @@ def upload_to_hub(
         totals["uploaded_auth_sessions"] += len(batch.get("auth_sessions") or [])
         totals["marked_synced_accounts"] += marked
     return totals
+
+
+def upload_to_hub(
+    config: dict | None = None,
+    *,
+    syncable_only: bool = False,
+    selected_emails: list[str] | None = None,
+) -> dict:
+    if not _upload_lock.acquire(blocking=False):
+        raise AccountHubSyncBusyError("账号 Hub 同步正在进行，请等待当前上传完成后重试")
+    try:
+        return _upload_to_hub_unlocked(
+            config,
+            syncable_only=syncable_only,
+            selected_emails=selected_emails,
+        )
+    finally:
+        _upload_lock.release()
 
 
 def auto_upload_if_enabled(reason: str = "") -> dict | None:

@@ -1,6 +1,7 @@
 """Support, sync, diagnostics, and compatibility HTTP routes."""
 
 from collections.abc import Callable, Sequence
+from uuid import uuid4
 
 from fastapi import APIRouter
 
@@ -11,6 +12,7 @@ def create_support_router(
     start_main_codex_sync: Callable[[], dict],
 ) -> APIRouter:
     router = APIRouter()
+    boot_id = uuid4().hex
 
     @router.post("/api/sync")
     def post_sync():
@@ -39,15 +41,24 @@ def create_support_router(
         }
 
     @router.get("/api/logs")
-    def get_logs(limit: int = 1000, since: float = 0):
+    def get_logs(
+        limit: int = 1000,
+        since: float = 0,
+        since_id: int = 0,
+        since_boot_id: str = "",
+    ):
         """Return recent in-memory API logs."""
         entries: Sequence[dict]
         limit = max(1, min(int(limit or 1000), 5000))
-        if since > 0:
+        if since_boot_id and since_boot_id != boot_id:
+            entries = log_buffer[-limit:]
+        elif since_id > 0:
+            entries = [entry for entry in log_buffer if int(entry.get("id") or 0) > since_id]
+        elif since > 0:
             entries = [entry for entry in log_buffer if entry["time"] > since]
         else:
             entries = log_buffer[-limit:]
-        return {"logs": entries, "total": len(log_buffer)}
+        return {"logs": entries, "total": len(log_buffer), "boot_id": boot_id}
 
     @router.post("/api/sync/main-codex")
     def post_sync_main_codex():

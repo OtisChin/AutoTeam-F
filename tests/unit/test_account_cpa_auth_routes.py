@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
+from pydantic import ValidationError
 
 from autotoken import accounts, cpa_sync, sub2api_converter
+from autotoken.api_routes import account_cpa_auths
 from autotoken.api_routes.account_cpa_auths import (
     AccountCpaAuthImportParams,
     AccountCpaAuthImportSource,
@@ -42,6 +44,13 @@ def test_account_cpa_auth_import_rejects_empty_payload():
 
     with _raises_http(400, "请粘贴 CPA JSON，或选择 JSON/ZIP 文件"):
         _endpoint(app, "/api/accounts/import-cpa-auths", "POST")(AccountCpaAuthImportParams())
+
+
+def test_account_export_and_conversion_batches_reject_more_than_one_thousand_raw_emails():
+    with pytest.raises(ValidationError):
+        AccountEmailBatchParams(emails=[f"user-{index}@example.com" for index in range(1_001)])
+    with pytest.raises(ValidationError):
+        AccountSessionCpaConvertParams(emails=[f"user-{index}@example.com" for index in range(1_001)])
 
 
 def test_account_cpa_auth_import_reports_parse_errors_when_nothing_valid(monkeypatch):
@@ -230,7 +239,11 @@ def test_account_cpa_auth_export_sub_reports_empty_and_missing(monkeypatch):
         _endpoint(app, "/api/accounts/export-sub-auths", "POST")(AccountEmailBatchParams(emails=[]))
 
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("linear account lookup used")),
+    )
 
     with _raises_http(404, "选中的账号没有可转换的 data/auths 认证文件"):
         _endpoint(app, "/api/accounts/export-sub-auths", "POST")(AccountEmailBatchParams(emails=["USER@example.com"]))
@@ -248,7 +261,11 @@ def test_account_cpa_auth_export_sub_converts_valid_auth_file(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "account_type": "plus"}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("linear account lookup used")),
+    )
     monkeypatch.setattr(accounts, "update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(
         sub2api_converter,
@@ -277,10 +294,8 @@ def test_account_cpa_auth_export_sub_converts_valid_auth_file(monkeypatch, tmp_p
     assert result["filename"] == "sub2api-import.json"
     assert result["count"] == 1
     assert result["exported_emails"] == ["user@example.com"]
-    assert result["exported_at"] == 1778888888.0
-    assert captured["updates"] == [
-        ("user@example.com", {"credentials_exported": True, "credentials_exported_at": 1778888888.0})
-    ]
+    assert result["exported_at"] is None
+    assert captured["updates"] == []
     decoded = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
     assert decoded == {"accounts": [{"email": "user@example.com"}]}
 
@@ -295,7 +310,11 @@ def test_account_cpa_auth_export_sub_ignores_auth_file_outside_auth_dir(monkeypa
     )
 
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "account_type": "free"}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("linear account lookup used")),
+    )
 
     with _raises_http(404, "选中的账号没有可转换的 data/auths 认证文件"):
         _endpoint(app, "/api/accounts/export-sub-auths", "POST")(AccountEmailBatchParams(emails=["user@example.com"]))
@@ -317,7 +336,11 @@ def test_account_cpa_auth_export_cpa_returns_single_auth_file(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("linear account lookup used")),
+    )
     monkeypatch.setattr(accounts, "update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
 
     result = _endpoint(app, "/api/accounts/export-cpa-auths", "POST")(
@@ -328,11 +351,131 @@ def test_account_cpa_auth_export_cpa_returns_single_auth_file(monkeypatch, tmp_p
     assert result["content_type"] == "application/json"
     assert result["count"] == 1
     assert result["exported_emails"] == ["user@example.com"]
-    assert result["exported_at"] == 1778888888.0
+    assert result["exported_at"] is None
     assert json.loads(base64.b64decode(result["content_base64"]).decode("utf-8")) == payload
-    assert captured["updates"] == [
-        ("user@example.com", {"credentials_exported": True, "credentials_exported_at": 1778888888.0})
-    ]
+    assert captured["updates"] == []
+
+
+def test_account_cpa_auth_export_rejects_an_oversized_auth_file(monkeypatch, tmp_path):
+    auth_file = tmp_path / "codex-large@example.com-free-deadbeef.json"
+    auth_file.write_text(json.dumps({"blob": "x" * (2 * 1024 * 1024)}), encoding="utf-8")
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        resolve_codex_auth_file=lambda _account: str(auth_file),
+        update_account_cpa_auth_plan_type=lambda *_args, **_kwargs: {"auth_file": str(auth_file)},
+        verify_plus_plan=lambda _item: {"ok": True},
+        normalize_observed_auth_plan=lambda *_args: None,
+        mark_failed_account=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "large@example.com"}])
+
+    with _raises_http(
+        404,
+        {
+            "message": "选中的账号没有可导出的 data/auths 认证文件，或 Plus 状态未通过 OpenAI 实测",
+            "missing": ["large@example.com"],
+            "unconfirmed_plus": [],
+        },
+    ):
+        _endpoint(app, "/api/accounts/export-cpa-auths", "POST")(
+            AccountEmailBatchParams(emails=["large@example.com"])
+        )
+
+
+def test_account_cpa_auth_export_rejects_total_content_over_budget(monkeypatch, tmp_path):
+    files = {}
+    for email in ("first@example.com", "second@example.com"):
+        path = tmp_path / f"codex-{email}-free-deadbeef.json"
+        path.write_text(json.dumps({"email": email, "blob": "x" * 80}), encoding="utf-8")
+        files[email] = path
+    monkeypatch.setattr(account_cpa_auths, "MAX_ACCOUNT_EXPORT_TOTAL_BYTES", 100)
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        resolve_codex_auth_file=lambda account: str(files[account["email"]]),
+        update_account_cpa_auth_plan_type=lambda *_args, **_kwargs: {},
+        verify_plus_plan=lambda _item: {"ok": True},
+        normalize_observed_auth_plan=lambda *_args: None,
+        mark_failed_account=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        accounts,
+        "load_accounts",
+        lambda: [{"email": email, "account_type": "free"} for email in files],
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        _endpoint(app, "/api/accounts/export-cpa-auths", "POST")(
+            AccountEmailBatchParams(emails=list(files))
+        )
+
+    assert caught.value.status_code == 413
+    assert "总大小" in str(caught.value.detail)
+
+
+def test_account_cpa_auth_export_counts_invalid_files_toward_total_scan_budget(monkeypatch, tmp_path):
+    files = {}
+    for email in ("first@example.com", "second@example.com"):
+        path = tmp_path / f"codex-{email}-free-deadbeef.json"
+        path.write_bytes(b"x" * 60)
+        files[email] = path
+    monkeypatch.setattr(
+        account_cpa_auths,
+        "MAX_ACCOUNT_EXPORT_TOTAL_BYTES",
+        files["first@example.com"].stat().st_size + 1,
+    )
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        resolve_codex_auth_file=lambda account: str(files[account["email"]]),
+        update_account_cpa_auth_plan_type=lambda *_args, **_kwargs: {},
+        verify_plus_plan=lambda _item: {"ok": False, "message": "not plus"},
+        normalize_observed_auth_plan=lambda *_args: None,
+        mark_failed_account=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        accounts,
+        "load_accounts",
+        lambda: [{"email": email, "account_type": "plus"} for email in files],
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        _endpoint(app, "/api/accounts/export-cpa-auths", "POST")(
+            AccountEmailBatchParams(emails=list(files))
+        )
+
+    assert caught.value.status_code == 413
+    assert "总大小" in str(caught.value.detail)
+
+
+def test_account_sub_auth_export_counts_oversized_files_toward_total_scan_budget(monkeypatch, tmp_path):
+    files = {}
+    for email in ("first@example.com", "second@example.com"):
+        path = tmp_path / f"codex-{email}-free-deadbeef.json"
+        path.write_text(json.dumps({"email": email, "blob": "x" * 80}), encoding="utf-8")
+        files[email] = path
+    monkeypatch.setattr(account_cpa_auths, "AUTH_JSON_FILE_MAX_BYTES", 32)
+    monkeypatch.setattr(
+        account_cpa_auths,
+        "MAX_ACCOUNT_EXPORT_TOTAL_BYTES",
+        files["first@example.com"].stat().st_size + 1,
+    )
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        resolve_codex_auth_file=lambda account: str(files[account["email"]]),
+        update_account_cpa_auth_plan_type=lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        accounts,
+        "load_accounts",
+        lambda: [{"email": email, "account_type": "free"} for email in files],
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        _endpoint(app, "/api/accounts/export-sub-auths", "POST")(
+            AccountEmailBatchParams(emails=list(files))
+        )
+
+    assert caught.value.status_code == 413
+    assert "总大小" in str(caught.value.detail)
 
 
 def test_account_cpa_auth_export_cpa_ignores_auth_file_outside_auth_dir(monkeypatch, tmp_path):
@@ -535,7 +678,11 @@ def test_account_cpa_auth_convert_session_returns_converted_files(monkeypatch):
     account = {"email": "user@example.com"}
 
     monkeypatch.setattr(accounts, "load_accounts", lambda: [account])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("linear account lookup used")),
+    )
 
     result = _endpoint(app, "/api/accounts/convert-session-cpa-auths", "POST")(
         AccountSessionCpaConvertParams(emails=["USER@example.com", "USER@example.com"])
@@ -556,6 +703,46 @@ def test_account_cpa_auth_convert_session_returns_converted_files(monkeypatch):
         ],
         "accounts": [{"email": "user@example.com", "converted": True}],
     }
+
+
+def test_account_cpa_auth_convert_reads_main_account_identity_once(monkeypatch):
+    getter_calls = 0
+
+    def get_main_account_email():
+        nonlocal getter_calls
+        getter_calls += 1
+        return "owner@example.com"
+
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        is_main_account_email=lambda _email: (_ for _ in ()).throw(
+            AssertionError("per-account main identity lookup used")
+        ),
+        get_main_account_email=get_main_account_email,
+        convert_account_auth_session_to_cpa_auth=lambda email, *, account: {
+            "email": email,
+            "filename": f"codex-{email}.json",
+            "auth_file": f"data/auths/codex-{email}.json",
+            "id_token_synthetic": True,
+            "refresh_token_present": False,
+            "account": account,
+        },
+    )
+    monkeypatch.setattr(
+        accounts,
+        "load_accounts",
+        lambda: [{"email": "owner@example.com"}, {"email": "user@example.com"}],
+    )
+
+    result = _endpoint(app, "/api/accounts/convert-session-cpa-auths", "POST")(
+        AccountSessionCpaConvertParams(
+            emails=["owner@example.com", "missing@example.com", "user@example.com"]
+        )
+    )
+
+    assert getter_calls == 1
+    assert result["missing"] == ["owner@example.com", "missing@example.com"]
+    assert result["converted"] == 1
 
 
 def test_account_cpa_auth_convert_session_reports_empty_missing_and_invalid(monkeypatch):

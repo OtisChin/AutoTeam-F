@@ -8,13 +8,23 @@ from autotoken.api_routes.account_exports import (
 )
 
 
-def _app():
+def _app(*, sanitize_accounts_batch=None, get_main_account_email=None, is_main_account_email=None):
+    sanitize_accounts_batch = sanitize_accounts_batch or (
+        lambda account_rows: [{**account, "sanitized": True} for account in account_rows]
+    )
     app = FastAPI()
+    router_kwargs = {
+        "normalize_email": lambda value: str(value or "").strip().lower(),
+        "is_main_account_email": is_main_account_email
+        or (lambda email: str(email or "").strip().lower() == "owner@example.com"),
+        "sanitize_account": lambda account: {**account, "sanitized": True},
+        "sanitize_accounts_batch": sanitize_accounts_batch,
+    }
+    if get_main_account_email is not None:
+        router_kwargs["get_main_account_email"] = get_main_account_email
     app.include_router(
         create_account_exports_router(
-            normalize_email=lambda value: str(value or "").strip().lower(),
-            is_main_account_email=lambda email: str(email or "").strip().lower() == "owner@example.com",
-            sanitize_account=lambda account: {**account, "sanitized": True},
+            **router_kwargs,
         )
     )
     return app
@@ -43,7 +53,7 @@ def test_export_account_credentials_rejects_too_many_raw_emails():
         raise AssertionError("oversized credential export selection must fail")
 
 
-def test_export_account_credentials_uses_original_outlook_oauth_line(monkeypatch):
+def test_export_account_credentials_prepares_original_outlook_oauth_line_without_committing_status(monkeypatch):
     app = _app()
     updates = []
     account = {
@@ -75,8 +85,9 @@ def test_export_account_credentials_uses_original_outlook_oauth_line(monkeypatch
 
     assert result["content"] == "User@Outlook.com----mail-password----client-id----refresh-token"
     assert result["count"] == 1
-    assert updates[0][0] == "user@outlook.com"
-    assert updates[0][1]["credentials_exported"] is True
+    assert result["exported_emails"] == ["user@outlook.com"]
+    assert result["exported_at"] is None
+    assert updates == []
 
 
 def test_export_account_credentials_keeps_mailapi_outlook_legacy_line(monkeypatch):
@@ -204,6 +215,105 @@ def test_update_accounts_export_status_rejects_too_many_raw_emails():
         assert "账号导出状态更新条目过多" in exc.detail
     else:
         raise AssertionError("oversized export status update selection must fail")
+
+
+def test_update_accounts_export_status_uses_one_batch_write_and_one_batch_sanitizer(monkeypatch):
+    sanitizer_calls = []
+    storage_calls = []
+
+    def sanitize_batch(account_rows):
+        sanitizer_calls.append(account_rows)
+        return [{**account, "sanitized": True} for account in account_rows]
+
+    def update_batch(emails, *, exported, exported_at):
+        storage_calls.append((emails, exported, exported_at))
+        return {
+            "accounts": [
+                {
+                    "email": "user@example.com",
+                    "credentials_exported": exported,
+                    "credentials_exported_at": exported_at,
+                }
+            ],
+            "missing": ["missing@example.com"],
+            "trade_allocations": {"cleared": 0, "codes": []},
+        }
+
+    app = _app(sanitize_accounts_batch=sanitize_batch)
+    monkeypatch.setattr("autotoken.storage.accounts.update_accounts_export_status_batch", update_batch)
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: (_ for _ in ()).throw(AssertionError("full account load used")),
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.update_account",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("per-account update used")),
+    )
+
+    result = _endpoint(app, "/api/accounts/export-status", "POST")(
+        AccountExportStatusUpdateParams(
+            emails=["USER@example.com", "owner@example.com", "missing@example.com"],
+            exported=True,
+        )
+    )
+
+    assert storage_calls == [(["user@example.com", "missing@example.com"], True, result["exported_at"])]
+    assert len(sanitizer_calls) == 1
+    assert sanitizer_calls[0] == [
+        {
+            "email": "user@example.com",
+            "credentials_exported": True,
+            "credentials_exported_at": result["exported_at"],
+        }
+    ]
+    assert result["updated"] == 1
+    assert result["missing"] == ["owner@example.com", "missing@example.com"]
+    assert result["accounts"] == [
+        {
+            "email": "user@example.com",
+            "credentials_exported": True,
+            "credentials_exported_at": result["exported_at"],
+            "sanitized": True,
+        }
+    ]
+
+
+def test_update_accounts_export_status_reads_main_identity_once_per_batch(monkeypatch):
+    getter_calls = 0
+
+    def get_main_account_email():
+        nonlocal getter_calls
+        getter_calls += 1
+        return "owner@example.com"
+
+    app = _app(
+        get_main_account_email=get_main_account_email,
+        is_main_account_email=lambda _email: (_ for _ in ()).throw(
+            AssertionError("per-account main identity lookup used")
+        ),
+    )
+    captured = {}
+
+    def update_batch(emails, *, exported, exported_at):
+        captured["emails"] = emails
+        return {
+            "accounts": [],
+            "missing": ["missing@example.com"],
+            "trade_allocations": {"cleared": 0, "codes": []},
+        }
+
+    monkeypatch.setattr("autotoken.storage.accounts.update_accounts_export_status_batch", update_batch)
+
+    result = _endpoint(app, "/api/accounts/export-status", "POST")(
+        AccountExportStatusUpdateParams(
+            emails=["owner@example.com", "missing@example.com", "user@example.com"],
+            exported=True,
+        )
+    )
+
+    assert getter_calls == 1
+    assert captured["emails"] == ["missing@example.com", "user@example.com"]
+    assert result["missing"] == ["owner@example.com", "missing@example.com"]
 
 
 def test_export_account_credentials_excludes_totp_secret_by_default(monkeypatch):

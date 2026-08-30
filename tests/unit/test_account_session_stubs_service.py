@@ -39,7 +39,10 @@ def test_load_accounts_with_session_stubs_persists_free_stub(monkeypatch):
     monkeypatch.setattr("autotoken.auth_session_store.list_auth_session_emails", lambda: [" Session@Example.com "])
     monkeypatch.setattr("autotoken.auth_index.codex_auth_files_by_email", lambda _emails: {})
     monkeypatch.setattr("autotoken.bind_audit.list_bind_audits", lambda limit: [])
-    monkeypatch.setattr("autotoken.accounts.ensure_session_only_account", lambda email: {**created, "email": email})
+    monkeypatch.setattr(
+        "autotoken.accounts.reconcile_auth_session_accounts",
+        lambda emails, **_kwargs: {emails[0]: {**created, "email": emails[0]}},
+    )
 
     result = account_session_stubs.load_accounts_with_session_stubs(
         normalize_email=_normalize_email,
@@ -49,7 +52,7 @@ def test_load_accounts_with_session_stubs_persists_free_stub(monkeypatch):
 
 
 def test_load_accounts_with_session_stubs_restores_new_indexed_session_account(monkeypatch):
-    captured = {"added": [], "updated": []}
+    captured = {}
     restored = {
         "email": "indexed@example.com",
         "status": accounts_module.STATUS_ACTIVE,
@@ -61,28 +64,23 @@ def test_load_accounts_with_session_stubs_restores_new_indexed_session_account(m
     monkeypatch.setattr("autotoken.auth_session_store.list_auth_session_emails", lambda: ["indexed@example.com"])
     monkeypatch.setattr("autotoken.auth_index.codex_auth_files_by_email", lambda emails: {emails[0]: "auth-indexed.json"})
     monkeypatch.setattr("autotoken.bind_audit.list_bind_audits", lambda limit: [])
-    monkeypatch.setattr("autotoken.accounts.add_account", lambda email, password, seat_type: captured["added"].append((email, password, seat_type)))
 
-    def fake_update_account(email, **fields):
-        captured["updated"].append((email, fields))
-        return {**restored, **fields}
+    def fake_reconcile(emails, *, indexed_auth_files, gopay_success_emails):
+        captured["emails"] = list(emails)
+        captured["indexed"] = dict(indexed_auth_files)
+        captured["gopay"] = set(gopay_success_emails)
+        return {emails[0]: restored}
 
-    monkeypatch.setattr("autotoken.accounts.update_account", fake_update_account)
+    monkeypatch.setattr("autotoken.accounts.reconcile_auth_session_accounts", fake_reconcile)
 
     result = account_session_stubs.load_accounts_with_session_stubs(normalize_email=_normalize_email)
 
-    assert captured["added"] == [("indexed@example.com", "", accounts_module.SEAT_CODEX)]
-    assert captured["updated"][0] == (
-        "indexed@example.com",
-        {
-            "status": accounts_module.STATUS_ACTIVE,
-            "account_type": accounts_module.ACCOUNT_TYPE_FREE,
-            "seat_type": accounts_module.SEAT_CODEX,
-            "auth_file": "auth-indexed.json",
-            "account_source": accounts_module.ACCOUNT_SOURCE_MANAGED,
-        },
-    )
-    assert result == [{**restored, **captured["updated"][0][1]}]
+    assert captured == {
+        "emails": ["indexed@example.com"],
+        "indexed": {"indexed@example.com": "auth-indexed.json"},
+        "gopay": set(),
+    }
+    assert result == [restored]
 
 
 def test_load_accounts_with_session_stubs_upgrades_existing_stub_after_gopay_success(monkeypatch):
@@ -101,10 +99,21 @@ def test_load_accounts_with_session_stubs_upgrades_existing_stub_after_gopay_suc
         lambda limit: [{"flow": "gopay", "status": "success", "successful_emails": ["Plus@Example.com"]}],
     )
 
-    def fake_update_account(email, **fields):
-        return {"email": email, **fields}
+    def fake_reconcile(emails, *, indexed_auth_files, gopay_success_emails):
+        assert indexed_auth_files == {}
+        assert gopay_success_emails == {"plus@example.com"}
+        return {
+            emails[0]: {
+                "email": emails[0],
+                "account_type": accounts_module.ACCOUNT_TYPE_PLUS,
+                "seat_type": accounts_module.SEAT_CODEX,
+                "auth_file": "",
+                "account_source": accounts_module.ACCOUNT_SOURCE_MANAGED,
+                "status": accounts_module.STATUS_ACTIVE,
+            }
+        }
 
-    monkeypatch.setattr("autotoken.accounts.update_account", fake_update_account)
+    monkeypatch.setattr("autotoken.accounts.reconcile_auth_session_accounts", fake_reconcile)
 
     result = account_session_stubs.load_accounts_with_session_stubs(normalize_email=_normalize_email)
 
@@ -118,3 +127,103 @@ def test_load_accounts_with_session_stubs_upgrades_existing_stub_after_gopay_suc
             "status": accounts_module.STATUS_ACTIVE,
         }
     ]
+
+
+def test_load_accounts_with_session_stubs_reconciles_all_rows_in_one_batch(monkeypatch):
+    loaded = [
+        {
+            "email": "existing@example.com",
+            "status": accounts_module.STATUS_ACTIVE,
+            "account_source": accounts_module.ACCOUNT_SOURCE_AUTH_SESSION_STUB,
+        }
+    ]
+    captured = {}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: loaded)
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.list_auth_session_emails",
+        lambda: [" Existing@Example.com ", "new@example.com", "NEW@example.com"],
+    )
+    monkeypatch.setattr(
+        "autotoken.auth_index.codex_auth_files_by_email",
+        lambda emails: {"existing@example.com": "auth-existing.json"},
+    )
+    monkeypatch.setattr(
+        "autotoken.bind_audit.list_bind_audits",
+        lambda limit: [{"flow": "gopay", "status": "success", "email": "new@example.com"}],
+    )
+
+    def fake_reconcile(session_emails, *, indexed_auth_files, gopay_success_emails):
+        captured["session_emails"] = list(session_emails)
+        captured["indexed_auth_files"] = dict(indexed_auth_files)
+        captured["gopay_success_emails"] = set(gopay_success_emails)
+        return {
+            "existing@example.com": {
+                "email": "existing@example.com",
+                "status": accounts_module.STATUS_ACTIVE,
+                "auth_file": "auth-existing.json",
+                "account_source": accounts_module.ACCOUNT_SOURCE_MANAGED,
+            },
+            "new@example.com": {
+                "email": "new@example.com",
+                "status": accounts_module.STATUS_ACTIVE,
+                "account_type": accounts_module.ACCOUNT_TYPE_PLUS,
+                "account_source": accounts_module.ACCOUNT_SOURCE_MANAGED,
+            },
+        }
+
+    monkeypatch.setattr("autotoken.accounts.reconcile_auth_session_accounts", fake_reconcile)
+
+    def legacy_row_write_called(*_args, **_kwargs):
+        raise AssertionError("session reconciliation must not open a transaction per account")
+
+    monkeypatch.setattr("autotoken.accounts.ensure_session_only_account", legacy_row_write_called)
+    monkeypatch.setattr("autotoken.accounts.add_account", legacy_row_write_called)
+    monkeypatch.setattr("autotoken.accounts.update_account", legacy_row_write_called)
+
+    result = account_session_stubs.load_accounts_with_session_stubs(normalize_email=_normalize_email)
+
+    assert captured == {
+        "session_emails": ["existing@example.com", "new@example.com"],
+        "indexed_auth_files": {"existing@example.com": "auth-existing.json"},
+        "gopay_success_emails": {"new@example.com"},
+    }
+    assert result == [
+        {
+            "email": "existing@example.com",
+            "status": accounts_module.STATUS_ACTIVE,
+            "auth_file": "auth-existing.json",
+            "account_source": accounts_module.ACCOUNT_SOURCE_MANAGED,
+        },
+        {
+            "email": "new@example.com",
+            "status": accounts_module.STATUS_ACTIVE,
+            "account_type": accounts_module.ACCOUNT_TYPE_PLUS,
+            "account_source": accounts_module.ACCOUNT_SOURCE_MANAGED,
+        },
+    ]
+
+
+def test_load_accounts_with_session_stubs_skips_write_transaction_for_normalized_rows(monkeypatch):
+    loaded = [
+        {
+            "email": "session@example.com",
+            "status": accounts_module.STATUS_ACTIVE,
+            "account_type": accounts_module.ACCOUNT_TYPE_FREE,
+            "seat_type": accounts_module.SEAT_CODEX,
+            "auth_file": None,
+            "account_source": accounts_module.ACCOUNT_SOURCE_AUTH_SESSION_STUB,
+        }
+    ]
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: loaded)
+    monkeypatch.setattr("autotoken.auth_session_store.list_auth_session_emails", lambda: ["session@example.com"])
+    monkeypatch.setattr("autotoken.auth_index.codex_auth_files_by_email", lambda _emails: {})
+    monkeypatch.setattr("autotoken.bind_audit.list_bind_audits", lambda limit: [])
+
+    def unexpected_reconcile(*_args, **_kwargs):
+        raise AssertionError("an unchanged account listing must stay read-only")
+
+    monkeypatch.setattr("autotoken.accounts.reconcile_auth_session_accounts", unexpected_reconcile)
+
+    result = account_session_stubs.load_accounts_with_session_stubs(normalize_email=_normalize_email)
+
+    assert result is loaded

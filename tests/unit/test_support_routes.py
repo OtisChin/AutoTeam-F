@@ -65,9 +65,79 @@ def test_logs_route_supports_limit_and_since_filters():
         {"time": 3.0, "level": "ERROR", "message": "three"},
     ]
     app = _app(log_buffer=log_buffer)
+    endpoint = _endpoint(app, "/api/logs", "GET")
+    initial = endpoint(limit=2)
 
-    assert _endpoint(app, "/api/logs", "GET")(limit=2) == {"logs": log_buffer[-2:], "total": 3}
-    assert _endpoint(app, "/api/logs", "GET")(since=1.5) == {"logs": log_buffer[1:], "total": 3}
+    assert isinstance(initial["boot_id"], str) and initial["boot_id"]
+    assert initial == {"logs": log_buffer[-2:], "total": 3, "boot_id": initial["boot_id"]}
+    assert endpoint(since=1.5) == {
+        "logs": log_buffer[1:],
+        "total": 3,
+        "boot_id": initial["boot_id"],
+    }
+
+
+def test_logs_route_uses_stable_id_cursor_for_identical_entries():
+    log_buffer = [
+        {"id": 41, "time": 2.0, "level": "INFO", "message": "same"},
+        {"id": 42, "time": 2.0, "level": "INFO", "message": "same"},
+    ]
+    app = _app(log_buffer=log_buffer)
+    endpoint = _endpoint(app, "/api/logs", "GET")
+    boot_id = endpoint()["boot_id"]
+
+    assert endpoint(since=2.0, since_id=41, since_boot_id=boot_id) == {
+        "logs": [log_buffer[1]],
+        "total": 2,
+        "boot_id": boot_id,
+    }
+
+
+def test_logs_route_returns_new_boot_history_when_process_id_resets():
+    old_buffer = [
+        {"id": log_id, "time": 100.0 + log_id, "level": "INFO", "message": f"old {log_id}"}
+        for log_id in range(1, 43)
+    ]
+    old_app = _app(log_buffer=old_buffer)
+    old_endpoint = _endpoint(old_app, "/api/logs", "GET")
+    old_boot_id = old_endpoint()["boot_id"]
+
+    new_buffer = [
+        {"id": 1, "time": 1.0, "level": "INFO", "message": "after restart one"},
+        {"id": 2, "time": 2.0, "level": "INFO", "message": "after restart two"},
+    ]
+    new_app = _app(log_buffer=new_buffer)
+    new_endpoint = _endpoint(new_app, "/api/logs", "GET")
+
+    result = new_endpoint(
+        limit=1000,
+        since=142.0,
+        since_id=42,
+        since_boot_id=old_boot_id,
+    )
+
+    assert result == {
+        "logs": new_buffer,
+        "total": 2,
+        "boot_id": result["boot_id"],
+    }
+    assert result["boot_id"] != old_boot_id
+
+
+def test_logs_route_does_not_guess_restart_from_current_max_id():
+    log_buffer = [
+        {"id": 1, "time": 101.0, "level": "INFO", "message": "one"},
+        {"id": 2, "time": 102.0, "level": "INFO", "message": "two"},
+    ]
+    app = _app(log_buffer=log_buffer)
+    endpoint = _endpoint(app, "/api/logs", "GET")
+    boot_id = endpoint()["boot_id"]
+
+    assert endpoint(since=100.0, since_id=42, since_boot_id=boot_id) == {
+        "logs": [],
+        "total": 2,
+        "boot_id": boot_id,
+    }
 
 
 def test_logs_route_defaults_to_deeper_history_and_clamps_limit():
@@ -77,6 +147,8 @@ def test_logs_route_defaults_to_deeper_history_and_clamps_limit():
     default_result = _endpoint(app, "/api/logs", "GET")()
     clamped_result = _endpoint(app, "/api/logs", "GET")(limit=999999)
 
+    assert isinstance(default_result["boot_id"], str) and default_result["boot_id"]
+    assert clamped_result["boot_id"] == default_result["boot_id"]
     assert len(default_result["logs"]) == 1000
     assert default_result["logs"] == log_buffer[-1000:]
     assert len(clamped_result["logs"]) == 5000

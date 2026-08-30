@@ -13,8 +13,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
 from autotoken.core.archive import safe_archive_member_name
-from autotoken.core.textio import read_text
-from autotoken.storage.auth_files import safe_auth_filename_fragment, trusted_auth_file_path
+from autotoken.storage.auth_files import (
+    AUTH_JSON_FILE_MAX_BYTES,
+    safe_auth_filename_fragment,
+    trusted_auth_file_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,8 @@ MAX_CPA_IMPORT_RAW_BYTES = 20 * 1024 * 1024
 MAX_CPA_IMPORT_BASE64_CHARS = ((MAX_CPA_IMPORT_RAW_BYTES + 2) // 3) * 4 + 4096
 MAX_CPA_IMPORT_ZIP_JSON_FILES = 200
 MAX_CPA_IMPORT_ZIP_TOTAL_BYTES = 20 * 1024 * 1024
+MAX_ACCOUNT_EXPORT_EMAILS = 1_000
+MAX_ACCOUNT_EXPORT_TOTAL_BYTES = 20 * 1024 * 1024
 
 
 class AccountCpaAuthImportSource(BaseModel):
@@ -37,11 +42,37 @@ class AccountCpaAuthImportParams(BaseModel):
 
 
 class AccountEmailBatchParams(BaseModel):
-    emails: list[str]
+    emails: list[str] = Field(max_length=MAX_ACCOUNT_EXPORT_EMAILS)
 
 
 class AccountSessionCpaConvertParams(BaseModel):
-    emails: list[str] = Field(default_factory=list)
+    emails: list[str] = Field(default_factory=list, max_length=MAX_ACCOUNT_EXPORT_EMAILS)
+
+
+def _read_auth_export_content(
+    path: Path,
+    *,
+    reserve_bytes: Callable[[Path], None] | None = None,
+) -> tuple[str, int]:
+    if reserve_bytes is not None:
+        reserve_bytes(path)
+    with path.open("rb") as stream:
+        raw = stream.read(AUTH_JSON_FILE_MAX_BYTES + 1)
+    if len(raw) > AUTH_JSON_FILE_MAX_BYTES:
+        raise ValueError(f"认证文件超过 {AUTH_JSON_FILE_MAX_BYTES} 字节限制")
+    text = raw.decode("utf-8-sig")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("认证文件必须是 JSON object")
+    return text, len(raw)
+
+
+def _check_export_total_bytes(total_bytes: int) -> None:
+    if total_bytes > MAX_ACCOUNT_EXPORT_TOTAL_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"导出认证文件总大小超过 {MAX_ACCOUNT_EXPORT_TOTAL_BYTES} 字节限制",
+        )
 
 
 def _decode_cpa_import_content(source: AccountCpaAuthImportSource) -> bytes:
@@ -164,12 +195,19 @@ def _collect_cpa_auth_import_sources(params: AccountCpaAuthImportParams):
     return sources, invalid
 
 
-def _auth_file_declares_plan(auth_file: str, expected_plan: str) -> bool:
+def _auth_file_declares_plan(
+    auth_file: str,
+    expected_plan: str,
+    *,
+    reserve_bytes: Callable[[Path], None] | None = None,
+) -> bool:
     path = trusted_auth_file_path(auth_file)
     if not path:
         return False
     try:
-        payload = json.loads(read_text(path))
+        payload = json.loads(_read_auth_export_content(path, reserve_bytes=reserve_bytes)[0])
+    except HTTPException:
+        raise
     except Exception:
         return False
     if not isinstance(payload, dict):
@@ -195,6 +233,7 @@ def create_account_cpa_auths_router(
     update_account_cpa_auth_plan_type: Callable[..., dict] | None = None,
     convert_account_auth_session_to_cpa_auth: Callable[..., dict] | None = None,
     is_main_account_email: Callable[[str], bool] | None = None,
+    get_main_account_email: Callable[[], str] | None = None,
     verify_plus_plan: Callable[[dict[str, str]], dict] | None = None,
     normalize_observed_auth_plan: Callable[[str, str, str], None] | None = None,
     mark_failed_account: Callable[..., None] | None = None,
@@ -207,6 +246,14 @@ def create_account_cpa_auths_router(
         if normalize_email:
             return normalize_email(value)
         return (value or "").strip().lower()
+
+    def _accounts_by_email(accounts: list[dict]) -> dict[str, dict]:
+        indexed = {}
+        for account in accounts:
+            email = _normalize_email(account.get("email"))
+            if email and email not in indexed:
+                indexed[email] = account
+        return indexed
 
     @router.post("/api/accounts/import-cpa-auths")
     def import_account_cpa_auths(params: AccountCpaAuthImportParams):
@@ -229,11 +276,11 @@ def create_account_cpa_auths_router(
     def convert_account_session_cpa_auths(params: AccountSessionCpaConvertParams):
         """直接把 ChatGPT Web auth_session 转成本地 CPA codex auth 文件，不走 Codex OAuth。"""
         from autotoken.integrations.session_cpa_converter import SessionConversionError
-        from autotoken.storage.accounts import find_account, load_accounts
+        from autotoken.storage.accounts import load_accounts
 
         if convert_account_auth_session_to_cpa_auth is None:
             raise RuntimeError("convert_account_auth_session_to_cpa_auth dependency is required")
-        if is_main_account_email is None:
+        if is_main_account_email is None and get_main_account_email is None:
             raise RuntimeError("is_main_account_email dependency is required")
 
         requested = []
@@ -247,12 +294,15 @@ def create_account_cpa_auths_router(
             raise HTTPException(status_code=400, detail="emails 不能为空")
 
         accounts = load_accounts()
+        accounts_by_email = _accounts_by_email(accounts)
+        main_email = _normalize_email(get_main_account_email()) if get_main_account_email else ""
         converted = []
         missing = []
         invalid = []
         for email in requested:
-            account = find_account(accounts, email)
-            if not account or is_main_account_email(email):
+            account = accounts_by_email.get(email)
+            is_main = email == main_email if get_main_account_email else bool(is_main_account_email(email))
+            if not account or is_main:
                 missing.append(email)
                 continue
             try:
@@ -285,7 +335,7 @@ def create_account_cpa_auths_router(
     @router.post("/api/accounts/export-cpa-auths")
     def export_account_cpa_auths(params: AccountEmailBatchParams):
         """导出 data/auths 下的 CPA 兼容认证 JSON。单个返回 JSON，多个返回 zip。"""
-        from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS, find_account, load_accounts, update_account
+        from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS, load_accounts
 
         if resolve_codex_auth_file is None:
             raise RuntimeError("resolve_codex_auth_file dependency is required")
@@ -309,11 +359,19 @@ def create_account_cpa_auths_router(
             raise HTTPException(status_code=400, detail="emails 不能为空")
 
         accounts = load_accounts()
+        accounts_by_email = _accounts_by_email(accounts)
         files = []
+        total_attempted_bytes = 0
+
+        def reserve_export_bytes(path: Path) -> None:
+            nonlocal total_attempted_bytes
+            total_attempted_bytes += max(0, int(path.stat().st_size))
+            _check_export_total_bytes(total_attempted_bytes)
+
         missing = []
         unconfirmed_plus = []
         for email in requested:
-            account = find_account(accounts, email)
+            account = accounts_by_email.get(email)
             if not account:
                 missing.append(email)
                 continue
@@ -344,7 +402,11 @@ def create_account_cpa_auths_router(
                     plan_update = update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
                     auth_file = str(plan_update.get("auth_file") or auth_file)
                     account = {**account, "auth_file": auth_file}
-                elif not _auth_file_declares_plan(auth_file, ACCOUNT_TYPE_PLUS):
+                elif not _auth_file_declares_plan(
+                    auth_file,
+                    ACCOUNT_TYPE_PLUS,
+                    reserve_bytes=reserve_export_bytes,
+                ):
                     verification = verify_plus_plan(
                         {
                             "email": email,
@@ -376,8 +438,9 @@ def create_account_cpa_auths_router(
                 missing.append(email)
                 continue
             try:
-                content = read_text(path)
-                json.loads(content)
+                content, _content_bytes = _read_auth_export_content(path, reserve_bytes=reserve_export_bytes)
+            except HTTPException:
+                raise
             except Exception as exc:
                 logger.warning("[API] CPA auth 导出跳过无效文件: email=%s path=%s error=%s", email, path, exc)
                 missing.append(email)
@@ -394,18 +457,9 @@ def create_account_cpa_auths_router(
                 },
             )
 
-        exported_at = current_time()
-        exported_emails = []
-        for file in files:
-            email = _normalize_email(file.get("email"))
-            if not email:
-                continue
-            update_account(
-                email,
-                credentials_exported=True,
-                credentials_exported_at=exported_at,
-            )
-            exported_emails.append(email)
+        # Download generation stays side-effect free. The browser confirms the
+        # returned emails only after dispatching the file download.
+        exported_emails = [email for file in files if (email := _normalize_email(file.get("email")))]
 
         if len(files) == 1:
             file = files[0]
@@ -452,7 +506,7 @@ def create_account_cpa_auths_router(
             "missing": missing,
             "unconfirmed_plus": unconfirmed_plus,
             "exported_emails": exported_emails,
-            "exported_at": exported_at,
+            "exported_at": None,
             "files": [{"email": file["email"], "filename": file["filename"]} for file in files],
         }
 
@@ -466,7 +520,7 @@ def create_account_cpa_auths_router(
             generate_default_filename,
             inspect_sources,
         )
-        from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS, find_account, load_accounts, update_account
+        from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS, load_accounts
 
         if resolve_codex_auth_file is None:
             raise RuntimeError("resolve_codex_auth_file dependency is required")
@@ -484,10 +538,18 @@ def create_account_cpa_auths_router(
             raise HTTPException(status_code=400, detail="emails 不能为空")
 
         accounts = load_accounts()
+        accounts_by_email = _accounts_by_email(accounts)
         sources = []
+        total_attempted_bytes = 0
+
+        def reserve_export_bytes(path: Path) -> None:
+            nonlocal total_attempted_bytes
+            total_attempted_bytes += max(0, int(path.stat().st_size))
+            _check_export_total_bytes(total_attempted_bytes)
+
         missing = []
         for email in requested:
-            account = find_account(accounts, email)
+            account = accounts_by_email.get(email)
             if not account:
                 missing.append(email)
                 continue
@@ -503,8 +565,9 @@ def create_account_cpa_auths_router(
                 missing.append(email)
                 continue
             try:
-                content = read_text(path)
-                json.loads(content)
+                content, _content_bytes = _read_auth_export_content(path, reserve_bytes=reserve_export_bytes)
+            except HTTPException:
+                raise
             except Exception as exc:
                 logger.warning("[API] Sub auth 导出跳过无效文件: email=%s path=%s error=%s", email, path, exc)
                 missing.append(email)
@@ -532,20 +595,12 @@ def create_account_cpa_auths_router(
             if not record.is_valid
         ]
 
-        exported_at = current_time()
-        exported_emails = []
-        for item in exported_sources:
-            email = _normalize_email(item.get("email"))
-            if not email:
-                continue
-            update_account(
-                email,
-                credentials_exported=True,
-                credentials_exported_at=exported_at,
-            )
-            exported_emails.append(email)
+        exported_emails = [
+            email for item in exported_sources if (email := _normalize_email(item.get("email")))
+        ]
 
         content = json.dumps(payload, ensure_ascii=False, indent=2)
+        _check_export_total_bytes(len(content.encode("utf-8")))
         return {
             "filename": filename,
             "content_type": "application/json",
@@ -554,7 +609,7 @@ def create_account_cpa_auths_router(
             "missing": missing,
             "invalid": invalid,
             "exported_emails": exported_emails,
-            "exported_at": exported_at,
+            "exported_at": None,
             "files": [{"email": item["email"], "filename": item["filename"]} for item in exported_sources],
         }
 

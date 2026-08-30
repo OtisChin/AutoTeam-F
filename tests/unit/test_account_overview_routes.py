@@ -1,7 +1,11 @@
 import base64
+import gzip
+import inspect
 import json
 
 from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from autotoken import accounts, auth_session_store, auth_storage, codex_auth
 from autotoken.api_routes import account_overview
@@ -17,16 +21,27 @@ def _jwt(payload):
     return f"{_b64url({'alg': 'none', 'typ': 'JWT'})}.{_b64url(payload)}.sig"
 
 
-def _app(*, loaded_accounts=None, sanitized_accounts=None, sanitize_account=None, is_main_account_email=None):
+def _app(
+    *,
+    loaded_accounts=None,
+    sanitized_accounts=None,
+    sanitize_account=None,
+    is_main_account_email=None,
+    dashboard_revision=None,
+    dashboard_cache_clock=None,
+    dashboard_cache_max_age=30.0,
+):
     loaded_accounts = loaded_accounts if loaded_accounts is not None else []
     captured = {}
     app = FastAPI()
 
     def fake_load_accounts_with_session_stubs(**kwargs):
+        captured["load_count"] = captured.get("load_count", 0) + 1
         captured["include_session_stubs"] = kwargs.get("include_session_stubs")
         return loaded_accounts
 
     def fake_sanitize_accounts_batch(_accounts, _quota_cache):
+        captured["sanitize_count"] = captured.get("sanitize_count", 0) + 1
         captured["sanitized_count"] = len(_accounts)
         if sanitized_accounts is not None:
             return sanitized_accounts
@@ -38,6 +53,9 @@ def _app(*, loaded_accounts=None, sanitized_accounts=None, sanitize_account=None
             sanitize_accounts_batch=fake_sanitize_accounts_batch,
             sanitize_account=sanitize_account or (lambda account: {**account, "sanitized": True}),
             is_main_account_email=is_main_account_email or (lambda _email: False),
+            dashboard_revision=dashboard_revision,
+            dashboard_cache_clock=dashboard_cache_clock,
+            dashboard_cache_max_age=dashboard_cache_max_age,
         )
     )
     return app, captured
@@ -50,15 +68,34 @@ def _endpoint(app, path, method):
     raise AssertionError(f"missing route {method} {path}")
 
 
+def _request_with_headers(**headers):
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/accounts",
+            "headers": [
+                (str(name).replace("_", "-").lower().encode(), str(value).encode())
+                for name, value in headers.items()
+            ],
+        }
+    )
+
+
 def test_account_overview_list_delegates_loading_and_sanitization():
     app, captured = _app(
         loaded_accounts=[{"email": "raw@example.com"}],
-        sanitized_accounts=[{"email": "safe@example.com"}],
+        sanitized_accounts=[
+            {
+                "email": "safe@example.com",
+                "provider_specific": {"preserved": True},
+            }
+        ],
     )
 
     result = _endpoint(app, "/api/accounts", "GET")(include_session_stubs=False)
 
-    assert result == [{"email": "safe@example.com"}]
+    assert result == [{"email": "safe@example.com", "provider_specific": {"preserved": True}}]
     assert captured["include_session_stubs"] is False
 
 
@@ -70,6 +107,365 @@ def test_account_overview_list_returns_full_pool_for_frontend_pagination():
 
     assert [account["email"] for account in result] == [f"user-{index:03d}@example.com" for index in range(250)]
     assert _captured["sanitized_count"] == 250
+
+
+def test_account_overview_dashboard_view_projects_only_dashboard_fields():
+    dashboard_fields = {
+        "email": "user@example.com",
+        "display_email": "User@Example.com",
+        "original_email": "User@Example.com",
+        "status": "active",
+        "raw_status": "personal",
+        "account_type": "plus",
+        "seat_type": "codex",
+        "trial_eligible": True,
+        "is_main_account": False,
+        "created_at": 1_700_000_000,
+        "registered_at": 1_700_000_001,
+        "register_at": 1_700_000_002,
+        "plus_bound_at": 1_700_000_003,
+        "activated_at": 1_700_000_004,
+        "activation_at": 1_700_000_005,
+        "upgraded_at": 1_700_000_006,
+        "last_bind_at": 1_700_000_007,
+        "last_bind_provider": "paypal",
+        "last_bind_status": "success",
+        "last_bind_task_id": "task-1",
+        "last_bind_message": "bound",
+        "last_bind_failure_stage": "",
+        "last_checkout_url": "https://checkout.example/1",
+        "last_proxy_label": "proxy-a",
+        "kakao_link_extracted": True,
+        "kakao_link_extracted_at": 1_700_000_008,
+        "kakao_link_expires_at": 1_700_003_600,
+        "kakao_link_cs_id": "cs-1",
+        "kakao_link_job_id": "job-1",
+        "credentials_exported": True,
+        "credentials_exported_at": 1_700_000_009,
+        "account_hub_synced": True,
+        "account_hub_synced_at": 1_700_000_010,
+        "hub_source_name": "primary",
+        "auth_file": "data/auths/codex-user.json",
+        "auth_session_file": "data/auth_session/user.json",
+        "codex_auth_file": "data/auths/codex-user.json",
+        "codex_auth_synthetic": False,
+        "has_codex_auth_file": True,
+        "needs_codex_login": False,
+        "quota_exhausted_at": None,
+        "quota_resets_at": 1_700_100_000,
+        "last_quota_check_at": 1_700_000_011,
+        "last_quota": {
+            "checked_at": 1_700_000_011,
+            "primary_pct": 20,
+            "primary_resets_at": 1_700_018_000,
+            "primary_window_seconds": 18_000,
+            "weekly_pct": 40,
+            "weekly_resets_at": 1_700_604_800,
+            "weekly_window_seconds": 604_800,
+        },
+    }
+    sanitized = {
+        **dashboard_fields,
+        "mail_provider": "outlook",
+        "mailapi_url": "https://mail.example/very-long-private-url",
+        "updated_at": 1_700_000_012,
+        "last_active_at": 1_700_000_013,
+        "last_card_id": "card-1",
+        "account_source": "managed",
+        "two_factor_enabled": True,
+        "totp_secret_masked": "ABCD...WXYZ",
+        "provider_debug_payload": "x" * 4096,
+    }
+    app, captured = _app(sanitized_accounts=[sanitized])
+
+    response = TestClient(app).get("/api/accounts?view=dashboard")
+    result = response.json()
+
+    expected_payload = {
+        "fields": list(account_overview.DASHBOARD_ACCOUNT_FIELDS),
+        "rows": [[dashboard_fields.get(field) for field in account_overview.DASHBOARD_ACCOUNT_FIELDS]],
+    }
+    assert result == expected_payload
+    assert response.content == account_overview._dashboard_payload_bytes(expected_payload)
+    assert response.headers["etag"] == account_overview._dashboard_payload_etag(response.content)
+    assert captured["sanitized_count"] == 0
+    assert sanitized["provider_debug_payload"] == "x" * 4096
+
+
+def test_dashboard_quota_projection_keeps_only_rendered_windows_without_mutating_source():
+    source = {
+        "email": "user@example.com",
+        "last_quota": {
+            "checked_at": 100,
+            "primary_pct": 12,
+            "primary_resets_at": 200,
+            "primary_window_seconds": 18_000,
+            "primary_reset_after_seconds": 100,
+            "weekly_pct": 34,
+            "weekly_resets_at": 300,
+            "weekly_window_seconds": 604_800,
+            "weekly_reset_after_seconds": 200,
+            "kakao_link_extracted": True,
+            "plan_type": "plus",
+            "provider_debug_payload": "x" * 4096,
+            "windows": {
+                "primary": {
+                    "source": "primary_window",
+                    "used_percent": 12,
+                    "reset_at": 200,
+                    "reset_after_seconds": 100,
+                    "limit_window_seconds": 18_000,
+                    "provider_debug_payload": "secret",
+                },
+                "weekly": {
+                    "source": "secondary_window",
+                    "used_percent": 34,
+                    "reset_at": 300,
+                    "reset_after_seconds": 200,
+                    "limit_window_seconds": 604_800,
+                },
+                "monthly": {"used_percent": 99, "limit_window_seconds": 2_592_000},
+            },
+        },
+    }
+
+    result = account_overview._dashboard_account_view(source)
+
+    assert result == {
+        "email": "user@example.com",
+        "last_quota": {
+            "checked_at": 100,
+            "primary_pct": 12,
+            "primary_resets_at": 200,
+            "primary_window_seconds": 18_000,
+            "primary_reset_after_seconds": 100,
+            "weekly_pct": 34,
+            "weekly_resets_at": 300,
+            "weekly_window_seconds": 604_800,
+            "weekly_reset_after_seconds": 200,
+            "kakao_link_extracted": True,
+            "windows": {
+                "primary": {
+                    "used_percent": 12,
+                    "reset_at": 200,
+                    "reset_after_seconds": 100,
+                    "limit_window_seconds": 18_000,
+                },
+                "weekly": {
+                    "used_percent": 34,
+                    "reset_at": 300,
+                    "reset_after_seconds": 200,
+                    "limit_window_seconds": 604_800,
+                },
+            },
+        },
+    }
+    assert source["last_quota"]["provider_debug_payload"] == "x" * 4096
+    assert "monthly" in source["last_quota"]["windows"]
+
+
+def test_dashboard_quota_projection_preserves_monthly_window_classifier():
+    source = {
+        "email": "legacy@example.com",
+        "last_quota": {
+            "primary_pct": 25,
+            "monthly_window_seconds": 2_592_000,
+        },
+    }
+
+    result = account_overview._dashboard_account_view(source)
+
+    assert result["last_quota"] == {
+        "primary_pct": 25,
+        "monthly_window_seconds": 2_592_000,
+    }
+
+
+def test_account_overview_dashboard_view_revalidates_with_etag():
+    app, _captured = _app(
+        sanitized_accounts=[
+            {
+                "email": "user@example.com",
+                "status": "active",
+                "last_quota": {"primary_pct": 20, "primary_window_seconds": 18_000},
+                "provider_debug_payload": "not-in-dashboard-view",
+            }
+        ]
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/accounts?view=dashboard")
+
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["fields"] == list(account_overview.DASHBOARD_ACCOUNT_FIELDS)
+    assert payload["rows"] == [
+        [
+            {"email": "user@example.com", "status": "active", "last_quota": {
+                "primary_pct": 20,
+                "primary_window_seconds": 18_000,
+            }}.get(field)
+            for field in account_overview.DASHBOARD_ACCOUNT_FIELDS
+        ]
+    ]
+    assert first.headers["cache-control"] == "private, no-cache"
+    assert {value.strip() for value in first.headers["vary"].split(",")} == {
+        "Authorization",
+        "Accept-Encoding",
+    }
+    etag = first.headers["etag"]
+    assert etag.startswith('W/"') and etag.endswith('"')
+
+    unchanged = client.get("/api/accounts?view=dashboard", headers={"If-None-Match": etag})
+
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+    assert unchanged.headers["etag"] == etag
+    assert unchanged.headers["cache-control"] == "private, no-cache"
+    assert {value.strip() for value in unchanged.headers["vary"].split(",")} == {
+        "Authorization",
+        "Accept-Encoding",
+    }
+
+
+def test_dashboard_matching_etag_skips_reload_while_source_revision_is_unchanged():
+    revision = [7]
+    now = [100.0]
+    app, captured = _app(
+        sanitized_accounts=[{"email": "cached@example.com", "status": "active"}],
+        dashboard_revision=lambda: revision[0],
+        dashboard_cache_clock=lambda: now[0],
+        dashboard_cache_max_age=30.0,
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/accounts?view=dashboard")
+    unchanged = client.get(
+        "/api/accounts?view=dashboard",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
+
+    assert first.status_code == 200
+    assert unchanged.status_code == 304
+    assert captured["load_count"] == 1
+    assert captured["sanitize_count"] == 1
+
+    revision[0] += 1
+    refreshed = client.get(
+        "/api/accounts?view=dashboard",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
+
+    assert refreshed.status_code == 304
+    assert captured["load_count"] == 2
+    assert captured["sanitize_count"] == 2
+
+
+def test_dashboard_snapshot_cache_has_a_bounded_external_source_freshness_window():
+    now = [100.0]
+    app, captured = _app(
+        sanitized_accounts=[{"email": "cached@example.com", "status": "active"}],
+        dashboard_revision=lambda: 1,
+        dashboard_cache_clock=lambda: now[0],
+        dashboard_cache_max_age=30.0,
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/accounts?view=dashboard")
+    now[0] = 131.0
+    revalidated = client.get(
+        "/api/accounts?view=dashboard",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
+
+    assert revalidated.status_code == 304
+    assert captured["load_count"] == 2
+    assert captured["sanitize_count"] == 2
+
+
+def test_dashboard_gzip_runs_in_sync_route_with_deterministic_bytes_and_weak_validator():
+    app, _captured = _app(
+        sanitized_accounts=[
+            {
+                "email": "large@example.com",
+                "status": "active",
+                "last_bind_message": "dashboard-payload-" * 512,
+                "last_quota": {
+                    "checked_at": 1_700_000_000,
+                    "primary_pct": 20,
+                    "primary_window_seconds": 18_000,
+                },
+            }
+        ]
+    )
+    endpoint = _endpoint(app, "/api/accounts", "GET")
+
+    identity = endpoint(view="dashboard", request=_request_with_headers(accept_encoding="identity"))
+    compressed = endpoint(view="dashboard", request=_request_with_headers(accept_encoding="gzip"))
+    compressed_again = endpoint(view="dashboard", request=_request_with_headers(accept_encoding="gzip"))
+    refused = endpoint(view="dashboard", request=_request_with_headers(accept_encoding="gzip;q=0, br"))
+
+    assert identity.status_code == 200
+    assert "content-encoding" not in identity.headers
+    assert compressed.headers["content-encoding"] == "gzip"
+    assert gzip.decompress(compressed.body) == identity.body
+    assert compressed.body == compressed_again.body
+    assert compressed.headers["etag"] == identity.headers["etag"]
+    assert compressed.headers["etag"].startswith('W/"')
+    assert {value.strip() for value in compressed.headers["vary"].split(",")} == {
+        "Authorization",
+        "Accept-Encoding",
+    }
+    assert "content-encoding" not in refused.headers
+    assert refused.body == identity.body
+
+    weak_etag = compressed.headers["etag"]
+    strong_equivalent = weak_etag.removeprefix("W/")
+    unchanged = endpoint(
+        view="dashboard",
+        request=_request_with_headers(accept_encoding="gzip", if_none_match=strong_equivalent),
+    )
+
+    assert unchanged.status_code == 304
+    assert unchanged.body == b""
+    assert unchanged.headers["etag"] == weak_etag
+    assert {value.strip() for value in unchanged.headers["vary"].split(",")} == {
+        "Authorization",
+        "Accept-Encoding",
+    }
+    assert "content-encoding" not in unchanged.headers
+
+
+def test_dashboard_etag_changes_when_json_representation_changes():
+    first = account_overview._dashboard_accounts_etag([{"last_quota": {"primary": 1, "weekly": 2}}])
+    reordered = account_overview._dashboard_accounts_etag([{"last_quota": {"weekly": 2, "primary": 1}}])
+
+    assert first != reordered
+
+
+def test_dashboard_snapshot_releases_source_collections_before_serialization():
+    source = inspect.getsource(
+        _endpoint(_app()[0], "/api/accounts", "GET")
+    )
+    sanitize = source.index("sanitized_accounts = sanitize_accounts_batch(accounts, quota_cache)")
+    release_sources = source.index("del accounts, quota_cache", sanitize)
+    payload_build = source.index("dashboard_payload = _dashboard_accounts_payload(sanitized_accounts)")
+    release_sanitized = source.index("del sanitized_accounts", payload_build)
+    serialize = source.index("payload_bytes = _dashboard_payload_bytes(dashboard_payload)", payload_build)
+    release_payload = source.index("del dashboard_payload", serialize)
+    snapshot_build = source.index("snapshot = {", serialize)
+    cache_lookup = source.index("snapshot = dashboard_cache.get(cache_key)")
+    release_old_cache = source.index("dashboard_cache.pop(cache_key, None)", cache_lookup)
+    release_old_local = source.index("del snapshot", release_old_cache)
+    reload_accounts = source.index(
+        "accounts = load_accounts_with_session_stubs(include_session_stubs=include_session_stubs)",
+        release_old_local,
+    )
+
+    assert sanitize < release_sources < payload_build
+    assert payload_build < release_sanitized < serialize
+    assert serialize < release_payload < snapshot_build
+    assert cache_lookup < release_old_cache < release_old_local < reload_accounts
 
 
 def test_account_overview_active_and_standby_routes_sanitize_accounts(monkeypatch):

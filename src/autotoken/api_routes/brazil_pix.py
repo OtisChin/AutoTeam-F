@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import requests
 from fastapi import APIRouter, HTTPException, Query
@@ -18,8 +18,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.brazil_pix import PixJobConfig, build_pix_dynamic_proxy, generate_pix_trial
-from autotoken.services.payment_error_classifier import is_non_zero_amount_error
 from autotoken.services import chatgpt_session, proxy_runtime
+from autotoken.services.payment_error_classifier import is_non_zero_amount_error
 from autotoken.storage import accounts as account_store
 from autotoken.storage import auth_session_store
 from autotoken.storage.auth_session_store import delete_auth_session
@@ -446,6 +446,11 @@ def _iter_auth_accounts_with_pix_status() -> list[dict[str, Any]]:
 
 def _load_token_for_email(email: str) -> str:
     target = email.strip().lower()
+    if not target:
+        return ""
+    record = auth_session_store.get_auth_session_record(target)
+    if record is not None:
+        return _extract_token(record.get("data") or {})
     for item in _iter_auth_accounts():
         if item["email"].lower() != target:
             continue
@@ -460,44 +465,47 @@ def _load_chatgpt_session_context_for_email(email: str) -> dict[str, str]:
     target = email.strip().lower()
     if not target:
         return {}
-    for item in _iter_auth_accounts(include_paid=True):
-        if item["email"].lower() != target:
-            continue
-        try:
-            data = json.loads(Path(item["auth_file"]).read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            return {}
-        cookie_header = str(data.get("cookie_header") or "").strip()
-        cookies = data.get("cookies")
-        account = data.get("account") if isinstance(data.get("account"), dict) else {}
-        access_token = _extract_token(data)
-        session_token = (
-            str(data.get("sessionToken") or data.get("session_token") or "").strip()
-            or chatgpt_session.session_token_from_cookie_header(cookie_header)
-            or chatgpt_session.session_token_from_cookie_items(cookies)
-        )
-        account_id = str(
-            data.get("account_id")
-            or data.get("accountId")
-            or account.get("id")
-            or account.get("account_id")
-            or (chatgpt_session.account_id_from_access_token(access_token) if access_token else "")
-            or ""
-        ).strip()
-        return {
-            "session_token": session_token,
-            "cookie_header": cookie_header,
-            "account_id": account_id,
-            "device_id": str(data.get("device_id") or data.get("oai_device_id") or data.get("oaiDeviceId") or "").strip(),
-            "user_agent": str(data.get("user_agent") or data.get("userAgent") or "").strip(),
-            "oai_client_version": str(data.get("oai_client_version") or data.get("oaiClientVersion") or "").strip(),
-            "oai_client_build_number": str(
-                data.get("oai_client_build_number") or data.get("oaiClientBuildNumber") or ""
-            ).strip(),
-        }
-    return {}
+    record = auth_session_store.get_auth_session_record(target)
+    data = record.get("data") if record is not None else None
+    if record is None:
+        for item in _iter_auth_accounts(include_paid=True):
+            if item["email"].lower() != target:
+                continue
+            try:
+                data = json.loads(Path(item["auth_file"]).read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            break
+    if not isinstance(data, dict) or not data:
+        return {}
+    cookie_header = str(data.get("cookie_header") or "").strip()
+    cookies = data.get("cookies")
+    account = data.get("account") if isinstance(data.get("account"), dict) else {}
+    access_token = _extract_token(data)
+    session_token = (
+        str(data.get("sessionToken") or data.get("session_token") or "").strip()
+        or chatgpt_session.session_token_from_cookie_header(cookie_header)
+        or chatgpt_session.session_token_from_cookie_items(cookies)
+    )
+    account_id = str(
+        data.get("account_id")
+        or data.get("accountId")
+        or account.get("id")
+        or account.get("account_id")
+        or (chatgpt_session.account_id_from_access_token(access_token) if access_token else "")
+        or ""
+    ).strip()
+    return {
+        "session_token": session_token,
+        "cookie_header": cookie_header,
+        "account_id": account_id,
+        "device_id": str(data.get("device_id") or data.get("oai_device_id") or data.get("oaiDeviceId") or "").strip(),
+        "user_agent": str(data.get("user_agent") or data.get("userAgent") or "").strip(),
+        "oai_client_version": str(data.get("oai_client_version") or data.get("oaiClientVersion") or "").strip(),
+        "oai_client_build_number": str(
+            data.get("oai_client_build_number") or data.get("oaiClientBuildNumber") or ""
+        ).strip(),
+    }
 
 
 def _parse_proxies(value: str | list[str]) -> list[str]:
@@ -1902,7 +1910,7 @@ def create_brazil_pix_router() -> APIRouter:
         return data
 
     @router.get("/api/brazil-pix/payment/jobs/{job_id}")
-    def get_brazil_pix_payment_job(job_id: str, token: str = Query("")) -> dict[str, Any]:
+    def get_brazil_pix_payment_job(job_id: str, token: Annotated[str, Query()] = "") -> dict[str, Any]:
         clean_job_id = str(job_id or "").strip()
         clean_token = str(token or "").strip()
         if not clean_job_id or not clean_token:

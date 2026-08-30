@@ -5,6 +5,7 @@
 """
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -53,9 +54,9 @@ _accounts_write_lock = threading.RLock()
 
 def _invalidate_payment_account_caches() -> None:
     try:
-        from autotoken.api_routes import brazil_pix
-
-        brazil_pix.clear_auth_accounts_cache()
+        module = sys.modules.get("autotoken.api_routes.brazil_pix")
+        if module is not None:
+            module.clear_auth_accounts_cache()
     except Exception:
         pass
 
@@ -232,6 +233,44 @@ def save_accounts(accounts):
     _invalidate_payment_account_caches()
 
 
+def mark_accounts_hub_synced(account_versions, *, synced_at: float | None = None) -> int:
+    """Atomically mark uploaded rows only when their stored versions still match."""
+    targets = []
+    seen = set()
+    for value in account_versions or []:
+        if not isinstance(value, dict):
+            continue
+        email = _normalized_email(value.get("email"))
+        if not email or email in seen:
+            continue
+        try:
+            uploaded_updated_at = float(value.get("updated_at"))
+        except (TypeError, ValueError):
+            continue
+        seen.add(email)
+        targets.append((email, uploaded_updated_at))
+    if not targets:
+        return 0
+
+    timestamp = float(time.time() if synced_at is None else synced_at)
+    updated = 0
+    with _accounts_write_lock:
+        sqlite_store.initialize(_db_path())
+        with sqlite_store.connect(_db_path()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for email, uploaded_updated_at in targets:
+                account = _get_account_by_email(conn, email, include_private=True)
+                if not account or float(account.get("updated_at")) != uploaded_updated_at:
+                    continue
+                account["account_hub_synced"] = True
+                account["account_hub_synced_at"] = timestamp
+                _upsert_account(conn, account)
+                updated += 1
+    if updated:
+        _invalidate_payment_account_caches()
+    return updated
+
+
 def find_account(accounts, email):
     """按邮箱查找账号"""
     target = _normalized_email(email)
@@ -387,6 +426,154 @@ def ensure_session_only_account(email):
             return created
 
 
+def reconcile_auth_session_accounts(
+    session_emails,
+    *,
+    indexed_auth_files=None,
+    gopay_success_emails=None,
+):
+    """Persist and upgrade auth-session accounts in one SQLite transaction."""
+    targets = []
+    seen = set()
+    for value in session_emails or []:
+        email = _normalized_email(value)
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        targets.append(email)
+    if not targets:
+        return {}
+
+    indexed = {
+        email: str(path or "").strip()
+        for raw_email, path in (indexed_auth_files or {}).items()
+        if (email := _normalized_email(raw_email))
+    }
+    gopay = {
+        email
+        for value in (gopay_success_emails or set())
+        if (email := _normalized_email(value))
+    }
+    reconciled = {}
+    changed = False
+
+    with _accounts_write_lock:
+        sqlite_store.initialize(_db_path())
+        with sqlite_store.connect(_db_path()) as conn:
+            existing = {}
+            for start in range(0, len(targets), 500):
+                chunk = targets[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT * FROM accounts WHERE email IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                existing.update(
+                    {
+                        str(row["email"] or "").strip().lower(): _row_to_account(row, include_private=True)
+                        for row in rows
+                    }
+                )
+
+            for email in targets:
+                account = existing.get(email)
+                indexed_auth_file = indexed.get(email, "")
+                has_managed_evidence = bool(indexed_auth_file or email in gopay)
+                if account is None:
+                    account = {
+                        "email": email,
+                        "password": "",
+                        "cloudmail_account_id": None,
+                        "mail_provider": None,
+                        "status": STATUS_ACTIVE,
+                        "account_type": ACCOUNT_TYPE_PLUS if email in gopay else ACCOUNT_TYPE_FREE,
+                        "seat_type": SEAT_CODEX,
+                        "auth_file": indexed_auth_file or None,
+                        "quota_exhausted_at": None,
+                        "quota_resets_at": None,
+                        "last_quota_check_at": None,
+                        "created_at": time.time(),
+                        "last_active_at": None,
+                        "last_bind_status": "",
+                        "last_bind_at": None,
+                        "last_bind_provider": "",
+                        "last_checkout_url": "",
+                        "last_card_id": "",
+                        "last_proxy_label": "",
+                        "last_bind_task_id": "",
+                        "last_bind_message": "",
+                        "last_bind_failure_stage": "",
+                        "credentials_exported": False,
+                        "credentials_exported_at": None,
+                        "account_source": (
+                            ACCOUNT_SOURCE_MANAGED if has_managed_evidence else ACCOUNT_SOURCE_AUTH_SESSION_STUB
+                        ),
+                    }
+                    _upsert_account(conn, account)
+                    changed = True
+                elif (
+                    str(account.get("account_source") or "").strip().lower()
+                    == ACCOUNT_SOURCE_AUTH_SESSION_STUB
+                    or str(account.get("status") or "").strip().lower() == STATUS_SESSION_ONLY
+                ):
+                    account_type = str(account.get("account_type") or "").strip().lower()
+                    already_managed = account_type in {
+                        ACCOUNT_TYPE_PLUS,
+                        ACCOUNT_TYPE_PRO,
+                        ACCOUNT_TYPE_TEAM,
+                    } or bool(account.get("auth_file"))
+                    if already_managed or has_managed_evidence:
+                        desired = {
+                            "status": STATUS_ACTIVE,
+                            "account_type": (
+                                ACCOUNT_TYPE_PLUS
+                                if email in gopay
+                                else (account.get("account_type") or ACCOUNT_TYPE_FREE)
+                            ),
+                            "seat_type": account.get("seat_type") or SEAT_CODEX,
+                            "auth_file": indexed_auth_file or account.get("auth_file"),
+                            "account_source": ACCOUNT_SOURCE_MANAGED,
+                        }
+                        if has_managed_evidence:
+                            desired.update(
+                                {
+                                    "account_hub_synced": False,
+                                    "account_hub_synced_at": None,
+                                }
+                            )
+                    else:
+                        desired = {
+                            "status": STATUS_ACTIVE,
+                            "account_type": ACCOUNT_TYPE_FREE,
+                            "seat_type": SEAT_CODEX,
+                            "account_source": ACCOUNT_SOURCE_AUTH_SESSION_STUB,
+                        }
+                    if any(account.get(key) != value for key, value in desired.items()):
+                        account.update(desired)
+                        _upsert_account(conn, account)
+                        changed = True
+
+            persisted = {}
+            for start in range(0, len(targets), 500):
+                chunk = targets[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT * FROM accounts WHERE email IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                persisted.update(
+                    {
+                        str(row["email"] or "").strip().lower(): _row_to_account(row)
+                        for row in rows
+                    }
+                )
+            reconciled = {email: persisted[email] for email in targets if email in persisted}
+
+    if changed:
+        _invalidate_payment_account_caches()
+    return reconciled
+
+
 def update_account(email, **kwargs):
     """更新账号字段"""
     hub_dirty_keys = {
@@ -432,6 +619,97 @@ def update_account(email, **kwargs):
                 _invalidate_payment_account_caches()
                 return updated
             return None
+
+
+def update_accounts_export_status_batch(emails, *, exported: bool, exported_at: float | None) -> dict:
+    """Update export state and release trade allocations in one transaction."""
+    targets = []
+    seen = set()
+    for value in emails or []:
+        email = _normalized_email(value)
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        targets.append(email)
+    if not targets:
+        return {
+            "accounts": [],
+            "missing": [],
+            "trade_allocations": {"cleared": 0, "codes": []},
+        }
+
+    updated_emails = []
+    missing = []
+    allocation_rows = []
+    persisted = {}
+    with _accounts_write_lock:
+        sqlite_store.initialize(_db_path())
+        with sqlite_store.connect(_db_path()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = {}
+            for start in range(0, len(targets), 500):
+                chunk = targets[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT * FROM accounts WHERE email IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                existing.update(
+                    {
+                        _normalized_email(row["email"]): _row_to_account(row, include_private=True)
+                        for row in rows
+                    }
+                )
+
+            for email in targets:
+                account = existing.get(email)
+                if account is None:
+                    missing.append(email)
+                    continue
+                account["credentials_exported"] = bool(exported)
+                account["credentials_exported_at"] = exported_at if exported else None
+                _upsert_account(conn, account)
+                updated_emails.append(email)
+
+            if not exported:
+                for start in range(0, len(updated_emails), 500):
+                    chunk = updated_emails[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    allocation_rows.extend(
+                        conn.execute(
+                            f"SELECT email, code FROM plus_cdk_allocations WHERE email IN ({placeholders})",
+                            chunk,
+                        ).fetchall()
+                    )
+                    conn.execute(
+                        f"DELETE FROM plus_cdk_allocations WHERE email IN ({placeholders})",
+                        chunk,
+                    )
+
+            for start in range(0, len(updated_emails), 500):
+                chunk = updated_emails[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT * FROM accounts WHERE email IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                persisted.update(
+                    {
+                        _normalized_email(row["email"]): _row_to_account(row)
+                        for row in rows
+                    }
+                )
+
+    if updated_emails:
+        _invalidate_payment_account_caches()
+    return {
+        "accounts": [persisted[email] for email in updated_emails if email in persisted],
+        "missing": missing,
+        "trade_allocations": {
+            "cleared": len(allocation_rows),
+            "codes": sorted({str(row["code"] or "") for row in allocation_rows if row["code"]}),
+        },
+    }
 
 
 def replace_account_email(old_email, new_email, **kwargs):

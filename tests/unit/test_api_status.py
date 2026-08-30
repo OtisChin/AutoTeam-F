@@ -1,13 +1,17 @@
 import base64
+import inspect
 import io
 import json
+import logging
 import os
 import zipfile
 from pathlib import Path
 
 import anyio
 import pytest
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 
 from autotoken import api
@@ -18,7 +22,6 @@ from autotoken.api_routes.account_cpa_auths import (
     create_account_cpa_auths_router,
 )
 from autotoken.api_routes.config_io import (
-    GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES,
     OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES,
     GenericApiAccountsDeleteParams,
     GenericApiAccountsImportParams,
@@ -31,6 +34,43 @@ from autotoken.api_routes.config_io import (
 from autotoken.api_routes.setup import SetupConfig, create_setup_router
 from autotoken.api_routes.status import build_status_response
 from autotoken.storage.auth_files import AUTH_JSON_FILE_MAX_BYTES
+from autotoken.storage.sqlite_store import SQLiteDataVersionReader
+
+
+def test_api_exposes_dashboard_etag_without_global_event_loop_compression():
+    gzip_middleware = [item for item in api.app.user_middleware if item.cls is GZipMiddleware]
+    cors_middleware = [item for item in api.app.user_middleware if item.cls is CORSMiddleware]
+
+    assert gzip_middleware == []
+    assert len(cors_middleware) == 1
+    assert "ETag" in cors_middleware[0].kwargs["expose_headers"]
+
+
+def test_api_dashboard_account_route_uses_sqlite_revision_for_snapshot_revalidation():
+    endpoint = next(
+        route.endpoint
+        for route in api.app.routes
+        if getattr(route, "path", None) == "/api/accounts" and "GET" in getattr(route, "methods", set())
+    )
+    revision_reader = inspect.getclosurevars(endpoint).nonlocals["dashboard_revision"]
+
+    assert isinstance(revision_reader, SQLiteDataVersionReader)
+
+
+def test_log_collector_assigns_distinct_ids_to_identical_events(monkeypatch):
+    collected = []
+    monkeypatch.setattr(api, "_log_buffer", collected)
+    collector = api._LogCollector()
+    collector.setFormatter(logging.Formatter("%(message)s"))
+
+    for _ in range(2):
+        record = logging.LogRecord("test", logging.INFO, __file__, 1, "same", (), None)
+        record.created = 123.0
+        collector.emit(record)
+
+    assert [entry["time"] for entry in collected] == [123.0, 123.0]
+    assert [entry["message"] for entry in collected] == ["same", "same"]
+    assert collected[0]["id"] < collected[1]["id"]
 
 
 async def _request_app(method: str, path: str) -> tuple[int, bytes]:
@@ -185,6 +225,10 @@ def test_valid_token_item_auth_file_accepts_matching_session_file(tmp_path, monk
 
     monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
     monkeypatch.setattr("autotoken.storage.auth_session_store.AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(
+        "autotoken.storage.auth_session_store.get_auth_session_file",
+        lambda _email: str(session_file),
+    )
 
     assert api._valid_token_item_auth_file({"email": "user@example.com", "auth_file": str(session_file)}) == str(
         session_file
@@ -669,6 +713,94 @@ def test_post_setup_save_keeps_cpa_optional_and_generates_api_key(monkeypatch):
     assert written["API_KEY"] == "generated-token"
     assert result["api_key"] == "generated-token"
     assert api.API_KEY == "generated-token"
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_config"),
+    [
+        (
+            "cloudflare_temp_email",
+            {
+                "CLOUDFLARE_TEMP_EMAIL_BASE_URL": "https://cloudflare-mail.example.com",
+                "CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD": "cloudflare-secret",
+                "CLOUDFLARE_TEMP_EMAIL_DOMAIN": "@cloudflare.example.com",
+            },
+        ),
+        (
+            "cloud-mail",
+            {
+                "CLOUD_MAIL_API_URL": "https://cloud-mail.example.com",
+                "CLOUD_MAIL_ADMIN_EMAIL": "admin@cloud-mail.example.com",
+                "CLOUD_MAIL_ADMIN_PASSWORD": "cloud-mail-secret",
+                "CLOUD_MAIL_DOMAIN": "@cloud-mail.example.com",
+            },
+        ),
+        (
+            "outlook",
+            {
+                "OUTLOOK_ACCOUNTS_FILE": "data/test-outlook-accounts.txt",
+                "OUTLOOK_ACCOUNTS": "outlook@example.com----secret",
+                "OUTLOOK_DEFAULT_CLIENT_ID": "outlook-client-id",
+                "OUTLOOK_PROVIDER_PRIORITY": "graph_api,imap_new",
+                "OUTLOOK_PROXY_URL": "http://127.0.0.1:1080",
+            },
+        ),
+        (
+            "icloud",
+            {
+                "ICLOUD_ACCOUNTS_FILE": "data/test-icloud-accounts.txt",
+                "ICLOUD_ACCOUNTS": "icloud@example.com----https://mail.example.com/code",
+            },
+        ),
+        (
+            "generic-api",
+            {
+                "GENERIC_API_ACCOUNTS_FILE": "data/test-generic-api-accounts.txt",
+                "GENERIC_API_ACCOUNTS": "generic@example.com--https://mail.example.com/code",
+            },
+        ),
+        ("mail.com", {}),
+        (
+            "luckmail",
+            {
+                "LUCKMAIL_BASE_URL": "https://luckmail.example.com",
+                "LUCKMAIL_API_KEY": "luckmail-api-key",
+                "LUCKMAIL_PROJECT_CODE": "openai",
+                "LUCKMAIL_EMAIL_TYPE": "ms_graph",
+                "LUCKMAIL_PREFERRED_DOMAIN": "outlook.example",
+                "LUCKMAIL_ACCOUNTS_FILE": "data/test-luckmail-accounts.txt",
+                "LUCKMAIL_ACCOUNTS": "luck@example.com----tok_test",
+            },
+        ),
+        (
+            "mailu",
+            {
+                "MAILU_BASE_URL": "https://mailu.example.com/mail-api/",
+                "MAILU_API_KEY": "mailu-api-key",
+                "MAILU_DOMAIN": "mailu.example.com",
+            },
+        ),
+    ],
+)
+def test_post_setup_save_accepts_every_advertised_mail_provider(monkeypatch, provider, provider_config):
+    written = {}
+
+    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.setattr(api, "API_KEY", "")
+    monkeypatch.setattr("autotoken.setup_wizard._write_env", lambda key, value: written.__setitem__(key, value))
+    monkeypatch.setattr("autotoken.setup_wizard._verify_temporary_email", lambda: True)
+    monkeypatch.setattr("autotoken.setup_wizard._verify_cpa", lambda: True)
+    monkeypatch.setattr("importlib.reload", lambda module: module)
+
+    api_key = f"test-key-{provider}"
+    result = _setup_routes()["post_setup_save"](
+        SetupConfig(MAIL_PROVIDER=provider, API_KEY=api_key, **provider_config)
+    )
+
+    assert result == {"message": "配置保存成功", "api_key": api_key, "configured": True}
+    assert written["MAIL_PROVIDER"] == provider
+    for key, value in provider_config.items():
+        assert written[key] == value
 
 
 def test_get_setup_status_uses_provider_specific_required_fields(monkeypatch):

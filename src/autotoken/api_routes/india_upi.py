@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import requests
 from fastapi import APIRouter, HTTPException, Query
@@ -1409,7 +1409,7 @@ def create_india_upi_router() -> APIRouter:
         return data
 
     @router.get("/api/india-upi/payment/jobs/{job_id}")
-    def get_india_upi_payment_job(job_id: str, token: str = Query("")) -> dict[str, Any]:
+    def get_india_upi_payment_job(job_id: str, token: Annotated[str, Query()] = "") -> dict[str, Any]:
         clean_job_id = str(job_id or "").strip()
         clean_token = str(token or "").strip()
         if not clean_job_id or not clean_token:

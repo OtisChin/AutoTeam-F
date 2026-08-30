@@ -1,5 +1,6 @@
 """AutoToken HTTP API - 将 CLI 功能暴露为 HTTP 接口"""
 
+import itertools
 import json
 import logging
 import os
@@ -245,8 +246,10 @@ from autotoken.services.task_runtime import (
 )
 from autotoken.settings.config import API_KEY, PROXY_DEFAULT_AUTH_SCHEME, normalize_proxy_url
 from autotoken.storage.auth_files import read_auth_json_file
+from autotoken.storage.sqlite_store import SQLiteDataVersionReader
 
 logger = logging.getLogger(__name__)
+_dashboard_accounts_revision = SQLiteDataVersionReader()
 TaskParams = _TaskParams
 CleanupParams = _CleanupParams
 CheckParams = _CheckParams
@@ -398,6 +401,7 @@ async def _api_lifespan(_app: FastAPI):
     finally:
         stop_oauth_hero_sms_cancel_reconciler()
         _stop_auto_check()
+        _dashboard_accounts_revision.close()
 
 
 app = FastAPI(
@@ -415,6 +419,7 @@ app.add_middleware(
     allow_origins=_cors_origins or ["*"],
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["ETag"],
 )
 
 # ---------------------------------------------------------------------------
@@ -1066,10 +1071,15 @@ def _init_gopay_runtime_control(
     )
 
 
-def _is_main_account_email(email: str | None) -> bool:
+def _get_main_account_email() -> str:
     from autotoken.settings.admin_state import get_admin_email
 
-    return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
+    return _normalized_email(get_admin_email())
+
+
+def _is_main_account_email(email: str | None) -> bool:
+    normalized = _normalized_email(email)
+    return bool(normalized) and normalized == _get_main_account_email()
 
 
 def _quota_snapshot_status(quota_info: dict | None) -> str:
@@ -1698,6 +1708,7 @@ app.include_router(
         sanitize_accounts_batch=_sanitize_accounts_batch,
         sanitize_account=_sanitize_account,
         is_main_account_email=_is_main_account_email,
+        dashboard_revision=_dashboard_accounts_revision,
     )
 )
 app.include_router(
@@ -1714,6 +1725,8 @@ app.include_router(
         normalize_email=_normalized_email,
         is_main_account_email=_is_main_account_email,
         sanitize_account=_sanitize_account,
+        sanitize_accounts_batch=_sanitize_accounts_batch,
+        get_main_account_email=_get_main_account_email,
         current_time=time.time,
     )
 )
@@ -2574,6 +2587,7 @@ app.include_router(
         update_account_cpa_auth_plan_type=_update_account_cpa_auth_plan_type,
         convert_account_auth_session_to_cpa_auth=_convert_account_auth_session_to_cpa_auth,
         is_main_account_email=_is_main_account_email,
+        get_main_account_email=_get_main_account_email,
         verify_plus_plan=_verify_plus_plan,
         normalize_observed_auth_plan=_normalize_observed_auth_plan,
         mark_failed_account=_mark_account_plan_verification_failed,
@@ -3187,6 +3201,7 @@ app.include_router(create_oauth_phone_pool_router())
 
 _log_buffer: list[dict] = []
 _LOG_BUFFER_MAX = 5000
+_log_sequence = itertools.count(1)
 
 
 class _LogCollector(logging.Handler):
@@ -3194,6 +3209,7 @@ class _LogCollector(logging.Handler):
 
     def emit(self, record):
         entry = {
+            "id": next(_log_sequence),
             "time": record.created,
             "level": record.levelname,
             "message": self.format(record),

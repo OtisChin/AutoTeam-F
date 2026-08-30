@@ -14,10 +14,40 @@ from autotoken.core.textio import read_text
 from autotoken.storage import sqlite_store
 
 AUTH_INDEX_FILE_MAX_BYTES = 2 * 1024 * 1024
+_SQLITE_QUERY_CHUNK_SIZE = 500
 
 
 def _normalize(value) -> str:
     return str(value or "").strip()
+
+
+def _query_latest_auth_rows(conn, wanted: list[str], columns: str):
+    if not wanted:
+        return conn.execute(
+            f"""
+            SELECT {columns}
+            FROM codex_auth_files
+            WHERE is_main = 0 AND email != ''
+            ORDER BY email, updated_at DESC
+            """
+        ).fetchall()
+
+    rows = []
+    for start in range(0, len(wanted), _SQLITE_QUERY_CHUNK_SIZE):
+        chunk = wanted[start : start + _SQLITE_QUERY_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT {columns}
+                FROM codex_auth_files
+                WHERE is_main = 0 AND email IN ({placeholders})
+                ORDER BY email, updated_at DESC
+                """,
+                chunk,
+            ).fetchall()
+        )
+    return rows
 
 
 def upsert_codex_auth_file(path: str | Path, auth_data: dict, *, main: bool = False) -> str:
@@ -111,26 +141,7 @@ def codex_auth_files_by_email(emails: list[str] | set[str] | tuple[str, ...] | N
     wanted = sorted({_normalize(email).lower() for email in (emails or []) if _normalize(email)})
     sqlite_store.initialize()
     with sqlite_store.connect() as conn:
-        if wanted:
-            placeholders = ",".join("?" for _ in wanted)
-            rows = conn.execute(
-                f"""
-                SELECT email, file_path, updated_at
-                FROM codex_auth_files
-                WHERE is_main = 0 AND email IN ({placeholders})
-                ORDER BY email, updated_at DESC
-                """,
-                wanted,
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT email, file_path, updated_at
-                FROM codex_auth_files
-                WHERE is_main = 0 AND email != ''
-                ORDER BY email, updated_at DESC
-                """
-            ).fetchall()
+        rows = _query_latest_auth_rows(conn, wanted, "email, file_path, updated_at")
 
     out: dict[str, str] = {}
     for row in rows:
@@ -145,26 +156,7 @@ def codex_auth_metadata_by_email(emails: list[str] | set[str] | tuple[str, ...] 
     wanted = sorted({_normalize(email).lower() for email in (emails or []) if _normalize(email)})
     sqlite_store.initialize()
     with sqlite_store.connect() as conn:
-        if wanted:
-            placeholders = ",".join("?" for _ in wanted)
-            rows = conn.execute(
-                f"""
-                SELECT email, file_path, data, updated_at
-                FROM codex_auth_files
-                WHERE is_main = 0 AND email IN ({placeholders})
-                ORDER BY email, updated_at DESC
-                """,
-                wanted,
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT email, file_path, data, updated_at
-                FROM codex_auth_files
-                WHERE is_main = 0 AND email != ''
-                ORDER BY email, updated_at DESC
-                """
-            ).fetchall()
+        rows = _query_latest_auth_rows(conn, wanted, "email, file_path, data, updated_at")
 
     out: dict[str, dict] = {}
     for row in rows:

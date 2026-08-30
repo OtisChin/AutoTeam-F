@@ -90,6 +90,25 @@ def test_account_hub_sync_rejects_too_many_raw_emails(monkeypatch):
         raise AssertionError("oversized account Hub sync selection must fail")
 
 
+def test_account_hub_sync_reports_overlap_as_conflict(monkeypatch):
+    app = _app()
+
+    def busy_upload(**_kwargs):
+        raise account_hub.AccountHubSyncBusyError("账号 Hub 同步正在进行")
+
+    monkeypatch.setattr(account_hub, "upload_to_hub", busy_upload)
+
+    try:
+        _endpoint(app, "/api/account-hub/sync", "POST")(
+            AccountHubSyncParams(emails=["user@example.com"])
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "正在进行" in exc.detail
+    else:
+        raise AssertionError("overlapping account Hub sync must return a conflict")
+
+
 def test_account_hub_inbound_routes_require_configured_token(monkeypatch):
     app = _app()
 

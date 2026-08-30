@@ -26,6 +26,8 @@ class SetupConfig(BaseModel):
     OUTLOOK_PROXY_URL: str = ""
     ICLOUD_ACCOUNTS_FILE: str = ""
     ICLOUD_ACCOUNTS: str = ""
+    GENERIC_API_ACCOUNTS_FILE: str = ""
+    GENERIC_API_ACCOUNTS: str = ""
     LUCKMAIL_BASE_URL: str = ""
     LUCKMAIL_API_KEY: str = ""
     LUCKMAIL_PROJECT_CODE: str = ""
@@ -116,6 +118,11 @@ def create_setup_router(
                 "ICLOUD_ACCOUNTS_FILE",
                 "ICLOUD_ACCOUNTS",
             },
+            "generic-api": {
+                "GENERIC_API_ACCOUNTS_FILE",
+                "GENERIC_API_ACCOUNTS",
+            },
+            "mail.com": set(),
             "luckmail": {
                 "LUCKMAIL_BASE_URL",
                 "LUCKMAIL_API_KEY",

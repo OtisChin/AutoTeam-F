@@ -60,6 +60,63 @@ def test_iter_auth_accounts_reuses_short_lived_scan_cache(monkeypatch, tmp_path)
     assert calls == 1
 
 
+def test_token_and_session_context_prefer_sqlite_over_stale_materialized_file(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    email = "authoritative@example.com"
+    sqlite_token = "sqlite-token-" + "s" * 80
+    stale_token = "stale-token-" + "x" * 80
+    auth_session_store.save_auth_session(
+        email,
+        {
+            "email": email,
+            "accessToken": sqlite_token,
+            "cookie_header": "__Secure-next-auth.session-token=sqlite-cookie",
+            "account": {"id": "sqlite-account"},
+        },
+    )
+    stale_path = tmp_path / "stale-session.json"
+    stale_path.write_text(
+        json.dumps(
+            {
+                "email": email,
+                "accessToken": stale_token,
+                "cookie_header": "__Secure-next-auth.session-token=stale-cookie",
+                "account": {"id": "stale-account"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        brazil_pix,
+        "_iter_auth_accounts",
+        lambda include_paid=False: [{"email": email, "auth_file": str(stale_path)}],
+    )
+
+    assert brazil_pix._load_token_for_email(email) == sqlite_token
+    context = brazil_pix._load_chatgpt_session_context_for_email(email)
+    assert context["session_token"] == "sqlite-cookie"
+    assert context["account_id"] == "sqlite-account"
+
+
+def test_empty_sqlite_record_blocks_stale_file_fallback(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    email = "empty-authoritative@example.com"
+    auth_session_store.save_auth_session(email, {})
+    stale_path = tmp_path / "stale-session.json"
+    stale_path.write_text(
+        json.dumps({"email": email, "accessToken": "stale-token-" + "x" * 80}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        brazil_pix,
+        "_iter_auth_accounts",
+        lambda include_paid=False: [{"email": email, "auth_file": str(stale_path)}],
+    )
+
+    assert brazil_pix._load_token_for_email(email) == ""
+    assert brazil_pix._load_chatgpt_session_context_for_email(email) == {}
+
+
 def test_account_update_invalidates_payment_account_cache(monkeypatch, tmp_path):
     _isolate_files(monkeypatch, tmp_path)
     monkeypatch.setattr(brazil_pix, "PROJECT_ROOT", tmp_path)
