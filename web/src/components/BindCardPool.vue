@@ -1,23 +1,9 @@
 <template>
   <div class="space-y-6">
-    <div>
-      <h3 class="text-2xl font-bold text-white">卡池</h3>
-      <p class="text-sm text-gray-400 mt-2">统一管理兑换码与后续卡片类型</p>
-    </div>
+    <UiPageHeader title="卡池" eyebrow="资源工作台" description="统一管理兑换码与虚拟卡，支持筛选、批量操作和安全导入。" />
 
     <div class="rounded-2xl border border-gray-800 bg-gray-900/80 p-2">
-      <div class="grid grid-cols-2 gap-2">
-        <button
-          v-for="tab in poolTabs"
-          :key="tab.value"
-          @click="poolType = tab.value"
-          class="px-4 py-3 rounded-xl text-sm font-medium transition border"
-          :class="poolType === tab.value
-            ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
-            : 'bg-transparent text-gray-400 border-transparent hover:bg-gray-800 hover:text-white'">
-          {{ tab.label }}
-        </button>
-      </div>
+      <UiSegmentedControl v-model="poolType" :options="poolTabs" aria-label="卡池类型" />
     </div>
 
     <div v-if="message" class="px-4 py-3 rounded-xl text-sm border" :class="messageClass">
@@ -188,11 +174,10 @@
               </td>
               <td class="px-4 py-4 text-gray-300">{{ item.provider || '-' }}</td>
               <td class="px-4 py-4">
-                <span
-                  class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border"
-                  :class="statusClass(isExpired(item) ? 'expired' : item.status)">
-                  {{ statusLabel(isExpired(item) ? 'expired' : item.status) }}
-                </span>
+                <UiStatusBadge
+                  :tone="statusTone(isExpired(item) ? 'expired' : item.status)"
+                  :label="statusLabel(isExpired(item) ? 'expired' : item.status)"
+                />
               </td>
               <td class="px-4 py-4 text-gray-400">{{ formatDateTime(item.created_at) }}</td>
               <td v-if="poolType === 'card'" class="px-4 py-4 text-gray-400">{{ formatDateTime(item.expires_at) }}</td>
@@ -346,7 +331,7 @@
     </div>
   </div>
 
-  <div v-if="detailItem" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" @click.self="detailItem = null">
+  <AccessibleModal v-if="detailItem" label="卡券详情" @close="detailItem = null">
     <div class="w-full max-w-4xl rounded-2xl border border-gray-800 bg-gray-900 shadow-2xl">
       <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
         <div>
@@ -510,9 +495,9 @@
         </div>
       </div>
     </div>
-  </div>
+  </AccessibleModal>
 
-  <div v-if="confirmRedeemItem" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" @click.self="closeRedeemConfirm">
+  <AccessibleModal v-if="confirmRedeemItem" label="确认兑换" @close="closeRedeemConfirm">
     <div class="w-full max-w-md rounded-2xl border border-gray-800 bg-gray-900 shadow-2xl">
       <div class="px-5 py-4 border-b border-gray-800">
         <h4 class="text-lg font-semibold text-white">确认兑换</h4>
@@ -540,9 +525,9 @@
         </button>
       </div>
     </div>
-  </div>
+  </AccessibleModal>
 
-  <div v-if="deleteConfirm.visible" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" @click.self="closeDeleteConfirm">
+  <AccessibleModal v-if="deleteConfirm.visible" label="确认删除" @close="closeDeleteConfirm">
     <div class="w-full max-w-md rounded-2xl border border-gray-800 bg-gray-900 shadow-2xl">
       <div class="px-5 py-4 border-b border-gray-800">
         <h4 class="text-lg font-semibold text-white">{{ deleteConfirm.mode === 'batch' ? '确认批量删除' : '确认删除' }}</h4>
@@ -569,12 +554,16 @@
         </button>
       </div>
     </div>
-  </div>
+  </AccessibleModal>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import AccessibleModal from './AccessibleModal.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
+import UiSegmentedControl from './ui/UiSegmentedControl.vue'
+import UiStatusBadge from './ui/UiStatusBadge.vue'
 
 const poolTabs = [
   { value: 'redeem', label: '兑换码' },
@@ -997,6 +986,14 @@ function statusClass(status) {
   if (status === 'used') return 'bg-sky-500/10 text-sky-300 border-sky-500/20'
   if (status === 'expired') return 'bg-rose-500/10 text-rose-300 border-rose-500/20'
   return 'bg-violet-500/10 text-violet-300 border-violet-500/20'
+}
+
+function statusTone(status) {
+  if (status === 'binding') return 'info'
+  if (status === 'failed') return 'warning'
+  if (status === 'used') return 'success'
+  if (status === 'expired') return 'danger'
+  return 'neutral'
 }
 
 function formatDateTime(value) {
