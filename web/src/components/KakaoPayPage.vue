@@ -58,7 +58,7 @@
                 <thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="px-3 py-2">CDK</th><th class="px-3 py-2">状态</th><th class="px-3 py-2">账号</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
                 <tbody class="divide-y divide-gray-900">
                   <tr v-if="!tempCdks.length"><td colspan="4" class="px-3 py-8 text-center text-gray-500">暂无临时提链 CDK</td></tr>
-                  <tr v-for="item in visibleTempCdks" :key="item.id" class="hover:bg-gray-900/50">
+                  <tr v-for="item in windowedTempCdks" :key="item.id" class="hover:bg-gray-900/50">
                     <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ maskExternalSecret(item.value) }}</td>
                     <td class="px-3 py-2"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="tempCdkStatusClass(tempCdkDisplayStatus(item))">{{ tempCdkStatusText(tempCdkDisplayStatus(item)) }}</span><div v-if="tempCdkInfoText(item)" class="mt-1 max-w-[220px] truncate text-xs text-gray-500" :title="tempCdkInfoText(item)">{{ tempCdkInfoText(item) }}</div></td>
                     <td class="max-w-[180px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ item.accountEmail || '-' }}</td>
@@ -66,6 +66,10 @@
                   </tr>
                 </tbody>
               </table>
+              <div v-if="hiddenTempCdkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+                <span>已显示 {{ windowedTempCdks.length }} / {{ tempCdks.length }}，剩余 {{ hiddenTempCdkCount }} 项</span>
+                <button @click="showMoreTempCdks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+              </div>
             </div>
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
@@ -144,7 +148,7 @@
           </template>
 
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
-            <button @click="start" :disabled="starting || cancelling || !selectedEmails.length" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">
+            <button @click="start" :disabled="inputLocked || !selectedEmails.length" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">
               {{ starting ? '提交中...' : `${jobRunning ? '追加' : '开始'}${isTempExtract ? '临时' : ''}提链 (${selectedEmails.length})` }}
             </button>
             <button v-if="activeJobIds.length || (activeJobId && jobRunning)" @click="cancelJob" :disabled="cancelling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
@@ -300,20 +304,24 @@
                 </select>
               </div>
             </div>
-            <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+            <div v-if="recentResultFilter !== 'failed'" v-for="item in visibleRecentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
                 <a :href="kakaoLinkUrl(item.link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!kakaoLinkUrl(item.link) ? 'pointer-events-none opacity-50' : ''">打开</a>
                 <button @click="copy(kakaoLinkUrl(item.link))" :disabled="!kakaoLinkUrl(item.link)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100 disabled:opacity-50">复制链</button>
               </div>
             </div>
-            <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            <div v-if="recentResultFilter !== 'success'" v-for="item in visibleRecentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               {{ item.email }}：{{ item.error }}
             </div>
-            <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
+            <div v-if="recentResultFilter === 'all'" v-for="item in visibleRecentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
             </div>
             <div v-if="!filteredRecentResultCount" class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-8 text-center text-xs text-gray-500">当前筛选下暂无结果</div>
+            <div v-if="hiddenRecentResultCount > 0" class="sticky bottom-0 flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+              <span>已显示 {{ visibleRecentResultCount }} / {{ filteredRecentResultCount }}，剩余 {{ hiddenRecentResultCount }} 项</span>
+              <button @click="showMoreRecentResults" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+            </div>
           </div>
         </section>
       </div>
@@ -351,7 +359,7 @@
             <tr v-if="!links.length">
               <td colspan="8" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
             </tr>
-            <tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50">
+            <tr v-for="link in visibleLinks" :key="link.id" class="hover:bg-gray-900/50">
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
               <td class="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{{ link.created_at }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td>
@@ -372,6 +380,10 @@
             </tr>
           </tbody>
         </table>
+        <div v-if="hiddenLinkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+          <span>已显示 {{ visibleLinks.length }} / {{ links.length }}，剩余 {{ hiddenLinkCount }} 项</span>
+          <button @click="showMoreLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+        </div>
       </div>
     </section>
     </template>
@@ -434,13 +446,17 @@
               <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK</th><th class="px-3 py-2">状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
               <tbody class="divide-y divide-slate-900">
                 <tr v-if="!kkPaymentCdks.length"><td colspan="3" class="px-3 py-6 text-center text-slate-500">暂无 KK 支付 CDK</td></tr>
-                <tr v-for="cdk in visibleKkPaymentCdks" :key="cdk.id" class="hover:bg-slate-900/50">
+                <tr v-for="cdk in windowedKkPaymentCdks" :key="cdk.id" class="hover:bg-slate-900/50">
                   <td class="px-3 py-2 font-mono text-xs text-slate-400">{{ maskExternalSecret(cdk.value) }}</td>
                   <td class="px-3 py-2"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="kkPaymentCdkStatusClass(kkPaymentCdkDisplayStatus(cdk))">{{ kkPaymentCdkStatusText(kkPaymentCdkDisplayStatus(cdk)) }}</span><div v-if="cdk.message" class="mt-1 text-xs text-slate-500">{{ cdk.message }}</div></td>
                   <td class="px-3 py-2 text-right"><button @click="removeKkPaymentCdk(cdk.id)" :disabled="kkPaymentBusy" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除CDK</button></td>
                 </tr>
               </tbody>
             </table>
+            <div v-if="hiddenKkPaymentCdkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-slate-800 bg-slate-950/95 px-3 py-2 text-xs text-slate-500">
+              <span>已显示 {{ windowedKkPaymentCdks.length }} / {{ kkPaymentCdks.length }}，剩余 {{ hiddenKkPaymentCdkCount }} 项</span>
+              <button @click="showMoreKkPaymentCdks" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-800">加载更多</button>
+            </div>
           </div>
         </section>
 
@@ -448,7 +464,7 @@
           <div class="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <h3 class="text-lg font-bold text-white">账号管理池（已提取链接）</h3>
-              <span class="text-xs text-slate-500">显示 {{ visibleKkPaymentLinks.length }} / 总 {{ kkPaymentLinks.length }}，可提交 {{ kkPaymentRunnableCount }} / 可用额度 {{ kkPaymentAvailableCdkCapacity }}</span>
+              <span class="text-xs text-slate-500">显示 {{ visibleKkPaymentLinks.length }} / 筛选 {{ filteredKkPaymentLinks.length }} / 总 {{ kkPaymentLinks.length }}，可提交 {{ kkPaymentRunnableCount }} / 可用额度 {{ kkPaymentAvailableCdkCapacity }}</span>
             </div>
             <select v-model="kkPaymentStatusFilter" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-bold text-slate-200 focus:border-blue-500 focus:outline-none">
               <option value="all">全部状态</option>
@@ -457,6 +473,7 @@
               <option value="running">运行中</option>
               <option value="success">成功</option>
               <option value="needs_action">需处理</option>
+              <option value="unknown">结果未知</option>
               <option value="failed">失败</option>
               <option value="stopped">已停止</option>
             </select>
@@ -511,6 +528,10 @@
                 </Transition>
               </article>
             </div>
+            <div v-if="hiddenKkPaymentLinkCount > 0" class="sticky bottom-0 mt-3 flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/95 px-3 py-2 text-xs text-slate-500">
+              <span>已显示 {{ visibleKkPaymentLinks.length }} / {{ filteredKkPaymentLinks.length }}，剩余 {{ hiddenKkPaymentLinkCount }} 项</span>
+              <button @click="showMoreKkPaymentLinks" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-800">加载更多</button>
+            </div>
           </div>
         </section>
       </div>
@@ -521,8 +542,15 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { createDeferredStorageWriter } from '../deferredStorage.js'
+import { isAmbiguousPaymentFailure } from '../paymentRequestState.js'
+import { createPollingLifecycle, createSharedPollingGate } from '../pollingLifecycle.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
+import { cancelStartAckGeneration, commitStartAckSnapshot, markStartAckGenerationUnknown, reserveStartAckGeneration, watchStartAckGeneration } from '../startAckCas.js'
 import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
+
+const sessionStorage = createSessionStorageFacade()
 
 const PROXY_STORAGE_KEY = 'autotoken_kakao_pay_proxies'
 const KR_PROXY_STORAGE_KEY = 'autotoken_kakao_pay_kr_proxies'
@@ -539,9 +567,11 @@ const KK_PAYMENT_TERMINAL_STATUSES = new Set(['success', 'succeeded', 'paid', 'c
 const KK_PAYMENT_RETRYABLE_STATUSES = new Set(['pending', 'imported', 'failed', 'needs_action', 'stopped', 'not_found', 'order_not_found'])
 const KAKAO_LINK_TTL_MS = 15 * 60 * 1000
 
-const savedKakaoTab = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)
+const savedKakaoTab = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY)
 const activeKakaoTab = ref(['extract', 'tempExtract', 'payment'].includes(savedKakaoTab) ? savedKakaoTab : 'extract')
 const isTempExtract = computed(() => activeKakaoTab.value === 'tempExtract')
+const startAckPendingModes = ref(new Set())
+const activeStartAckPending = computed(() => startAckPendingModes.value.has(isTempExtract.value ? 'tempExtract' : 'extract'))
 function makeExtractTaskState(defaultStatusText) {
   return {
     logs: [],
@@ -570,6 +600,7 @@ function taskFieldRef(field) {
 }
 const accounts = ref([])
 const links = ref([])
+const linkVisibleCount = ref(100)
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const logs = taskFieldRef('logs')
@@ -588,9 +619,11 @@ const accountSelectLimit = ref(10)
 const accountStatusFilter = ref('all')
 const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
+const recentResultVisibleCount = ref(100)
 const deletingKakaoAccounts = ref(new Set())
 const lastFailedEmails = taskFieldRef('lastFailedEmails')
 const notifiedSuccessKeys = taskFieldRef('notifiedSuccessKeys')
+const successNotificationTimers = new Set()
 const nowMs = ref(Date.now())
 const logRef = ref(null)
 const tempForm = ref({ concurrency: 5, channel: 'masi' })
@@ -610,6 +643,7 @@ const tempCdks = computed({
     tempCdkPools.value = { ...tempCdkPools.value, [channel]: Array.isArray(value) ? value : [] }
   },
 })
+const tempCdkVisibleCount = ref(100)
 const tempCdkQuotaBusy = ref(false)
 const kkForm = ref({ cdk: '', accessTokens: '', paymentUrl: '', paymentMethod: 'kakao_pay', mode: 'READY_LINK' })
 const kkOrders = ref([])
@@ -618,6 +652,8 @@ const kkStatusText = ref('填写 KK CDK、AT 和 NicePay 链接后提交支付�
 const kkPaymentCdkInput = ref('')
 const kkPaymentCdks = ref([])
 const kkPaymentLinks = ref([])
+const kkPaymentCdkVisibleCount = ref(100)
+const kkPaymentLinkVisibleCount = ref(100)
 const kkPaymentBusy = ref(false)
 const kkPaymentActiveRuns = ref(0)
 const kkPaymentCdkQuotaBusy = ref(false)
@@ -627,15 +663,34 @@ const kkPaymentMethod = ref('kakao_pay')
 const kkPaymentStatusText = ref('等待同步已提取 Kakao 链接并加入 KK 支付 CDK。')
 const kkPaymentStatusFilter = ref('all')
 const expandedKkPaymentDetailIds = ref(new Set())
-const pollTimers = { extract: null, tempExtract: null }
-let expiryTimer = null
+const storageWriter = createDeferredStorageWriter()
+const pollingLifecycles = {
+  extract: createPollingLifecycle(),
+  tempExtract: createPollingLifecycle(),
+}
+const expiryClock = createPollingLifecycle()
+let expiryClockToken = null
 let componentUnmounted = false
+let startAckWatchers = []
+const networkPollingGate = createSharedPollingGate()
+
+function persistJsonState(storageKey, value) {
+  if (componentUnmounted) {
+    storageWriter.writeJsonNow(storageKey, value)
+    return
+  }
+  storageWriter.queueJson(storageKey, value)
+}
+
+function pollingForMode(mode) {
+  return mode === 'tempExtract' ? pollingLifecycles.tempExtract : pollingLifecycles.extract
+}
 
 const savedForm = loadForm()
 const form = ref({
-  proxies: localStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
-  krProxies: localStorage.getItem(KR_PROXY_STORAGE_KEY) || savedForm.krProxies || localStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
-  vnProxies: localStorage.getItem(VN_PROXY_STORAGE_KEY) || savedForm.vnProxies || '',
+  proxies: sessionStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
+  krProxies: sessionStorage.getItem(KR_PROXY_STORAGE_KEY) || savedForm.krProxies || sessionStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
+  vnProxies: sessionStorage.getItem(VN_PROXY_STORAGE_KEY) || savedForm.vnProxies || '',
   concurrency: savedForm.concurrency || 1,
   maxAttempts: savedForm.maxAttempts || 5,
   proxyPreflightAttempts: savedForm.proxyPreflightAttempts || 5,
@@ -644,14 +699,16 @@ const form = ref({
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const jobRunning = computed(() => Boolean((activeJobIds.value.length || activeJobId.value) && !TERMINAL_STATUSES.has(activeJobStatus.value)))
-const inputLocked = computed(() => starting.value || cancelling.value)
+const inputLocked = computed(() => starting.value || activeStartAckPending.value || cancelling.value)
 const busy = computed(() => loading.value || inputLocked.value)
 const progressText = computed(() => {
+  if (activeStartAckPending.value) return '正在确认任务启动结果...'
   if (starting.value) return '正在创建任务...'
   if (jobRunning.value) return `任务 ${activeJobStatus.value || 'running'}`
   return '刷新中...'
 })
 const badgeText = computed(() => {
+  if (activeStartAckPending.value && !activeJobId.value) return '启动确认中'
   if (!activeJobId.value) return '等待任务'
   if (activeJobStatus.value === 'success') return '已完成'
   if (['error', 'failed'].includes(activeJobStatus.value)) return '失败'
@@ -675,6 +732,8 @@ const filteredAccounts = computed(() => {
 })
 const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
 const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
+const visibleLinks = computed(() => links.value.slice(0, linkVisibleCount.value))
+const hiddenLinkCount = computed(() => Math.max(0, links.value.length - visibleLinks.value.length))
 const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? currentResult.value.successes : [])
 const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? currentResult.value.errors : [])
 const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? currentResult.value.skipped : [])
@@ -686,6 +745,24 @@ const filteredRecentResultCount = computed(() => {
   if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
   return currentResultSuccesses.value.length + currentResultErrors.value.length + currentResultSkipped.value.length
 })
+const visibleRecentResultSuccesses = computed(() => {
+  if (recentResultFilter.value === 'failed') return []
+  return currentResultSuccesses.value.slice(0, recentResultVisibleCount.value)
+})
+const visibleRecentResultErrors = computed(() => {
+  if (recentResultFilter.value === 'success') return []
+  const remaining = recentResultFilter.value === 'failed'
+    ? recentResultVisibleCount.value
+    : Math.max(0, recentResultVisibleCount.value - visibleRecentResultSuccesses.value.length)
+  return currentResultErrors.value.slice(0, remaining)
+})
+const visibleRecentResultSkipped = computed(() => {
+  if (recentResultFilter.value !== 'all') return []
+  const remaining = Math.max(0, recentResultVisibleCount.value - visibleRecentResultSuccesses.value.length - visibleRecentResultErrors.value.length)
+  return currentResultSkipped.value.slice(0, remaining)
+})
+const visibleRecentResultCount = computed(() => visibleRecentResultSuccesses.value.length + visibleRecentResultErrors.value.length + visibleRecentResultSkipped.value.length)
+const hiddenRecentResultCount = computed(() => Math.max(0, filteredRecentResultCount.value - visibleRecentResultCount.value))
 const availableTempCdkCount = computed(() => tempCdks.value.filter(tempCdkUsable).length)
 const coolingTempCdkCount = computed(() => tempCdks.value.filter(item => item.status === 'cooling').length)
 const usedTempCdkCount = computed(() => tempCdks.value.filter(item => item.status === 'used' && !tempCdkUsable(item)).length)
@@ -703,9 +780,13 @@ const kkPaymentInvalidCount = computed(() => kkPaymentLinks.value.filter(kkPayme
 const kkPaymentStartable = computed(() => kkPaymentRunnableCount.value || (kakaoImportablePaymentLinks.value.length && kkPaymentAvailableCdkCount.value))
 const kakaoImportablePaymentLinks = computed(() => links.value.filter(kakaoLinkImportable))
 const visibleTempCdks = computed(() => [...tempCdks.value].reverse())
+const windowedTempCdks = computed(() => visibleTempCdks.value.slice(0, tempCdkVisibleCount.value))
+const hiddenTempCdkCount = computed(() => Math.max(0, visibleTempCdks.value.length - windowedTempCdks.value.length))
 const visibleKkPaymentCdks = computed(() => [...kkPaymentCdks.value].reverse())
+const windowedKkPaymentCdks = computed(() => visibleKkPaymentCdks.value.slice(0, kkPaymentCdkVisibleCount.value))
+const hiddenKkPaymentCdkCount = computed(() => Math.max(0, visibleKkPaymentCdks.value.length - windowedKkPaymentCdks.value.length))
 const sortedKkPaymentLinks = computed(() => [...kkPaymentLinks.value].reverse())
-const visibleKkPaymentLinks = computed(() => {
+const filteredKkPaymentLinks = computed(() => {
   const filter = String(kkPaymentStatusFilter.value || 'all')
   return sortedKkPaymentLinks.value.filter(item => {
     if (filter === 'all') return true
@@ -713,6 +794,8 @@ const visibleKkPaymentLinks = computed(() => {
     return kkPaymentTaskFilterStatus(item) === filter
   })
 })
+const visibleKkPaymentLinks = computed(() => filteredKkPaymentLinks.value.slice(0, kkPaymentLinkVisibleCount.value))
+const hiddenKkPaymentLinkCount = computed(() => Math.max(0, filteredKkPaymentLinks.value.length - visibleKkPaymentLinks.value.length))
 
 const tempChannelOptions = [
   { value: 'masi', label: 'masi.cc.cd / KSCAN', keyName: 'KSCAN CDK', placeholder: '一行一个 KSCAN 临时提链 CDK' },
@@ -739,7 +822,7 @@ const kkPaymentSummaryCards = computed(() => [
   { label: '待提交', value: kkPaymentLinks.value.filter(kkPaymentTaskRunnable).length, class: 'border-blue-500/30' },
   { label: '正在运行', value: kkPaymentRunningCount.value, class: 'border-sky-500/30' },
   { label: '已成功', value: kkPaymentLinks.value.filter(item => item.status === 'success').length, class: 'border-emerald-500/30' },
-  { label: '失效/需处理', value: kkPaymentLinks.value.filter(item => kkPaymentLinkInvalid(item) || ['failed', 'stopped', 'needs_action'].includes(item.status)).length, class: 'border-rose-500/30' },
+  { label: '失效/需处理', value: kkPaymentLinks.value.filter(item => kkPaymentLinkInvalid(item) || ['failed', 'stopped', 'needs_action', 'unknown'].includes(item.status)).length, class: 'border-rose-500/30' },
   { label: '可用 CDK', value: kkPaymentAvailableCdkCount.value, class: 'border-cyan-500/30' },
   { label: '冻结中', value: kkPaymentFrozenCdkCapacity.value, class: 'border-indigo-500/30' },
   { label: '可用次数', value: kkPaymentAvailableCdkCapacity.value, class: 'border-cyan-400/30' },
@@ -774,13 +857,21 @@ watch(tempCdkInputs, saveTempCdkState, { deep: true })
 watch(kkPaymentLinks, saveKkPaymentState, { deep: true })
 watch(kkPaymentCdks, saveKkPaymentState, { deep: true })
 watch([kkPaymentConcurrency, kkPaymentMethod], saveKkPaymentState)
-watch(activeKakaoTab, value => localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, value))
+watch(activeKakaoTab, value => sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, value))
 watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
+watch(recentResultFilter, () => { recentResultVisibleCount.value = 100 })
+watch(kkPaymentStatusFilter, () => { kkPaymentLinkVisibleCount.value = 100 })
+watch(() => tempForm.value.channel, () => { tempCdkVisibleCount.value = 100 })
+watch(links, () => { linkVisibleCount.value = 100 })
+watch(tempCdks, () => { tempCdkVisibleCount.value = 100 })
+watch(kkPaymentCdks, () => { kkPaymentCdkVisibleCount.value = 100 })
+watch(kkPaymentLinks, () => { kkPaymentLinkVisibleCount.value = 100 })
+watch(currentResult, () => { recentResultVisibleCount.value = 100 })
 watch(logs, () => nextTick(scrollLogsToBottom))
 
 function loadForm() {
   try {
-    const data = JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) || '{}')
+    const data = JSON.parse(sessionStorage.getItem(FORM_STORAGE_KEY) || '{}')
     return data && typeof data === 'object' ? data : {}
   } catch {
     return {}
@@ -789,10 +880,10 @@ function loadForm() {
 
 function saveForm() {
   form.value.proxies = form.value.krProxies || form.value.proxies || ''
-  localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value))
-  localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
-  localStorage.setItem(KR_PROXY_STORAGE_KEY, form.value.krProxies || '')
-  localStorage.setItem(VN_PROXY_STORAGE_KEY, form.value.vnProxies || '')
+  persistJsonState(FORM_STORAGE_KEY, () => form.value)
+  storageWriter.queueText(PROXY_STORAGE_KEY, () => form.value.proxies || '')
+  storageWriter.queueText(KR_PROXY_STORAGE_KEY, () => form.value.krProxies || '')
+  storageWriter.queueText(VN_PROXY_STORAGE_KEY, () => form.value.vnProxies || '')
 }
 
 function setStatus(message, error = false) {
@@ -1042,17 +1133,17 @@ async function queryTempCdkQuota() {
 }
 
 function saveTempCdkState() {
-  localStorage.setItem(TEMP_CDK_STATE_STORAGE_KEY, JSON.stringify({
-    channel: tempForm.value.channel,
-    channels: tempCdkPools.value,
-    inputs: tempCdkInputs.value,
-    cdks: tempCdkPools.value.masi || [],
-  }))
+  persistJsonState(TEMP_CDK_STATE_STORAGE_KEY, () => ({
+      channel: tempForm.value.channel,
+      channels: tempCdkPools.value,
+      inputs: tempCdkInputs.value,
+      cdks: tempCdkPools.value.masi || [],
+    }))
 }
 
 function loadTempCdkState(legacyText = '') {
   try {
-    const raw = JSON.parse(localStorage.getItem(TEMP_CDK_STATE_STORAGE_KEY) || '{}')
+    const raw = JSON.parse(sessionStorage.getItem(TEMP_CDK_STATE_STORAGE_KEY) || '{}')
     const nextPools = { masi: [], shzyhqn: [] }
     if (raw.channels && typeof raw.channels === 'object') {
       for (const option of tempChannelOptions) {
@@ -1081,21 +1172,21 @@ function loadTempCdkState(legacyText = '') {
 }
 
 function saveTempForm(options = {}) {
-  localStorage.setItem(TEMP_FORM_STORAGE_KEY, JSON.stringify({
-    ...tempForm.value,
-    cdk: tempCdks.value.map(item => item.value).join('\n'),
-    cdkByChannel: {
-      masi: tempCdkArrayForChannel('masi').map(item => item.value).join('\n'),
-      shzyhqn: tempCdkArrayForChannel('shzyhqn').map(item => item.value).join('\n'),
-    },
-  }))
+  persistJsonState(TEMP_FORM_STORAGE_KEY, () => ({
+      ...tempForm.value,
+      cdk: tempCdks.value.map(item => item.value).join('\n'),
+      cdkByChannel: {
+        masi: tempCdkArrayForChannel('masi').map(item => item.value).join('\n'),
+        shzyhqn: tempCdkArrayForChannel('shzyhqn').map(item => item.value).join('\n'),
+      },
+    }))
   saveTempCdkState()
   if (!options.silent && !inputLocked.value) setStatus('临时提链 CDK 已保存。')
 }
 
 function loadTempForm() {
   try {
-    const data = JSON.parse(localStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')
+    const data = JSON.parse(sessionStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')
     tempForm.value.channel = cleanTempChannel(data.channel || data.tempChannel || data.temp_channel || 'masi')
     if (data.concurrency !== undefined) tempForm.value.concurrency = Math.max(1, Math.min(20, Number(data.concurrency || 5)))
     loadTempCdkState(String(data.cdk || ''))
@@ -1235,6 +1326,56 @@ function extractJobStorageKey(mode = isTempExtract.value ? 'tempExtract' : 'extr
   return mode === 'tempExtract' ? TEMP_JOB_STORAGE_KEY : JOB_STORAGE_KEY
 }
 
+function setStartAckPendingMode(mode, pending) {
+  const next = new Set(startAckPendingModes.value)
+  if (pending) next.add(mode)
+  else next.delete(mode)
+  startAckPendingModes.value = next
+}
+
+function applyStartAckCheckpoint(mode, checkpoint) {
+  setStartAckPendingMode(mode, Boolean(checkpoint))
+  if (!checkpoint) return
+  const state = taskStateForMode(mode)
+  const requestId = String(checkpoint.clientRequestId || '').trim()
+  const suffix = requestId ? `（请求 ${requestId}）` : ''
+  if (checkpoint.status === 'unknown') {
+    state.statusText = `上次 Kakao 任务启动结果未知${suffix}，已锁定重复提交；请保留当前会话等待人工核对。`
+    state.statusError = true
+    return
+  }
+  state.statusText = `上次 Kakao 任务仍在等待后端确认${suffix}，当前页面会在 ACK 到达后自动恢复。`
+  state.statusError = false
+}
+
+function installStartAckWatchers() {
+  for (const watcher of startAckWatchers) watcher.unsubscribe()
+  startAckWatchers = ['extract', 'tempExtract'].map((mode) => {
+    const watcher = watchStartAckGeneration({
+      storage: sessionStorage,
+      storageKey: extractJobStorageKey(mode),
+      onChange: (event) => {
+        if (componentUnmounted) return
+        if (event.type === 'acknowledged') {
+          applyStartAckCheckpoint(mode, null)
+          void restoreActiveJob(mode)
+          return
+        }
+        if (event.type === 'unknown') {
+          applyStartAckCheckpoint(mode, event.checkpoint)
+          return
+        }
+        applyStartAckCheckpoint(mode, null)
+        const state = taskStateForMode(mode)
+        state.statusText = `上次 Kakao 任务启动失败：${event.error || '请求未被后端接受'}`
+        state.statusError = true
+      },
+    })
+    applyStartAckCheckpoint(mode, watcher.checkpoint)
+    return watcher
+  })
+}
+
 function isExtractTaskRunning(state) {
   return Boolean((state?.activeJobIds?.length || state?.activeJobId) && !TERMINAL_STATUSES.has(String(state?.activeJobStatus || '')))
 }
@@ -1246,7 +1387,8 @@ function saveActiveJobSnapshot(job = currentJob.value, mode = isTempExtract.valu
     : (Array.isArray(job?.jobIds) ? job.jobIds : String(job?.id || state.activeJobId || '').split(',')).map(item => String(item || '').trim()).filter(Boolean)
   if (!ids.length) return
   const snapshotMode = job?.temp ? 'tempExtract' : mode
-  localStorage.setItem(extractJobStorageKey(snapshotMode), JSON.stringify({
+  const storageKey = extractJobStorageKey(snapshotMode)
+  const snapshot = {
     jobId: ids[0],
     jobIds: ids,
     accountCount: Number(job?.total || 0),
@@ -1263,7 +1405,46 @@ function saveActiveJobSnapshot(job = currentJob.value, mode = isTempExtract.valu
     lastFailedEmails: Array.isArray(state.lastFailedEmails) ? state.lastFailedEmails : [],
     mode: snapshotMode,
     startedAt: Date.now(),
-  }))
+  }
+  persistJsonState(storageKey, snapshot)
+}
+
+function createKakaoStartSnapshot(current, {
+  appendMode,
+  mode,
+  newJobId,
+  accountCount,
+  concurrency,
+  channel,
+  clientRequestId,
+}) {
+  const previousIds = appendMode
+    ? (Array.isArray(current?.jobIds) ? current.jobIds : [current?.jobId]).map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  const nextIds = [...previousIds]
+  if (!nextIds.includes(newJobId)) nextIds.push(newJobId)
+  const previousCount = appendMode ? Number(current?.accountCount || 0) : 0
+  const previousConcurrency = appendMode ? Number(current?.concurrency || 0) : 0
+  return {
+    ...(appendMode ? current : {}),
+    jobId: nextIds[0] || newJobId,
+    jobIds: nextIds,
+    accountCount: previousCount + accountCount,
+    completed: appendMode ? Number(current?.completed || 0) : 0,
+    runningCount: appendMode ? Number(current?.runningCount || 0) : 0,
+    concurrency: previousConcurrency + Number(concurrency || 1),
+    status: 'queued',
+    logs: appendMode && Array.isArray(current?.logs) ? current.logs : [],
+    result: appendMode ? current?.result || null : null,
+    accountStatuses: appendMode && current?.accountStatuses ? current.accountStatuses : {},
+    channel: mode === 'tempExtract' ? channel : '',
+    statusText: '',
+    statusError: false,
+    lastFailedEmails: appendMode && Array.isArray(current?.lastFailedEmails) ? current.lastFailedEmails : [],
+    mode,
+    clientRequestId: String(clientRequestId || current?.clientRequestId || ''),
+    startedAt: appendMode ? Number(current?.startedAt || Date.now()) : Date.now(),
+  }
 }
 
 function clearActiveJob({ removeStored = true, mode = isTempExtract.value ? 'tempExtract' : 'extract' } = {}) {
@@ -1276,7 +1457,7 @@ function clearActiveJob({ removeStored = true, mode = isTempExtract.value ? 'tem
   state.notifiedSuccessKeys = new Set()
   cancelling.value = false
   starting.value = false
-  if (removeStored) localStorage.removeItem(extractJobStorageKey(mode))
+  if (removeStored) storageWriter.remove(extractJobStorageKey(mode))
 }
 
 function rememberFailedEmails(result, mode = isTempExtract.value ? 'tempExtract' : 'extract') {
@@ -1303,6 +1484,11 @@ function successNotificationKey(item, index) {
   return email || link || id || `success-${index}`
 }
 
+function clearSuccessNotificationTimers() {
+  for (const timer of successNotificationTimers) window.clearTimeout(timer)
+  successNotificationTimers.clear()
+}
+
 function notifyNewSuccesses(result, mode = isTempExtract.value ? 'tempExtract' : 'extract') {
   const state = taskStateForMode(mode)
   const successes = Array.isArray(result?.successes) ? result.successes : []
@@ -1315,9 +1501,12 @@ function notifyNewSuccesses(result, mode = isTempExtract.value ? 'tempExtract' :
     if (seen.has(key)) return
     seen.add(key)
     changed = true
-    window.setTimeout(() => {
-      playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
+    const timer = window.setTimeout(() => {
+      successNotificationTimers.delete(timer)
+      if (componentUnmounted) return
+      void playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
     }, delay)
+    successNotificationTimers.add(timer)
     delay += 450
   })
   if (changed) state.notifiedSuccessKeys = seen
@@ -1401,6 +1590,26 @@ function clearSelectedAccounts() {
 
 function showMoreAccounts() {
   accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
+}
+
+function showMoreTempCdks() {
+  tempCdkVisibleCount.value = Math.min(visibleTempCdks.value.length, tempCdkVisibleCount.value + 100)
+}
+
+function showMoreLinks() {
+  linkVisibleCount.value = Math.min(links.value.length, linkVisibleCount.value + 100)
+}
+
+function showMoreKkPaymentCdks() {
+  kkPaymentCdkVisibleCount.value = Math.min(visibleKkPaymentCdks.value.length, kkPaymentCdkVisibleCount.value + 100)
+}
+
+function showMoreKkPaymentLinks() {
+  kkPaymentLinkVisibleCount.value = Math.min(filteredKkPaymentLinks.value.length, kkPaymentLinkVisibleCount.value + 100)
+}
+
+function showMoreRecentResults() {
+  recentResultVisibleCount.value = Math.min(filteredRecentResultCount.value, recentResultVisibleCount.value + 100)
 }
 
 function toggleLink(id) {
@@ -1537,29 +1746,72 @@ async function startWithEmails(emails, actionText = '提取') {
   state.statusError = false
   saveForm()
   saveTempForm({ silent: true })
+  let startReservation = null
   try {
-    const data = tempMode
-      ? await api.startKakaoPayTempBatch({
-          accountEmails,
-          cdk: tempCdksForRun.join('\n'),
-          cdks: tempCdksForRun,
-          channel: tempChannel,
-          concurrency,
-        })
-      : await api.startKakaoPayBatch({
-          accountEmails,
-          proxies: form.value.krProxies || form.value.proxies,
-          krProxies: form.value.krProxies || form.value.proxies,
-          vnProxies: form.value.vnProxies,
-          concurrency,
-          maxAttempts: form.value.maxAttempts,
-          proxyPreflightAttempts: form.value.proxyPreflightAttempts,
-          region: 'KR',
+    storageWriter.flush()
+    startReservation = reserveStartAckGeneration({
+      storage: sessionStorage,
+      storageKey: extractJobStorageKey(mode),
+      checkpoint: {
+        mode,
+        accountCount: accountEmails.length,
+        actionText,
+        appendMode,
+        channel: tempMode ? tempChannel : '',
+      },
     })
-    const newJobId = data.job_id || ''
-    if (!newJobId) throw new Error('后端没有返回任务 ID')
-    const nextIds = appendMode ? (state.activeJobIds.length ? [...state.activeJobIds] : [state.activeJobId].filter(Boolean)) : []
-    if (!nextIds.includes(newJobId)) nextIds.push(newJobId)
+    if (!startReservation) throw new Error('无法持久化任务启动代际')
+    if (startReservation.status === 'occupied') {
+      applyStartAckCheckpoint(mode, startReservation.checkpoint)
+      return
+    }
+    setStartAckPendingMode(mode, true)
+    let data
+    if (tempMode) {
+      data = await api.startKakaoPayTempBatch({
+        accountEmails,
+        cdk: tempCdksForRun.join('\n'),
+        cdks: tempCdksForRun,
+        channel: tempChannel,
+        concurrency,
+        clientRequestId: startReservation.clientRequestId,
+      })
+    } else {
+      data = await api.startKakaoPayBatch({
+        accountEmails,
+        proxies: form.value.krProxies || form.value.proxies,
+        krProxies: form.value.krProxies || form.value.proxies,
+        vnProxies: form.value.vnProxies,
+        concurrency,
+        maxAttempts: form.value.maxAttempts,
+        proxyPreflightAttempts: form.value.proxyPreflightAttempts,
+        region: 'KR',
+        clientRequestId: startReservation.clientRequestId,
+      })
+    }
+    const newJobId = String(data.job_id || '').trim()
+    if (!newJobId) {
+      const error = new Error('后端没有返回任务 ID')
+      error.code = 'INVALID_PAYMENT_JOB_RESPONSE'
+      throw error
+    }
+    storageWriter.flush()
+    const startAck = commitStartAckSnapshot(startReservation, {
+      componentUnmounted,
+      createSnapshot: current => createKakaoStartSnapshot(current, {
+        appendMode,
+        mode,
+        newJobId,
+        accountCount: accountEmails.length,
+        concurrency,
+        channel: tempChannel,
+        clientRequestId: startReservation.clientRequestId,
+      }),
+    })
+    if (!startAck.shouldContinue) return
+    setStartAckPendingMode(mode, false)
+    const snapshot = startAck.snapshot || {}
+    const nextIds = (Array.isArray(snapshot.jobIds) ? snapshot.jobIds : [snapshot.jobId]).map(item => String(item || '').trim()).filter(Boolean)
     state.activeJobIds = nextIds
     state.activeJobId = nextIds[0] || newJobId
     if (tempMode) reserveTempCdksForAccounts(accountEmails, newJobId, tempChannel)
@@ -1569,16 +1821,39 @@ async function startWithEmails(emails, actionText = '提取') {
       state.notifiedSuccessKeys = new Set()
       state.logs = []
     }
-    state.currentJob = { id: state.activeJobIds.join(','), status: 'queued', total: (Number(state.currentJob?.total || 0) + accountEmails.length), completed: Number(state.currentJob?.completed || 0), concurrency, running_count: Number(state.currentJob?.running_count || 0), temp: tempMode, channel: tempMode ? tempChannel : '' }
+    state.currentJob = {
+      id: state.activeJobIds.join(','),
+      jobIds: state.activeJobIds,
+      status: 'queued',
+      total: Number(snapshot.accountCount || accountEmails.length),
+      completed: Number(snapshot.completed || 0),
+      concurrency: Number(snapshot.concurrency || concurrency || 1),
+      running_count: Number(snapshot.runningCount || 0),
+      account_statuses: snapshot.accountStatuses || {},
+      temp: tempMode,
+      channel: tempMode ? tempChannel : '',
+    }
     selectedAccounts.value = new Set()
-    saveActiveJobSnapshot(state.currentJob, mode)
-    setStatus(`${appendMode ? '追加任务' : '任务'}已提交，正在为 ${accountEmails.length} 个账号${actionText} Kakao${tempMode ? ' 临时' : ''}，并发 ${concurrency || 1}。`)
+    state.statusText = `${appendMode ? '追加任务' : '任务'}已提交，正在为 ${accountEmails.length} 个账号${actionText} Kakao${tempMode ? ' 临时' : ''}，并发 ${concurrency || 1}。`
+    state.statusError = false
     startPolling(mode)
   } catch (error) {
-    if (tempMode) releaseReservedTempCdks('', '任务启动失败，CDK 已释放。', tempChannel)
-    setStatus(`启动失败：${cleanError(error)}`, true)
+    storageWriter.flush()
+    const message = cleanError(error)
+    if (startReservation?.status === 'reserved' && isAmbiguousPaymentFailure(error)) {
+      const unknown = markStartAckGenerationUnknown(startReservation, { componentUnmounted, error: message })
+      if (!componentUnmounted) applyStartAckCheckpoint(mode, unknown.checkpoint || startReservation?.checkpoint)
+    } else {
+      cancelStartAckGeneration(startReservation, { componentUnmounted, error: message })
+      if (!componentUnmounted) {
+        setStartAckPendingMode(mode, false)
+        if (tempMode) releaseReservedTempCdks('', '任务启动失败，CDK 已释放。', tempChannel)
+        state.statusText = `启动失败：${message}`
+        state.statusError = true
+      }
+    }
   } finally {
-    starting.value = false
+    if (!componentUnmounted) starting.value = false
   }
 }
 
@@ -1586,22 +1861,29 @@ async function start() {
   await startWithEmails(selectedEmails.value, '提取')
 }
 
-async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract', pollToken = null) {
   const state = taskStateForMode(mode)
+  const modePolling = pollingForMode(mode)
   const ids = state.activeJobIds.length ? [...state.activeJobIds] : [state.activeJobId].filter(Boolean)
   if (!ids.length) return
+  if (pollToken !== null && !modePolling.isActive(pollToken)) return
   try {
     const jobs = []
     const missingIds = new Set()
     for (const id of ids) {
+      if (pollToken !== null) {
+        if (!await modePolling.waitUntilAvailable(pollToken)) return
+        if (!modePolling.isActive(pollToken)) return
+      }
       try {
         jobs.push(await api.getKakaoPayJob(id))
+        if (pollToken !== null && !modePolling.isActive(pollToken)) return
       } catch (error) {
         if (isJobNotFound(error)) missingIds.add(id)
         else throw error
       }
     }
-    if (componentUnmounted) return
+    if (componentUnmounted || (pollToken !== null && !modePolling.isActive(pollToken))) return
     if (!jobs.length && missingIds.size) {
       clearActiveJob({ mode })
       await Promise.all([refreshAccounts(), refreshLinks()])
@@ -1655,6 +1937,7 @@ async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
       if (mode === 'tempExtract' && kkPaymentLinks.value.length) syncKkPaymentLinks({ silent: true })
     }
   } catch (error) {
+    if (pollToken !== null && !modePolling.isActive(pollToken)) return
     state.statusText = `轮询失败：${cleanError(error)}`
     state.statusError = true
   }
@@ -1672,17 +1955,26 @@ async function retryFailedAccounts() {
 }
 
 function startPolling(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
-  stopPolling(mode)
-  pollJob(mode)
-  pollTimers[mode] = window.setInterval(() => pollJob(mode), 3000)
+  const modePolling = pollingForMode(mode)
+  const pollToken = modePolling.start()
+  if (pollToken !== null) void runPollingLoop(mode, pollToken)
 }
 
 function stopPolling(mode = null) {
-  const modes = mode ? [mode] : Object.keys(pollTimers)
+  const modes = mode ? [mode] : Object.keys(pollingLifecycles)
   for (const item of modes) {
-    if (pollTimers[item]) window.clearInterval(pollTimers[item])
-    pollTimers[item] = null
+    pollingForMode(item).cancel()
   }
+}
+
+async function runPollingLoop(mode, pollToken) {
+  const modePolling = pollingForMode(mode)
+  const state = taskStateForMode(mode)
+  if (!modePolling.isActive(pollToken)) return
+  if (!await modePolling.waitUntilAvailable(pollToken)) return
+  await pollJob(mode, pollToken)
+  if (!modePolling.isActive(pollToken) || !state.activeJobIds.length || TERMINAL_STATUSES.has(state.activeJobStatus)) return
+  if (await modePolling.wait(3000, pollToken)) void runPollingLoop(mode, pollToken)
 }
 
 async function cancelJob() {
@@ -1691,6 +1983,7 @@ async function cancelJob() {
   const ids = state.activeJobIds.length ? [...state.activeJobIds] : [state.activeJobId].filter(Boolean)
   if (!ids.length) return
   cancelling.value = true
+  stopPolling(mode)
   try {
     await Promise.all(ids.map(id => api.cancelKakaoPayJob(id).catch(error => {
       if (!isJobNotFound(error)) throw error
@@ -1706,6 +1999,7 @@ async function cancelJob() {
     }
     setStatus(`取消失败：${cleanError(error)}`, true)
   } finally {
+    if (!componentUnmounted && isExtractTaskRunning(state)) startPolling(mode)
     cancelling.value = false
   }
 }
@@ -1922,7 +2216,7 @@ function kkPaymentLinkInvalid(item) {
 
 function kkPaymentTaskFilterStatus(item) {
   const status = String(item?.status || 'pending').toLowerCase()
-  if (['running', 'success', 'failed', 'stopped', 'needs_action'].includes(status)) return status
+  if (['running', 'success', 'failed', 'stopped', 'needs_action', 'unknown'].includes(status)) return status
   return 'pending'
 }
 
@@ -1933,7 +2227,7 @@ function kakaoPaymentLinkSummary(item) {
 }
 
 function kkPaymentLinkStatusText(status) {
-  return ({ pending: '待提交', imported: '待提交', running: '运行中', success: '成功', failed: '失败', stopped: '已停止', needs_action: '需处理' })[String(status || '')] || '待提交'
+  return ({ pending: '待提交', imported: '待提交', running: '运行中', success: '成功', failed: '失败', stopped: '已停止', needs_action: '需处理', unknown: '结果未知' })[String(status || '')] || '待提交'
 }
 
 function kkPaymentStatusClass(status) {
@@ -1941,6 +2235,7 @@ function kkPaymentStatusClass(status) {
   if (text === 'running') return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
   if (text === 'success') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
   if (['failed', 'stopped', 'needs_action'].includes(text)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  if (text === 'unknown') return 'border-orange-500/30 bg-orange-500/10 text-orange-200'
   return 'border-slate-700 bg-slate-900 text-slate-300'
 }
 
@@ -1953,8 +2248,13 @@ function kkPaymentNeedsRelink(item) {
   return kkPaymentLinkInvalid(item) || ['failed', 'stopped', 'needs_action'].includes(status)
 }
 
+function kkPaymentHasLiveRemoteOrder(item) {
+  return Boolean(item?.orderId && (item?.customerToken || item?.cdk) && item?.remoteTerminal !== true)
+}
+
 function kkPaymentCanRemove(item) {
   const status = String(item?.status || '').toLowerCase()
+  if (kkPaymentHasLiveRemoteOrder(item)) return false
   if (status === 'running') return false
   if (kkPaymentLinkInvalid(item) || ['success', 'failed', 'stopped', 'needs_action'].includes(status)) return true
   return !kkPaymentBusy.value
@@ -2021,11 +2321,12 @@ function normalizeKkPaymentItem(raw) {
   const linkId = String(raw.linkId || raw.link_id || raw.id || '').trim()
   const accountEmail = String(raw.accountEmail || raw.account_email || raw.account || '').trim()
   if (!paymentUrl && !raw.orderId && !raw.order_id) return null
-  const orderId = String(raw.orderId || raw.order_id || raw.id || '').trim()
+  const orderId = String(raw.orderId || raw.order_id || '').trim()
   const customerToken = String(raw.customerToken || raw.customer_token || raw.token || '').trim()
   const rawStatus = String(raw.status || (paymentUrl ? 'pending' : 'failed')).toLowerCase()
   const normalizedStatus = kkPaymentOrderMissing(rawStatus) ? 'needs_action' : rawStatus
-  const resumableOrder = rawStatus === 'running' && orderId && (customerToken || raw.cdk)
+  const remoteTerminal = raw.remoteTerminal === true || normalizedStatus === 'success'
+  const resumableOrder = rawStatus === 'running' && orderId && (customerToken || raw.cdk) && !remoteTerminal
   return {
     id: String(raw.queueId || raw.queue_id || raw.id || makeKkPaymentId('link')),
     linkId,
@@ -2037,6 +2338,7 @@ function normalizeKkPaymentItem(raw) {
     orderId,
     orderNo: String(raw.orderNo || raw.order_no || '').trim(),
     customerToken,
+    remoteTerminal,
     workerId: String(raw.workerId || raw.worker_id || raw.scannerId || raw.scanner_id || '').trim(),
     workerName: String(raw.workerName || raw.worker_name || raw.scannerName || raw.scanner_name || '').trim(),
     workerLabel: String(raw.workerLabel || raw.worker_label || '').trim(),
@@ -2073,17 +2375,17 @@ function normalizeKkPaymentCdk(raw) {
 }
 
 function saveKkPaymentState() {
-  localStorage.setItem(KK_PAYMENT_STATE_STORAGE_KEY, JSON.stringify({
-    links: kkPaymentLinks.value,
-    cdks: kkPaymentCdks.value,
-    concurrency: kkPaymentConcurrency.value,
-    paymentMethod: kkPaymentMethod.value,
-  }))
+  persistJsonState(KK_PAYMENT_STATE_STORAGE_KEY, () => ({
+      links: kkPaymentLinks.value,
+      cdks: kkPaymentCdks.value,
+      concurrency: kkPaymentConcurrency.value,
+      paymentMethod: kkPaymentMethod.value,
+    }))
 }
 
 function loadKkPaymentState() {
   try {
-    const raw = JSON.parse(localStorage.getItem(KK_PAYMENT_STATE_STORAGE_KEY) || '{}')
+    const raw = JSON.parse(sessionStorage.getItem(KK_PAYMENT_STATE_STORAGE_KEY) || '{}')
     kkPaymentLinks.value = Array.isArray(raw.links) ? raw.links.map(normalizeKkPaymentItem).filter(Boolean) : []
     kkPaymentCdks.value = Array.isArray(raw.cdks) ? raw.cdks.map(normalizeKkPaymentCdk).filter(Boolean) : []
     kkPaymentConcurrency.value = Math.max(1, Math.min(20, Number(raw.concurrency || 5)))
@@ -2102,7 +2404,7 @@ function addOrUpdateKkPaymentLink(raw) {
   const key = `${String(item.accountEmail || '').toLowerCase()}|${normalizeKkPaymentUrl(item.paymentUrl)}`
   const existing = kkPaymentLinks.value.find(row => `${String(row.accountEmail || '').toLowerCase()}|${normalizeKkPaymentUrl(row.paymentUrl)}` === key)
   if (existing) {
-    if (!['running', 'success'].includes(existing.status)) Object.assign(existing, item, { id: existing.id, cdk: existing.cdk, cdkId: existing.cdkId, orderId: existing.orderId, customerToken: existing.customerToken, status: existing.status })
+    if (!['running', 'success'].includes(existing.status)) Object.assign(existing, item, { id: existing.id, cdk: existing.cdk, cdkId: existing.cdkId, orderId: existing.orderId, customerToken: existing.customerToken, remoteTerminal: existing.remoteTerminal, status: existing.status })
     return false
   }
   const accountKey = String(item.accountEmail || '').toLowerCase()
@@ -2111,12 +2413,13 @@ function addOrUpdateKkPaymentLink(raw) {
         const status = String(row.status || '').toLowerCase()
         return String(row.accountEmail || '').toLowerCase() === accountKey
           && !['running', 'success'].includes(status)
+          && !kkPaymentHasLiveRemoteOrder(row)
           && (kkPaymentLinkInvalid(row) || ['failed', 'stopped', 'needs_action'].includes(status))
       })
     : null
   if (staleSameAccount) {
     releaseKkPaymentCdkForLink(staleSameAccount.id, '账号已重新提链，旧支付任务预留已释放。')
-    Object.assign(staleSameAccount, item, { id: staleSameAccount.id, cdk: '', cdkId: '', orderId: '', customerToken: '', orderNo: '', status: 'pending', message: '已同步重新提链后的新链接，可重新提交支付。' })
+    Object.assign(staleSameAccount, item, { id: staleSameAccount.id, cdk: '', cdkId: '', orderId: '', customerToken: '', orderNo: '', remoteTerminal: false, status: 'pending', message: '已同步重新提链后的新链接，可重新提交支付。' })
     return false
   }
   kkPaymentLinks.value = [...kkPaymentLinks.value, item]
@@ -2235,8 +2538,20 @@ function releaseKkPaymentCdkForLink(id, message = '') {
   }
 }
 
+function kkPaymentCdkHasLiveRemoteOrder(cdk) {
+  if (!cdk) return false
+  const cdkId = String(cdk.id || '')
+  const cdkValue = String(cdk.value || '')
+  return kkPaymentLinks.value.some(item => kkPaymentHasLiveRemoteOrder(item)
+    && ((cdkId && item.cdkId === cdkId) || (cdkValue && item.cdk === cdkValue)))
+}
+
 function removeKkPaymentLink(id) {
   const item = kkPaymentLinks.value.find(row => row.id === id)
+  if (kkPaymentHasLiveRemoteOrder(item)) {
+    kkPaymentStatusText.value = '远端支付订单尚未结束，已保留支付记录和关联 CDK。'
+    return
+  }
   if (item && !kkPaymentCanRemove(item)) {
     kkPaymentStatusText.value = '运行中的支付任务不能直接移除，请等待任务结束或查询最新状态。'
     return
@@ -2249,10 +2564,14 @@ function removeKkPaymentLink(id) {
 }
 
 function clearKkPaymentLinks() {
-  for (const item of kkPaymentLinks.value) releaseKkPaymentCdkForLink(item.id, '账号池已清空，CDK 已释放。')
-  kkPaymentLinks.value = []
-  expandedKkPaymentDetailIds.value = new Set()
-  kkPaymentStatusText.value = '已清空支付账号池。'
+  const retained = kkPaymentLinks.value.filter(kkPaymentHasLiveRemoteOrder)
+  const retainedIds = new Set(retained.map(item => item.id))
+  const removedIds = kkPaymentLinks.value.filter(item => !retainedIds.has(item.id)).map(item => item.id)
+  for (const id of removedIds) releaseKkPaymentCdkForLink(id, '账号池已清空，CDK 已释放。')
+  kkPaymentLinks.value = retained
+  collapseKkPaymentDetails(removedIds)
+  const retainedText = retained.length ? `，保留 ${retained.length} 个远端未结束订单` : ''
+  kkPaymentStatusText.value = `已清理 ${removedIds.length} 个支付账号${retainedText}。`
   saveKkPaymentState()
 }
 
@@ -2262,6 +2581,7 @@ function detachKkPaymentCdkFromLinks(cdk) {
   const cdkValue = String(cdk.value || '')
   for (const link of kkPaymentLinks.value) {
     if (link.status === 'success') continue
+    if (kkPaymentHasLiveRemoteOrder(link)) continue
     if ((cdkId && link.cdkId === cdkId) || (cdkValue && link.cdk === cdkValue)) {
       link.cdk = ''
       link.cdkId = ''
@@ -2272,6 +2592,10 @@ function detachKkPaymentCdkFromLinks(cdk) {
 
 function removeKkPaymentCdk(id) {
   const target = kkPaymentCdks.value.find(item => item.id === id)
+  if (kkPaymentCdkHasLiveRemoteOrder(target)) {
+    kkPaymentStatusText.value = '该 CDK 仍关联远端未结束订单，已保留。'
+    return
+  }
   detachKkPaymentCdkFromLinks(target)
   kkPaymentCdks.value = kkPaymentCdks.value.filter(item => item.id !== id)
   kkPaymentStatusText.value = target ? '已移除 1 枚 KK 支付 CDK。' : '未找到要移除的 KK 支付 CDK。'
@@ -2279,7 +2603,7 @@ function removeKkPaymentCdk(id) {
 }
 
 function clearUsedKkPaymentCdks() {
-  const usedIds = new Set(kkPaymentCdks.value.filter(item => kkPaymentCdkDisplayStatus(item) === 'used').map(item => item.id))
+  const usedIds = new Set(kkPaymentCdks.value.filter(item => kkPaymentCdkDisplayStatus(item) === 'used' && !kkPaymentCdkHasLiveRemoteOrder(item)).map(item => item.id))
   if (!usedIds.size) {
     kkPaymentStatusText.value = '没有已使用的 KK 支付 CDK 可清理。'
     return
@@ -2293,15 +2617,19 @@ function clearUsedKkPaymentCdks() {
 }
 
 function clearKkPaymentCdks() {
-  for (const cdk of kkPaymentCdks.value) detachKkPaymentCdkFromLinks(cdk)
-  kkPaymentCdks.value = []
-  kkPaymentStatusText.value = '已清空 KK 支付 CDK 池。'
+  const retained = kkPaymentCdks.value.filter(kkPaymentCdkHasLiveRemoteOrder)
+  const retainedIds = new Set(retained.map(item => item.id))
+  const removed = kkPaymentCdks.value.filter(item => !retainedIds.has(item.id))
+  for (const cdk of removed) detachKkPaymentCdkFromLinks(cdk)
+  kkPaymentCdks.value = retained
+  const retainedText = retained.length ? `，保留 ${retained.length} 枚远端订单关联 CDK` : ''
+  kkPaymentStatusText.value = `已清理 ${removed.length} 枚 KK 支付 CDK${retainedText}。`
   saveKkPaymentState()
 }
 
 function clearInvalidKkPaymentLinks() {
   const before = kkPaymentLinks.value.length
-  const invalidIds = new Set(kkPaymentLinks.value.filter(kkPaymentLinkInvalid).map(item => item.id))
+  const invalidIds = new Set(kkPaymentLinks.value.filter(item => kkPaymentLinkInvalid(item) && !kkPaymentHasLiveRemoteOrder(item)).map(item => item.id))
   for (const id of invalidIds) releaseKkPaymentCdkForLink(id, '关联链接已失效并清理，CDK 已释放。')
   kkPaymentLinks.value = kkPaymentLinks.value.filter(item => !invalidIds.has(item.id))
   collapseKkPaymentDetails(Array.from(invalidIds))
@@ -2313,26 +2641,24 @@ function clearFinishedKkPayments() {
   const beforeLinks = kkPaymentLinks.value.length
   const beforeCdks = kkPaymentCdks.value.length
   const removableStatuses = ['success', 'failed', 'stopped', 'needs_action']
-  const removableIds = new Set(kkPaymentLinks.value.filter(item => kkPaymentLinkInvalid(item) || removableStatuses.includes(item.status)).map(item => item.id))
+  const removableIds = new Set(kkPaymentLinks.value.filter(item => !kkPaymentHasLiveRemoteOrder(item) && (kkPaymentLinkInvalid(item) || removableStatuses.includes(item.status))).map(item => item.id))
   for (const id of removableIds) releaseKkPaymentCdkForLink(id, '关联任务已结束或失效，CDK 已释放。')
   kkPaymentLinks.value = kkPaymentLinks.value.filter(item => !removableIds.has(item.id))
   collapseKkPaymentDetails(Array.from(removableIds))
-  kkPaymentCdks.value = kkPaymentCdks.value.filter(item => !['used', 'failed'].includes(item.status))
+  kkPaymentCdks.value = kkPaymentCdks.value.filter(item => kkPaymentCdkHasLiveRemoteOrder(item) || !['used', 'failed'].includes(item.status))
   kkPaymentStatusText.value = `已清理 ${beforeLinks - kkPaymentLinks.value.length} 个账号、${beforeCdks - kkPaymentCdks.value.length} 枚 CDK。`
   saveKkPaymentState()
 }
 
 function kkPaymentTaskRunnable(item) {
+  if (kkPaymentHasLiveRemoteOrder(item)) return !['success', 'running'].includes(String(item.status || 'pending'))
   if (!item?.paymentUrl || kkPaymentLinkInvalid(item)) return false
   if (item.orderId && (item.customerToken || item.cdk)) return !['success', 'running'].includes(String(item.status || 'pending'))
   return KK_PAYMENT_RETRYABLE_STATUSES.has(String(item.status || 'pending')) && kkPaymentCdks.value.some(kkPaymentCdkUsable)
 }
 
 function kkPaymentOrderRestorable(item) {
-  if (!item.orderId || !(item.customerToken || item.cdk)) return false
-  const status = String(item.status || '').toLowerCase()
-  const message = String(item.message || '')
-  return status === 'running' || (status === 'needs_action' && message.includes('已有订单，可点击'))
+  return kkPaymentHasLiveRemoteOrder(item)
 }
 
 function kkPaymentUnavailableMessage() {
@@ -2350,6 +2676,7 @@ function nextKkPaymentPair(preferredLink = null) {
   link.orderId = ''
   link.customerToken = ''
   link.orderNo = ''
+  link.remoteTerminal = false
   link.cdk = cdk.value
   link.cdkId = cdk.id
   cdk.reservedUses = Number(cdk.reservedUses || 0) + 1
@@ -2511,13 +2838,14 @@ function applyKkPaymentCdkSnapshot(cdk, data, prefix = '已同步订单额度') 
 async function waitKkPaymentOrder(link) {
   for (;;) {
     if (componentUnmounted) return { status: 'needs_action', message: '已有订单，可点击“提交/查询”继续查询。' }
+    if (!await networkPollingGate.waitUntilAvailable() || componentUnmounted) return { status: 'needs_action', message: '已有订单，可点击“提交/查询”继续查询。' }
     const data = await api.getKakaoPayKkPaymentOrder(link.orderId, link.customerToken, link.cdk, link.accountEmail)
     const { payload, order } = kkCustomerOrderPayload(data)
     const status = String(order.status || payload.status || data.status || '').toLowerCase()
     applyKkOrderWorkerInfo(link, data)
     link.message = kkOrderProblemReason(data, externalOrderStatusText(status))
     if (KK_PAYMENT_TERMINAL_STATUSES.has(status)) return { ...order, status, account_email: order.account_email || data.account_email || link.accountEmail }
-    await new Promise(resolve => window.setTimeout(resolve, 2000))
+    if (!await networkPollingGate.wait(2000)) return { status: 'needs_action', message: '已有订单，可点击“提交/查询”继续查询。' }
   }
 }
 
@@ -2556,10 +2884,12 @@ async function runKkPaymentTask(item) {
       item.customerToken = String(payload.customerToken || payload.customer_token || payload.token || '').trim()
       applyKkOrderWorkerInfo(item, submitted)
       if (!item.orderId) throw new Error('Masa Plus 支付 API 未返回 task id')
+      item.remoteTerminal = false
       if (!applyKkPaymentCdkSnapshot(cdk, submitted, '订单创建后额度')) markKkPaymentCdkSubmitted(cdk, item)
     }
     const job = await waitKkPaymentOrder(item)
     applyKkOrderWorkerInfo(item, job)
+    if (KK_PAYMENT_TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())) item.remoteTerminal = true
     if (['success', 'succeeded', 'paid', 'completed', 'scanned'].includes(job.status)) {
       item.status = 'success'
       item.success_at = job.success_at || job.successAt || new Date().toLocaleString()
@@ -2580,16 +2910,21 @@ async function runKkPaymentTask(item) {
     kkPaymentStatusText.value = item.status === 'success' ? `任务 ${item.orderId} 已成功。` : `任务 ${item.orderId || '-'} 状态：${kkPaymentLinkStatusText(item.status)}。`
   } catch (error) {
     const message = cleanError(error)
-    item.status = 'needs_action'
-    item.message = message
+    const ambiguous = isAmbiguousPaymentFailure(error)
+    item.status = item.orderId ? 'needs_action' : 'unknown'
+    item.message = ambiguous ? `${message}；远端结果未知，已锁定关联 CDK，避免重复支付。` : message
     if (kkPaymentOrderMissingError(error)) {
+      item.remoteTerminal = true
       releaseSubmittedKkPaymentCdk(item, '订单不存在，本地已释放该次提交占用；链接未过期时可重新提交。')
       item.orderId = ''
       item.customerToken = ''
       item.orderNo = ''
     }
-    if (cdk && (cdk.linkId === item.id || (Array.isArray(cdk.linkIds) && cdk.linkIds.includes(item.id)))) {
-      releaseKkPaymentCdkForLink(item.id, `提交失败，已释放本地预留：${message}`)
+    if (!ambiguous) {
+      item.status = 'needs_action'
+      if (cdk && (cdk.linkId === item.id || (Array.isArray(cdk.linkIds) && cdk.linkIds.includes(item.id)))) {
+        releaseKkPaymentCdkForLink(item.id, `提交失败，已释放本地预留：${message}`)
+      }
     }
     kkPaymentStatusText.value = `任务失败：${message}`
   } finally {
@@ -2603,10 +2938,14 @@ function removeAccountFromKakaoPool(email) {
   if (!target) return
   accounts.value = accounts.value.filter(account => String(account.email || '').trim().toLowerCase() !== target)
   selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(item => String(item || '').trim().toLowerCase() !== target))
-  kkPaymentLinks.value = kkPaymentLinks.value.filter(item => String(item.accountEmail || '').trim().toLowerCase() !== target || item.status === 'success')
+  kkPaymentLinks.value = kkPaymentLinks.value.filter(item => String(item.accountEmail || '').trim().toLowerCase() !== target || item.status === 'success' || kkPaymentHasLiveRemoteOrder(item))
 }
 
 async function reExtractKkPaymentLink(item) {
+  if (kkPaymentHasLiveRemoteOrder(item)) {
+    kkPaymentStatusText.value = '远端支付订单尚未结束，请先继续查询订单状态。'
+    return
+  }
   const email = String(item?.accountEmail || '').trim()
   if (!email) {
     kkPaymentStatusText.value = '该支付账号缺少邮箱，无法重新提链。'
@@ -2746,10 +3085,10 @@ function clearKkOrders() {
 async function restoreActiveJob(mode = 'extract') {
   const state = taskStateForMode(mode)
   try {
-    let saved = JSON.parse(localStorage.getItem(extractJobStorageKey(mode)) || '{}')
+    let saved = JSON.parse(sessionStorage.getItem(extractJobStorageKey(mode)) || '{}')
     if (mode === 'extract' && saved?.mode === 'tempExtract') return
     if (mode === 'tempExtract' && !saved?.jobId && !saved?.jobIds?.length) {
-      const legacy = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}')
+      const legacy = JSON.parse(sessionStorage.getItem(JOB_STORAGE_KEY) || '{}')
       if (legacy?.mode === 'tempExtract') saved = legacy
     }
     const jobIds = Array.isArray(saved?.jobIds)
@@ -2781,10 +3120,9 @@ async function restoreActiveJob(mode = 'extract') {
       : (mode === 'tempExtract' ? '已恢复 Kakao 临时提链任务，正在重新同步后端进度。' : '已恢复 Kakao 提链任务，正在重新同步后端进度。'))
     state.statusError = Boolean(saved.statusError)
     if (terminal) return
-    await pollJob(mode)
-    if (!componentUnmounted && state.activeJobIds.length && !TERMINAL_STATUSES.has(state.activeJobStatus)) startPolling(mode)
+    if (!componentUnmounted) startPolling(mode)
   } catch (error) {
-    localStorage.removeItem(extractJobStorageKey(mode))
+    storageWriter.remove(extractJobStorageKey(mode))
     clearActiveJob({ removeStored: false, mode })
     const stateAfterClear = taskStateForMode(mode)
     stateAfterClear.statusText = `恢复任务失败：${cleanError(error)}`
@@ -2792,23 +3130,43 @@ async function restoreActiveJob(mode = 'extract') {
   }
 }
 
-onMounted(async () => {
-  componentUnmounted = false
-  nowMs.value = Date.now()
-  expiryTimer = window.setInterval(() => {
+async function runExpiryClock(pollToken) {
+  while (expiryClock.isActive(pollToken)) {
+    if (!await expiryClock.wait(1000, pollToken)) return
+    if (!await expiryClock.waitUntilAvailable(pollToken)) return
+    if (!expiryClock.isActive(pollToken)) return
     nowMs.value = Date.now()
     releaseExpiredTempCdkCooldowns()
-  }, 1000)
+  }
+}
+
+function startExpiryClock() {
+  expiryClockToken = expiryClock.start()
+  if (expiryClockToken !== null) void runExpiryClock(expiryClockToken)
+}
+
+onMounted(async () => {
+  componentUnmounted = false
+  installStartAckWatchers()
+  nowMs.value = Date.now()
+  startExpiryClock()
   loadTempForm()
   loadKkPaymentState()
   releaseExpiredTempCdkCooldowns()
   await reloadAll()
+  if (startAckPendingModes.value.size) installStartAckWatchers()
   await Promise.all([restoreActiveJob('extract'), restoreActiveJob('tempExtract'), restoreRunningKkPaymentOrders()])
 })
 onUnmounted(() => {
   componentUnmounted = true
+  for (const startAckWatcher of startAckWatchers) startAckWatcher.unsubscribe()
+  startAckWatchers = []
+  clearSuccessNotificationTimers()
+  networkPollingGate.dispose()
   stopPolling()
-  if (expiryTimer) window.clearInterval(expiryTimer)
-  expiryTimer = null
+  for (const lifecycle of Object.values(pollingLifecycles)) lifecycle.dispose()
+  expiryClock.dispose()
+  expiryClockToken = null
+  storageWriter.dispose()
 })
 </script>

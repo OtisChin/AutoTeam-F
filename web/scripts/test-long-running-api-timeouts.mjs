@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { serialOperationTimeoutMs } from '../src/api.js'
+import { PAYMENT_CANCEL_TIMEOUT_MS } from '../src/paymentRequestState.js'
+
+const api = readFileSync(new URL('../src/api.js', import.meta.url), 'utf8')
+const cpaPage = readFileSync(new URL('../src/components/CpaToSub2ApiPage.vue', import.meta.url), 'utf8')
+
+assert.match(api, /function serialOperationTimeoutMs\(items, perItemMs, minimumMs, overheadMs = 10_000\)/, 'serial provider operations should derive a timeout from batch size and route overhead')
+assert.equal(serialOperationTimeoutMs(Array(3000), 800_000, 810_000), 2_147_483_647, 'derived timeouts must stay within the browser timer range')
+assert.match(api, /deleteAccount:[^\n]+timeoutMs:\s*320_000/, 'single account deletion should outlive the backend browser executor')
+assert.match(api, /deleteAccountsBatch:[^\n]+timeoutMs:\s*serialOperationTimeoutMs\(emails,\s*30_000,\s*320_000,\s*140_000\)/, 'batch deletion should outlive every sequential account action and executor overhead')
+assert.match(api, /kickAccount:[^\n]+timeoutMs:\s*320_000/, 'account removal should not be reported failed while the backend mutation is still running')
+assert.match(api, /postSyncAccounts:[^\n]+timeoutMs:\s*320_000/, 'account synchronization should outlive the backend executor')
+assert.match(api, /submitManualAccountCallback:[^\n]+timeoutMs:\s*140_000/, 'one-time OAuth callback finalization should outlive code exchange retries and quota persistence')
+assert.match(api, /postSync:[^\n]+timeoutMs:\s*0/, 'CPA upload should remain owned across an unknown number of serial remote mutations')
+assert.match(api, /postSyncFromCpa:[^\n]+timeoutMs:\s*0/, 'CPA download should remain owned across an unknown number of serial remote reads and local writes')
+assert.match(api, /exportAccountCpaAuths:[^\n]+timeoutMs:\s*0/, 'CPA auth export should remain owned across serial Plus-plan verification and archive creation')
+assert.match(api, /selectCpaToSub2ApiOutputDir:[^\n]+timeoutMs:\s*0/, 'native directory selection should wait for the user instead of expiring on the default API deadline')
+assert.match(cpaPage, /const directoryChooserBusy = ref\(false\)/, 'native directory selection should expose a single-flight busy state')
+assert.match(cpaPage, /async function chooseOutputDir[\s\S]*if \(directoryChooserBusy\.value\) return[\s\S]*directoryChooserBusy\.value = true[\s\S]*finally[\s\S]*directoryChooserBusy\.value = false/, 'native directory selection should reject duplicate chooser submissions until the dialog closes')
+assert.match(cpaPage, /:disabled="busy \|\| directoryChooserBusy"[^>]*@click="chooseOutputDir\('settings'\)"/, 'the primary directory chooser button should be disabled while a chooser is open')
+assert.match(cpaPage, /:disabled="directoryChooserBusy"[^>]*@click="chooseOutputDir\('draft'\)"/, 'the settings-sheet directory chooser button should be disabled while a chooser is open')
+assert.match(api, /getAccountSubscription:[^\n]+timeoutMs:\s*270_000/, 'subscription lookup should outlive retries, warmups, and the final account check')
+assert.match(api, /getAccountLatestMail:[^\n]+timeoutMs:\s*0/, 'latest-mail lookup should not abandon a finite provider fallback chain without a backend-wide deadline')
+assert.match(api, /syncAccountHub:[^\n]+timeoutMs:\s*serialOperationTimeoutMs\(emails,\s*65_000,\s*80_000\)/, 'Hub sync should remain owned even when byte limits force one 60-second batch per account')
+assert.match(api, /setRegisterDomain:[^\n]+timeoutMs:\s*verify\s*\?\s*360_000\s*:\s*20_000/, 'verified domain changes should outlive provider login, create, retries, and cleanup')
+assert.match(api, /getTeamMembers:[^\n]+timeoutMs:\s*320_000/, 'team member discovery should outlive the server executor deadline')
+assert.match(api, /removeTeamMember:[^\n]+timeoutMs:\s*320_000/, 'team member removal should not time out while the remote mutation is still committing')
+assert.match(api, /generateBindLink:[^\n]+timeoutMs:\s*payload\?\.checkout_flow\s*===\s*'plus_trial'\s*\?\s*0\s*:\s*110_000/, 'bind-link generation should preserve long Plus-trial orchestration and outlive ordinary checkout fallbacks')
+assert.match(api, /openBindLinkWithAuthSession:[^\n]+timeoutMs:\s*0/, 'bind-link generation plus authenticated browser opening should not be abandoned while the server still owns checkout state')
+assert.equal(PAYMENT_CANCEL_TIMEOUT_MS, 360_000, '153 cancellation should cover ten serial 30-second remote cancellations plus overhead')
+assert.match(api, /cancelUsPaypal153Job:[^\n]+timeoutMs:\s*PAYMENT_CANCEL_TIMEOUT_MS/, '153 cancellation should use a finite backend-aware deadline')
+assert.match(api, /cancelUsPaypal153RemoteByBa:[^\n]+timeoutMs:\s*PAYMENT_CANCEL_TIMEOUT_MS/, 'BA cleanup should use the same finite backend-aware deadline')
+assert.match(api, /submitUsPaypal153Otp:[^\n]+timeoutMs:\s*40_000/, 'one-time OTP submission should outlive the remote 30-second request')
+assert.match(api, /submitUsPaypal153Captcha:[^\n]+timeoutMs:\s*40_000/, 'one-time captcha submission should outlive the remote 30-second request')
+assert.match(api, /redeemCardPoolItem:[^\n]+timeoutMs: serialOperationTimeoutMs\([^\n]+35_000[^\n]+45_000/, 'single card redemption should outlive its 30-second provider timeout')
+assert.match(api, /redeemCardPoolItems:[^\n]+timeoutMs: serialOperationTimeoutMs\([^\n]+35_000[^\n]+45_000/, 'card batch redemption should scale with serial provider calls')
+assert.match(api, /checkMailAccounts:[^\n]+timeoutMs: serialOperationTimeoutMs\([^\n]+35_000[^\n]+45_000/, 'mail checks should scale with serial 30-second provider calls')
+assert.match(api, /fetchMailAccounts:[^\n]+timeoutMs: serialOperationTimeoutMs\([^\n]+800_000[^\n]+810_000/, 'mail fetches should outlive six base and twenty detail/body provider calls per account')
+assert.match(api, /changeMailAccountPassword:[^\n]+timeoutMs: serialOperationTimeoutMs\([^\n]+160_000[^\n]+180_000/, 'mail password changes should outlive five serial provider requests per account')
+
+console.log('long-running API timeout contract passed')

@@ -80,7 +80,7 @@
                 </thead>
                 <tbody class="divide-y divide-slate-900">
                   <tr v-if="!paymentLinks.length"><td colspan="4" class="px-3 py-8 text-center text-slate-500">暂无链接</td></tr>
-                  <tr v-for="(item, index) in paymentLinks" :key="item.id" class="hover:bg-slate-900/50">
+                  <tr v-for="(item, index) in visiblePaymentLinks" :key="item.id" class="hover:bg-slate-900/50">
                     <td class="px-3 py-3">
                       <div class="flex items-center gap-2 text-xs text-slate-500"><span>#{{ String(index + 1).padStart(2, '0') }}</span><span v-if="item.jobId" class="font-mono">job {{ item.jobId }}</span></div>
                       <div class="mt-1 max-w-[460px] truncate font-mono text-xs text-slate-300">{{ item.value }}</div>
@@ -92,6 +92,10 @@
                   </tr>
                 </tbody>
               </table>
+              <div v-if="hiddenPaymentLinkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-slate-800 bg-slate-950/95 px-3 py-2 text-xs text-slate-500">
+                <span>已显示 {{ visiblePaymentLinks.length }} / {{ paymentLinks.length }}，剩余 {{ hiddenPaymentLinkCount }} 项</span>
+                <button @click="showMorePaymentLinks" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-800">加载更多</button>
+              </div>
             </div>
           </div>
         </section>
@@ -121,7 +125,7 @@
                 <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK / 使用情况</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
                 <tbody class="divide-y divide-slate-900">
                   <tr v-if="!paymentCdks.length"><td colspan="2" class="px-3 py-8 text-center text-slate-500">暂无 CDK</td></tr>
-                  <tr v-for="(item, index) in paymentCdks" :key="item.id" class="hover:bg-slate-900/50">
+                  <tr v-for="(item, index) in visiblePaymentCdks" :key="item.id" class="hover:bg-slate-900/50">
                     <td class="px-3 py-3">
                       <div class="flex items-center gap-2 text-xs text-slate-500"><span>#{{ String(index + 1).padStart(2, '0') }}</span><span class="inline-flex rounded-full border px-2 py-0.5 font-bold" :class="paymentCdkStatusClass(item.status)">{{ paymentCdkStatusText(item.status) }}</span></div>
                       <div class="mt-1 font-mono text-xs text-slate-300">{{ showCdks ? item.value : maskCdk(item.value) }}</div>
@@ -131,6 +135,10 @@
                   </tr>
                 </tbody>
               </table>
+              <div v-if="hiddenPaymentCdkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-slate-800 bg-slate-950/95 px-3 py-2 text-xs text-slate-500">
+                <span>已显示 {{ visiblePaymentCdks.length }} / {{ paymentCdks.length }}，剩余 {{ hiddenPaymentCdkCount }} 项</span>
+                <button @click="showMorePaymentCdks" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-800">加载更多</button>
+              </div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-slate-400">{{ paymentStatusText }}</div>
           </div>
@@ -303,7 +311,7 @@
             <button @click="start" :disabled="busy" class="rounded-lg px-5 py-2.5 text-sm font-semibold text-white transition disabled:opacity-50" :class="isTempExtract ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'">
               {{ busy ? '提取中...' : `${isTempExtract ? '开始临时提链' : '开始提链'} (${selectedEmails.length})` }}
             </button>
-            <button v-if="busy" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
+            <button v-if="busy && currentJob?.id" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
               {{ canceling ? '取消中...' : '取消提链' }}
             </button>
             <button @click="reloadAll" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
@@ -440,7 +448,7 @@
                 <option value="failed">提链失败</option>
               </select>
             </div>
-            <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+            <div v-if="recentResultFilter !== 'failed'" v-for="item in visibleRecentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
                 <a :href="item.link?.hosted_instructions_url || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!item.link?.hosted_instructions_url ? 'pointer-events-none opacity-50' : ''">打开</a>
@@ -448,13 +456,17 @@
                 <button @click="copy(item.link?.hosted_instructions_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100">复制链</button>
               </div>
             </div>
-            <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            <div v-if="recentResultFilter !== 'success'" v-for="item in visibleRecentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               {{ item.email }}：{{ item.error }}
             </div>
-            <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
+            <div v-if="recentResultFilter === 'all'" v-for="item in visibleRecentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
             </div>
             <div v-if="!filteredRecentResultCount" class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-8 text-center text-xs text-gray-500">当前筛选下暂无结果</div>
+            <div v-if="hiddenRecentResultCount > 0" class="sticky bottom-0 flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+              <span>已显示 {{ visibleRecentResultCount }} / {{ filteredRecentResultCount }}，剩余 {{ hiddenRecentResultCount }} 项</span>
+              <button @click="showMoreRecentResults" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+            </div>
           </div>
 
           <div v-else class="mt-5 max-h-72 space-y-4 overflow-y-auto pr-1">
@@ -505,7 +517,7 @@
             <tr v-if="!links.length">
               <td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
             </tr>
-            <tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50">
+            <tr v-for="link in visibleLinks" :key="link.id" class="hover:bg-gray-900/50">
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
               <td class="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{{ link.created_at }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td>
@@ -522,6 +534,10 @@
             </tr>
           </tbody>
         </table>
+        <div v-if="hiddenLinkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+          <span>已显示 {{ visibleLinks.length }} / {{ links.length }}，剩余 {{ hiddenLinkCount }} 项</span>
+          <button @click="showMoreLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+        </div>
       </div>
       </section>
     </template>
@@ -531,6 +547,12 @@
 <script setup>
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { createDeferredStorageWriter } from '../deferredStorage.js'
+import { createSharedPollingGate } from '../pollingLifecycle.js'
+import { readPollingSnapshot } from '../pollingRecovery.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
+import { cancelStartAckGeneration, commitStartAckSnapshot, markStartAckGenerationUnknown, reserveStartAckGeneration, watchStartAckGeneration } from '../startAckCas.js'
+import { LOCAL_PAYMENT_POLL_PAUSED, isAmbiguousPaymentFailure } from '../paymentRequestState.js'
 import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
@@ -540,13 +562,25 @@ const PIX_TASKS_STORAGE_KEY = 'autotoken_brazil_pix_tasks'
 const PIX_TAB_STORAGE_KEY = 'autotoken_brazil_pix_active_tab'
 const PAYMENT_STATE_STORAGE_KEY = 'autotoken_brazil_pix_payment_state'
 const TEMP_FORM_STORAGE_KEY = 'autotoken_brazil_pix_temp_form'
+const storageWriter = createDeferredStorageWriter()
+const sessionStorage = createSessionStorageFacade()
 const TEMP_CDK_STATUS_POLL_MS = 60000
 const TEMP_CDK_STATUS_SAMPLE_LIMIT = 5
 const TEMP_CDK_STATUS_REQUEST_DELAY_MS = 350
 const activePixTab = ref('extract')
-let tempCdkStatusTimer = null
 let tempCdkStatusDebounce = null
 let componentUnmounted = false
+let startAckWatchers = []
+let tempCdkStatusPollGeneration = 0
+const networkPollingGate = createSharedPollingGate()
+
+function persistJsonState(storageKey, value) {
+  if (componentUnmounted) {
+    storageWriter.writeJsonNow(storageKey, value)
+    return
+  }
+  storageWriter.queueJson(storageKey, value)
+}
 
 const ResultRow = defineComponent({
   props: { label: String, value: String },
@@ -607,6 +641,8 @@ const accountFilter = ref('')
 const accountStatusFilter = ref('all')
 const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
+const recentResultVisibleCount = ref(100)
+const linkVisibleCount = ref(100)
 const logRef = ref(null)
 const lastFailedEmails = ref([])
 const deletingPixAccounts = ref(new Set())
@@ -625,6 +661,8 @@ function createExtractTaskState() {
 
 const extractTask = createExtractTaskState()
 const tempTask = createExtractTaskState()
+const startAckPendingModes = new Set()
+const PIX_EXTRACTION_TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled'])
 
 const PAYMENT_MAX_CONCURRENCY = 20
 const PAYMENT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rejected_amount'])
@@ -633,6 +671,8 @@ const paymentLinkInput = ref('')
 const paymentCdkInput = ref('')
 const paymentLinks = ref([])
 const paymentCdks = ref([])
+const paymentLinkVisibleCount = ref(100)
+const paymentCdkVisibleCount = ref(100)
 const paymentBusy = ref(false)
 const paymentRunningCount = ref(0)
 const paymentStatusText = ref('等待加入链接和 CDK。')
@@ -657,6 +697,24 @@ const filteredRecentResultCount = computed(() => {
   if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
   return currentResultSuccesses.value.length + currentResultErrors.value.length + currentResultSkipped.value.length
 })
+const visibleRecentResultSuccesses = computed(() => {
+  if (recentResultFilter.value === 'failed') return []
+  return currentResultSuccesses.value.slice(0, recentResultVisibleCount.value)
+})
+const visibleRecentResultErrors = computed(() => {
+  if (recentResultFilter.value === 'success') return []
+  const remaining = recentResultFilter.value === 'failed'
+    ? recentResultVisibleCount.value
+    : Math.max(0, recentResultVisibleCount.value - visibleRecentResultSuccesses.value.length)
+  return currentResultErrors.value.slice(0, remaining)
+})
+const visibleRecentResultSkipped = computed(() => {
+  if (recentResultFilter.value !== 'all') return []
+  const remaining = Math.max(0, recentResultVisibleCount.value - visibleRecentResultSuccesses.value.length - visibleRecentResultErrors.value.length)
+  return currentResultSkipped.value.slice(0, remaining)
+})
+const visibleRecentResultCount = computed(() => visibleRecentResultSuccesses.value.length + visibleRecentResultErrors.value.length + visibleRecentResultSkipped.value.length)
+const hiddenRecentResultCount = computed(() => Math.max(0, filteredRecentResultCount.value - visibleRecentResultCount.value))
 const accountEmailByLower = computed(() => {
   const map = new Map()
   for (const account of accounts.value) {
@@ -698,6 +756,12 @@ const filteredAccounts = computed(() => {
 })
 const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
 const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
+const visibleLinks = computed(() => links.value.slice(0, linkVisibleCount.value))
+const hiddenLinkCount = computed(() => Math.max(0, links.value.length - visibleLinks.value.length))
+const visiblePaymentLinks = computed(() => paymentLinks.value.slice(0, paymentLinkVisibleCount.value))
+const hiddenPaymentLinkCount = computed(() => Math.max(0, paymentLinks.value.length - visiblePaymentLinks.value.length))
+const visiblePaymentCdks = computed(() => paymentCdks.value.slice(0, paymentCdkVisibleCount.value))
+const hiddenPaymentCdkCount = computed(() => Math.max(0, paymentCdks.value.length - visiblePaymentCdks.value.length))
 const progressText = computed(() => {
   const total = currentJob.value?.total || 0
   const completed = currentJob.value?.completed || 0
@@ -721,8 +785,8 @@ const badgeClass = computed(() => {
 
 const paymentAvailableCdks = computed(() => paymentCdks.value.filter(item => item.status === 'available').length)
 const paymentPendingLinks = computed(() => paymentLinks.value.filter(item => item.status === 'pending').length)
-const paymentRetryableLinks = computed(() => paymentLinks.value.filter(item => PAYMENT_RETRYABLE_LINK_STATUSES.has(item.status)).length)
-const paymentRunnableCount = computed(() => Math.min(paymentRetryableLinks.value, paymentAvailableCdks.value))
+const paymentRetryableLinks = computed(() => paymentLinks.value.filter(paymentTaskRunnable).length)
+const paymentRunnableCount = computed(() => paymentRetryableLinks.value)
 const paymentSummaryCards = computed(() => [
   { label: '待处理链接', value: paymentPendingLinks.value, class: 'border-blue-500/30' },
   { label: '正在运行', value: paymentRunningCount.value, class: 'border-sky-500/30' },
@@ -814,6 +878,7 @@ function paymentLinkStatusText(status) {
   if (status === 'success') return '成功'
   if (status === 'failed') return '失败'
   if (status === 'needs_action') return '需处理'
+  if (status === 'unknown') return '结果未知'
   return '待处理'
 }
 
@@ -822,6 +887,7 @@ function paymentLinkStatusClass(status) {
   if (status === 'success') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
   if (status === 'failed') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   if (status === 'needs_action') return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+  if (status === 'unknown') return 'border-orange-500/30 bg-orange-500/10 text-orange-200'
   return 'border-slate-700 bg-slate-900 text-slate-400'
 }
 
@@ -846,7 +912,7 @@ function addPaymentLinks() {
     const normalized = normalizePaymentUrl(line)
     if (existing.has(normalized)) continue
     existing.add(normalized)
-    items.push({ id: makePaymentId('link'), value: line, status: 'pending', message: '', cdk: '', cdkId: '', jobId: '', statusToken: '' })
+    items.push({ id: makePaymentId('link'), value: line, status: 'pending', message: '', cdk: '', cdkId: '', jobId: '', statusToken: '', remoteTerminal: false })
   }
   if (items.length) paymentLinks.value = [...paymentLinks.value, ...items]
   paymentLinkInput.value = ''
@@ -855,6 +921,10 @@ function addPaymentLinks() {
 
 function normalizePaymentUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function paymentTaskHasLiveRemoteJob(item) {
+  return Boolean(item?.jobId && item?.statusToken && item?.remoteTerminal !== true)
 }
 
 function normalizePaymentItem(item, kind) {
@@ -866,29 +936,33 @@ function normalizePaymentItem(item, kind) {
     return {
       id: String(raw.id || makePaymentId('cdk')),
       value,
-      status: status === 'reserved' ? 'available' : status,
-      message: status === 'reserved' ? '刷新后已释放，可重新配对。' : String(raw.message || ''),
-      linkId: '',
+      status,
+      message: String(raw.message || ''),
+      linkId: String(raw.linkId || ''),
       jobId: String(raw.jobId || ''),
     }
   }
-  const status = ['pending', 'running', 'success', 'failed', 'needs_action'].includes(raw.status) ? raw.status : 'pending'
+  const status = ['pending', 'running', 'success', 'failed', 'needs_action', 'unknown'].includes(raw.status) ? raw.status : 'pending'
+  const remoteTerminal = raw.remoteTerminal === true || status === 'success'
+  const restorable = Boolean(raw.jobId && raw.statusToken && !remoteTerminal)
+  const normalizedStatus = status === 'running' ? (restorable ? 'needs_action' : 'unknown') : status
   return {
     id: String(raw.id || makePaymentId('link')),
     value,
-    status: status === 'running' ? 'pending' : status,
-    message: status === 'running' ? '刷新后已恢复为待处理，请查询服务端或重新运行。' : String(raw.message || ''),
-    cdk: status === 'running' ? '' : String(raw.cdk || ''),
-    cdkId: status === 'running' ? '' : String(raw.cdkId || ''),
+    status: normalizedStatus,
+    message: status === 'running' ? (restorable ? '页面已恢复，可继续查询远端支付任务。' : '上次提交结果未知，关联 CDK 保持锁定。') : String(raw.message || ''),
+    cdk: String(raw.cdk || ''),
+    cdkId: String(raw.cdkId || ''),
     jobId: String(raw.jobId || ''),
     statusToken: String(raw.statusToken || ''),
+    remoteTerminal,
     accountEmail: String(raw.accountEmail || ''),
   }
 }
 
 function loadPaymentState() {
   try {
-    const raw = JSON.parse(localStorage.getItem(PAYMENT_STATE_STORAGE_KEY) || '{}')
+    const raw = JSON.parse(sessionStorage.getItem(PAYMENT_STATE_STORAGE_KEY) || '{}')
     paymentLinks.value = Array.isArray(raw.links) ? raw.links.map(item => normalizePaymentItem(item, 'link')).filter(Boolean) : []
     paymentCdks.value = Array.isArray(raw.cdks) ? raw.cdks.map(item => normalizePaymentItem(item, 'cdk')).filter(Boolean) : []
     paymentStatusText.value = paymentLinks.value.length || paymentCdks.value.length ? '已恢复上次支付页数据。' : '等待加入链接和 CDK。'
@@ -900,18 +974,17 @@ function loadPaymentState() {
 }
 
 function savePaymentState() {
-  const snapshot = {
+  persistJsonState(PAYMENT_STATE_STORAGE_KEY, () => ({
     links: paymentLinks.value,
     cdks: paymentCdks.value,
     savedAt: Date.now(),
-  }
-  localStorage.setItem(PAYMENT_STATE_STORAGE_KEY, JSON.stringify(snapshot))
+  }))
 }
 
 function loadExtractFormState() {
-  form.value.proxies = localStorage.getItem(PROXY_STORAGE_KEY) || ''
+  form.value.proxies = sessionStorage.getItem(PROXY_STORAGE_KEY) || ''
   try {
-    const raw = JSON.parse(localStorage.getItem(PIX_FORM_STORAGE_KEY) || '{}')
+    const raw = JSON.parse(sessionStorage.getItem(PIX_FORM_STORAGE_KEY) || '{}')
     form.value.concurrency = Math.max(1, Math.min(20, Number(raw.concurrency || form.value.concurrency || 1)))
     form.value.maxAttempts = Math.max(1, Math.min(20, Number(raw.maxAttempts || form.value.maxAttempts || 5)))
     form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(raw.proxyPreflightAttempts || form.value.proxyPreflightAttempts || 5)))
@@ -928,8 +1001,8 @@ function loadExtractFormState() {
 }
 
 function saveExtractFormState() {
-  localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
-  localStorage.setItem(PIX_FORM_STORAGE_KEY, JSON.stringify({
+  storageWriter.queueText(PROXY_STORAGE_KEY, () => form.value.proxies || '')
+  persistJsonState(PIX_FORM_STORAGE_KEY, () => ({
     concurrency: Math.max(1, Math.min(20, Number(form.value.concurrency || 1))),
     maxAttempts: Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5))),
     proxyPreflightAttempts: Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5))),
@@ -944,7 +1017,7 @@ function saveExtractFormState() {
 
 function loadTempFormState() {
   try {
-    const raw = JSON.parse(localStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')
+    const raw = JSON.parse(sessionStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')
     tempForm.value.cdk = String(raw.cdk || '')
     tempForm.value.concurrency = Math.max(1, Number(raw.concurrency || 5))
   } catch {
@@ -953,7 +1026,7 @@ function loadTempFormState() {
 }
 
 function saveTempFormState() {
-  localStorage.setItem(TEMP_FORM_STORAGE_KEY, JSON.stringify({
+  persistJsonState(TEMP_FORM_STORAGE_KEY, () => ({
     cdk: tempForm.value.cdk || '',
     concurrency: Math.max(1, Number(tempForm.value.concurrency || 5)),
     savedAt: Date.now(),
@@ -968,26 +1041,90 @@ function taskForKey(key) {
   return key === 'tempExtract' ? tempTask : extractTask
 }
 
-function loadStoredPixTasks() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(PIX_TASKS_STORAGE_KEY) || '{}')
-    return raw && typeof raw === 'object' ? raw : {}
-  } catch {
-    return {}
+function isBlockingPixExtractionJob(job) {
+  const jobId = String(job?.id || '').trim()
+  if (!jobId) return false
+  const status = String(job?.status || '').trim().toLowerCase()
+  return !PIX_EXTRACTION_TERMINAL_STATUSES.has(status)
+}
+
+function syncPixExtractionBusy(task) {
+  const locked = startAckPendingModes.has(taskKey(task)) || isBlockingPixExtractionJob(task?.currentJob?.value)
+  task.busy.value = locked
+  return locked
+}
+
+function applyStartAckCheckpoint(key, checkpoint) {
+  const task = taskForKey(key)
+  if (!checkpoint) {
+    startAckPendingModes.delete(key)
+    syncPixExtractionBusy(task)
+    return
   }
+  startAckPendingModes.add(key)
+  task.busy.value = true
+  task.canceling.value = false
+  const requestId = String(checkpoint.clientRequestId || '').trim()
+  const suffix = requestId ? `（请求 ${requestId}）` : ''
+  if (checkpoint.status === 'unknown') {
+    setStatus(`上次 PIX 任务启动结果未知${suffix}，已锁定重复提交；请保留当前会话等待人工核对。`, true, task)
+    return
+  }
+  setStatus(`上次 PIX 任务仍在等待后端确认${suffix}，当前页面会在 ACK 到达后自动恢复。`, false, task)
+}
+
+function installStartAckWatchers() {
+  for (const watcher of startAckWatchers) watcher.unsubscribe()
+  startAckWatchers = ['extract', 'tempExtract'].map((key) => {
+    const watcher = watchStartAckGeneration({
+      storage: sessionStorage,
+      storageKey: PIX_TASKS_STORAGE_KEY,
+      scopeKey: key,
+      onChange: (event) => {
+        if (componentUnmounted) return
+        if (event.type === 'acknowledged') {
+          if (event.root) storedPixTasksCache = event.root
+          applyStartAckCheckpoint(key, null)
+          resumeStoredPixTask(key, event.root)
+          return
+        }
+        if (event.type === 'unknown') {
+          applyStartAckCheckpoint(key, event.checkpoint)
+          return
+        }
+        applyStartAckCheckpoint(key, null)
+        setStatus(`上次 PIX 任务启动失败：${event.error || '请求未被后端接受'}`, true, taskForKey(key))
+      },
+    })
+    applyStartAckCheckpoint(key, watcher.checkpoint)
+    return watcher
+  })
+}
+
+let storedPixTasksCache = null
+
+function loadStoredPixTasks() {
+  if (storedPixTasksCache) return storedPixTasksCache
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(PIX_TASKS_STORAGE_KEY) || '{}')
+    storedPixTasksCache = raw && typeof raw === 'object' ? raw : {}
+  } catch {
+    storedPixTasksCache = {}
+  }
+  return storedPixTasksCache
 }
 
 function saveStoredPixTask(key, payload) {
   const tasks = loadStoredPixTasks()
   tasks[key] = { ...payload, savedAt: Date.now() }
-  localStorage.setItem(PIX_TASKS_STORAGE_KEY, JSON.stringify(tasks))
+  persistJsonState(PIX_TASKS_STORAGE_KEY, () => storedPixTasksCache)
 }
 
 function clearStoredPixTask(key, jobId = '') {
   const tasks = loadStoredPixTasks()
   if (jobId && tasks[key]?.jobId && tasks[key].jobId !== jobId) return
   delete tasks[key]
-  localStorage.setItem(PIX_TASKS_STORAGE_KEY, JSON.stringify(tasks))
+  persistJsonState(PIX_TASKS_STORAGE_KEY, () => storedPixTasksCache)
 }
 
 function dedupeExtractedLinks(items) {
@@ -1029,13 +1166,14 @@ function upsertExtractedPaymentLink(record, existingByAccount, existingUrls) {
   const accountKey = account.toLowerCase()
   const existing = accountKey ? existingByAccount.get(accountKey) : null
   if (existing) {
-    if (existing.status === 'running') return 'running'
+    if (existing.status === 'running' || paymentTaskHasLiveRemoteJob(existing)) return 'running'
     releasePaymentLinkCdk(existing)
     existing.value = url
     existing.status = 'pending'
     existing.message = `来自提链账号 ${account}，已用最新链接覆盖旧链接`
     existing.jobId = ''
     existing.statusToken = ''
+    existing.remoteTerminal = false
     existing.accountEmail = account
     existingUrls.add(normalized)
     return 'updated'
@@ -1049,6 +1187,7 @@ function upsertExtractedPaymentLink(record, existingByAccount, existingUrls) {
     cdkId: '',
     jobId: '',
     statusToken: '',
+    remoteTerminal: false,
     accountEmail: account,
   }
   paymentLinks.value = [...paymentLinks.value, item]
@@ -1081,6 +1220,10 @@ function prunePaymentLinksByImportableAccounts(importableLinks) {
   const removedIds = new Set()
   const kept = []
   for (const link of paymentLinks.value) {
+    if (paymentTaskHasLiveRemoteJob(link)) {
+      kept.push(link)
+      continue
+    }
     const account = String(link.accountEmail || '').trim().toLowerCase()
     const url = normalizePaymentUrl(link.value)
     const looksLikeImportedPixLink = /payments\.stripe\.com\/qr\/instructions/i.test(url)
@@ -1146,6 +1289,11 @@ function addPaymentCdks() {
 }
 
 function removePaymentLink(id) {
+  const item = paymentLinks.value.find(row => row.id === id)
+  if (paymentTaskHasLiveRemoteJob(item)) {
+    paymentStatusText.value = '远端支付任务尚未结束，已保留支付记录和关联 CDK。'
+    return
+  }
   paymentLinks.value = paymentLinks.value.filter(item => item.id !== id)
   for (const cdk of paymentCdks.value) {
     if (cdk.linkId === id && cdk.status === 'reserved') {
@@ -1158,7 +1306,9 @@ function removePaymentLink(id) {
 
 function clearPaymentLinks() {
   if (!paymentLinks.value.length || paymentBusy.value) return
-  const removedLinkIds = new Set(paymentLinks.value.map(item => String(item.id || '')).filter(Boolean))
+  const retained = paymentLinks.value.filter(paymentTaskHasLiveRemoteJob)
+  const retainedIds = new Set(retained.map(item => String(item.id || '')).filter(Boolean))
+  const removedLinkIds = new Set(paymentLinks.value.map(item => String(item.id || '')).filter(id => id && !retainedIds.has(id)))
   let released = 0
   for (const cdk of paymentCdks.value) {
     if (cdk.linkId && removedLinkIds.has(String(cdk.linkId)) && cdk.status === 'reserved') {
@@ -1168,12 +1318,23 @@ function clearPaymentLinks() {
       released += 1
     }
   }
-  const removed = paymentLinks.value.length
-  paymentLinks.value = []
-  paymentStatusText.value = released ? `已移除 ${removed} 条链接，并释放 ${released} 枚 CDK。` : `已移除 ${removed} 条链接。`
+  const removed = paymentLinks.value.length - retained.length
+  paymentLinks.value = retained
+  const retainedText = retained.length ? `，保留 ${retained.length} 条远端未结束任务` : ''
+  paymentStatusText.value = released ? `已移除 ${removed} 条链接，并释放 ${released} 枚 CDK${retainedText}。` : `已移除 ${removed} 条链接${retainedText}。`
 }
 
 function removePaymentCdk(id) {
+  const target = paymentCdks.value.find(item => item.id === id)
+  const linkedLiveJob = paymentLinks.value.find(item => paymentTaskHasLiveRemoteJob(item) && (
+    item.cdkId === id
+    || (target?.linkId && item.id === target.linkId)
+    || (target?.value && item.cdk === target.value)
+  ))
+  if (linkedLiveJob) {
+    paymentStatusText.value = '关联的远端支付任务尚未结束，已保留该 CDK。'
+    return
+  }
   paymentCdks.value = paymentCdks.value.filter(item => item.id !== id)
   for (const link of paymentLinks.value) {
     if (link.cdkId === id && link.status === 'pending') {
@@ -1183,23 +1344,60 @@ function removePaymentCdk(id) {
   }
 }
 
-function clearFinishedPayments() {
-  paymentLinks.value = paymentLinks.value.filter(item => !['success', 'failed', 'needs_action'].includes(item.status))
-  paymentCdks.value = paymentCdks.value.filter(item => !['used', 'failed'].includes(item.status))
-  paymentStatusText.value = '已清理结束项。'
+function paymentTaskClearable(item) {
+  const status = String(item?.status || 'pending')
+  const restorable = paymentTaskHasLiveRemoteJob(item)
+  if (restorable) return false
+  return ['success', 'failed', 'needs_action'].includes(status)
 }
 
-function nextPaymentPair() {
-  const link = paymentLinks.value.find(item => PAYMENT_RETRYABLE_LINK_STATUSES.has(item.status))
+function clearFinishedPayments() {
+  const removedIds = new Set(paymentLinks.value.filter(paymentTaskClearable).map(item => item.id))
+  const protectedJobs = paymentLinks.value.filter(paymentTaskHasLiveRemoteJob)
+  const protectedCdkIds = new Set(protectedJobs.map(item => item.cdkId).filter(Boolean))
+  const protectedCdkValues = new Set(protectedJobs.map(item => item.cdk).filter(Boolean))
+  const protectedLinkIds = new Set(protectedJobs.map(item => item.id).filter(Boolean))
+  for (const cdk of paymentCdks.value) {
+    if (cdk.status === 'reserved' && removedIds.has(cdk.linkId)) {
+      cdk.status = 'available'
+      cdk.linkId = ''
+      cdk.message = '关联的已结束任务已清理，CDK 已释放。'
+    }
+  }
+  paymentLinks.value = paymentLinks.value.filter(item => !paymentTaskClearable(item))
+  paymentCdks.value = paymentCdks.value.filter(item => (
+    protectedCdkIds.has(item.id)
+    || protectedCdkValues.has(item.value)
+    || protectedLinkIds.has(item.linkId)
+    || !['used', 'failed'].includes(item.status)
+  ))
+  paymentStatusText.value = '已清理结束项。'
+  savePaymentState()
+}
+
+function paymentTaskRunnable(item) {
+  if (!item?.value) return false
+  if (item.jobId && item.statusToken) return !['success', 'running'].includes(String(item.status || 'pending'))
+  return PAYMENT_RETRYABLE_LINK_STATUSES.has(item.status) && paymentCdks.value.some(cdk => cdk.status === 'available')
+}
+
+function nextPaymentPair(queriedJobIds = new Set()) {
+  const resumable = paymentLinks.value.find(item => item.jobId && item.statusToken && paymentTaskRunnable(item) && !queriedJobIds.has(item.jobId))
+  if (resumable) {
+    const cdk = paymentCdks.value.find(item => item.id === resumable.cdkId || item.value === resumable.cdk) || null
+    return { link: resumable, cdk, hasExistingJob: true }
+  }
+  const link = paymentLinks.value.find(item => !item.jobId && PAYMENT_RETRYABLE_LINK_STATUSES.has(item.status))
   const cdk = paymentCdks.value.find(item => item.status === 'available')
   if (!link || !cdk) return null
   link.jobId = ''
   link.statusToken = ''
+  link.remoteTerminal = false
   link.cdk = cdk.value
   link.cdkId = cdk.id
   cdk.linkId = link.id
   cdk.status = 'reserved'
-  return { link, cdk }
+  return { link, cdk, hasExistingJob: false }
 }
 
 function setPaymentFailure(link, cdk, message, { cdkFailed = false, linkNeedsAction = true, retryLink = false } = {}) {
@@ -1209,14 +1407,16 @@ function setPaymentFailure(link, cdk, message, { cdkFailed = false, linkNeedsAct
     link.jobId = ''
     link.statusToken = ''
   }
-  if (cdkFailed) {
-    cdk.status = 'failed'
-    cdk.linkId = ''
-    cdk.message = message
-  } else {
-    cdk.status = 'available'
-    cdk.linkId = ''
-    cdk.message = '支付未成功，CDK 已释放，可重新配对。'
+  if (cdk) {
+    if (cdkFailed) {
+      cdk.status = 'failed'
+      cdk.linkId = ''
+      cdk.message = message
+    } else {
+      cdk.status = 'available'
+      cdk.linkId = ''
+      cdk.message = '支付未成功，CDK 已释放，可重新配对。'
+    }
   }
   if (retryLink || !cdkFailed) {
     link.cdk = ''
@@ -1255,42 +1455,63 @@ function isCdkUnavailablePaymentError(code, message) {
 
 async function waitPaymentJob(link) {
   for (;;) {
+    if (!await networkPollingGate.waitUntilAvailable() || componentUnmounted) {
+      return { status: LOCAL_PAYMENT_POLL_PAUSED, message: '页面已关闭，远端支付任务仍在运行。' }
+    }
     const data = await api.getBrazilPixPaymentJob(link.jobId, link.statusToken)
     const job = data.job || {}
     const status = String(job.status || '')
     link.message = job.message || status || '处理中'
     if (PAYMENT_TERMINAL_STATUSES.has(status)) return job
-    await new Promise(resolve => window.setTimeout(resolve, 2000))
+    if (!await networkPollingGate.wait(2000)) return { status: LOCAL_PAYMENT_POLL_PAUSED, message: '页面已关闭，远端支付任务仍在运行。' }
   }
 }
 
 async function runPaymentPair(link, cdk) {
+  let hasExistingJob = Boolean(link?.jobId && link?.statusToken)
   paymentRunningCount.value += 1
   link.status = 'running'
-  link.message = '提交支付任务中...'
-  cdk.status = 'reserved'
-  cdk.message = '已分配，等待支付结果。'
+  link.message = hasExistingJob ? '正在查询远端支付任务...' : '提交支付任务中...'
+  if (!hasExistingJob && cdk) {
+    cdk.status = 'reserved'
+    cdk.message = '已分配，等待支付结果。'
+  }
   try {
-    const payload = {
-      cdk: cleanText(cdk?.value),
-      link: normalizePaymentUrl(link?.value),
+    if (!hasExistingJob) {
+      const payload = {
+        cdk: cleanText(cdk?.value),
+        link: normalizePaymentUrl(link?.value),
+      }
+      if (!payload.cdk || !payload.link) {
+        throw new Error(`支付提交参数为空：CDK=${payload.cdk ? '已填写' : '空'}，链接=${payload.link ? '已填写' : '空'}`)
+      }
+      const submitted = await api.submitBrazilPixPayment(payload)
+      if (submitted?.ok === false) {
+        const err = new Error(submitted.message || submitted.error || '支付服务拒绝提交')
+        err.code = submitted.code || ''
+        err.data = submitted
+        throw err
+      }
+      link.jobId = submitted.job_id || ''
+      link.statusToken = submitted.status_token || ''
+      link.remoteTerminal = false
+      cdk.jobId = link.jobId
+      link.message = submitted.message || '已进入支付队列。'
+      if (!link.jobId || !link.statusToken) throw new Error('支付服务未返回 job_id/status_token')
+      hasExistingJob = true
     }
-    if (!payload.cdk || !payload.link) {
-      throw new Error(`支付提交参数为空：CDK=${payload.cdk ? '已填写' : '空'}，链接=${payload.link ? '已填写' : '空'}`)
-    }
-    const submitted = await api.submitBrazilPixPayment(payload)
-    if (submitted?.ok === false) {
-      const err = new Error(submitted.message || submitted.error || '支付服务拒绝提交')
-      err.code = submitted.code || ''
-      err.data = submitted
-      throw err
-    }
-    link.jobId = submitted.job_id || ''
-    link.statusToken = submitted.status_token || ''
-    cdk.jobId = link.jobId
-    link.message = submitted.message || '已进入支付队列。'
-    if (!link.jobId || !link.statusToken) throw new Error('支付服务未返回 job_id/status_token')
     const job = await waitPaymentJob(link)
+    if (job.status === LOCAL_PAYMENT_POLL_PAUSED) {
+      link.status = 'needs_action'
+      link.message = job.message
+      if (cdk) {
+        cdk.status = 'reserved'
+        cdk.linkId = link.id
+        cdk.message = '远端任务仍在运行，重新进入页面后可继续查询。'
+      }
+      return
+    }
+    link.remoteTerminal = true
     if (job.status === 'succeeded') {
       link.status = 'success'
       const accountMark = job.account_email ? `账号 ${job.account_email} 已标记 Plus / Pix。` : ''
@@ -1310,10 +1531,21 @@ async function runPaymentPair(link, cdk) {
     const code = paymentErrorCode(error)
     const cdkBusy = isCdkBusyPaymentError(code, message)
     const cdkUnavailable = isCdkUnavailablePaymentError(code, message)
-    const cdkFailed = cdkBusy || cdkUnavailable
-    setPaymentFailure(link, cdk, message, { cdkFailed, retryLink: cdkBusy || cdkUnavailable })
+    if (isAmbiguousPaymentFailure(error) || paymentTaskHasLiveRemoteJob(link)) {
+      link.status = hasExistingJob ? 'needs_action' : 'unknown'
+      link.message = `${message}；远端结果未知，已锁定关联 CDK，避免重复支付。`
+      if (cdk) {
+        cdk.status = 'reserved'
+        cdk.linkId = link.id
+        cdk.message = '远端提交或查询结果未知，已禁止自动复用。'
+      }
+    } else {
+      const cdkFailed = cdkBusy || cdkUnavailable
+      setPaymentFailure(link, cdk, message, { cdkFailed, retryLink: cdkBusy || cdkUnavailable })
+    }
   } finally {
     paymentRunningCount.value = Math.max(0, paymentRunningCount.value - 1)
+    savePaymentState()
   }
 }
 
@@ -1328,10 +1560,12 @@ async function runAllPayments() {
   if (!paymentRunnableCount.value || paymentBusy.value) return
   paymentBusy.value = true
   paymentStatusText.value = `开始支付，最多并发 ${PAYMENT_MAX_CONCURRENCY} 项。`
+  const queriedJobIds = new Set()
   const workers = Array.from({ length: Math.min(PAYMENT_MAX_CONCURRENCY, paymentRunnableCount.value) }, async () => {
     for (;;) {
-      const pair = nextPaymentPair()
+      const pair = nextPaymentPair(queriedJobIds)
       if (!pair) return
+      if (pair.hasExistingJob) queriedJobIds.add(pair.link.jobId)
       await runPaymentPair(pair.link, pair.cdk)
     }
   })
@@ -1429,6 +1663,22 @@ function showMoreAccounts() {
   accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
 }
 
+function showMoreLinks() {
+  linkVisibleCount.value = Math.min(links.value.length, linkVisibleCount.value + 100)
+}
+
+function showMorePaymentLinks() {
+  paymentLinkVisibleCount.value = Math.min(paymentLinks.value.length, paymentLinkVisibleCount.value + 100)
+}
+
+function showMorePaymentCdks() {
+  paymentCdkVisibleCount.value = Math.min(paymentCdks.value.length, paymentCdkVisibleCount.value + 100)
+}
+
+function showMoreRecentResults() {
+  recentResultVisibleCount.value = Math.min(filteredRecentResultCount.value, recentResultVisibleCount.value + 100)
+}
+
 function toggleLink(id) {
   const next = new Set(selectedLinkIds.value)
   if (next.has(id)) next.delete(id)
@@ -1508,9 +1758,44 @@ async function deleteSelectedPixAccounts() {
 async function poll(jobId, task = activeExtractTask.value) {
   const key = taskKey(task)
   let lastSyncedCompleted = 0
+  let pollingFailureCount = 0
   for (;;) {
     if (componentUnmounted) return
-    const data = await api.getBrazilPixJob(jobId)
+    if (!await networkPollingGate.waitUntilAvailable() || componentUnmounted) return
+    const recovery = await readPollingSnapshot({
+      request: () => api.getBrazilPixJob(jobId),
+      wait: delayMs => networkPollingGate.wait(delayMs),
+      attempt: pollingFailureCount,
+      onTransientError: (error, delayMs) => {
+        if (componentUnmounted) return
+        setStatus(`任务状态查询暂时失败：${cleanText(error?.message || error)}；任务与账号占用已保留，${Math.ceil(delayMs / 1000)} 秒后重试。`, true, task)
+      },
+    })
+    if (componentUnmounted) return
+    if (recovery.kind === 'retry') {
+      pollingFailureCount = recovery.attempt
+      continue
+    }
+    if (recovery.kind === 'missing') {
+      clearStoredPixTask(key, jobId)
+      task.currentJob.value = null
+      setStatus('任务已不存在或后端已重启，已停止轮询并保留现有结果。', true, task)
+      await Promise.all([refreshLinks(), reloadAccounts()])
+      return
+    }
+    if (['permanent', 'paused'].includes(recovery.kind)) {
+      task.currentJob.value = { ...(task.currentJob.value || {}), id: jobId, status: 'recovery_paused' }
+      const saved = loadStoredPixTasks()[key] || {}
+      saveStoredPixTask(key, { ...saved, jobId, status: 'recovery_paused' })
+      const reason = recovery.kind === 'permanent'
+        ? `任务状态查询被服务端拒绝：${cleanText(recovery.error?.message || recovery.error)}`
+        : `任务状态连续查询失败 ${recovery.attempt} 次`
+      setStatus(`${reason}；已暂停本轮查询并保留任务与账号占用，重新进入页面后可恢复。`, true, task)
+      return
+    }
+    if (recovery.kind !== 'snapshot' || componentUnmounted) return
+    pollingFailureCount = 0
+    const data = recovery.value
     const completed = Number(data.completed || 0)
     const total = Number(data.total || 0)
     const shouldSyncIncremental = data.result && completed > lastSyncedCompleted && ['running', 'cancelling'].includes(data.status)
@@ -1548,41 +1833,47 @@ async function poll(jobId, task = activeExtractTask.value) {
       throw new Error(data.error || '生成失败')
     }
     setStatus(total ? `任务执行中，已完成 ${completed}/${total}，已记录 ${task.logs.value.length} 条日志。` : `任务执行中，已记录 ${task.logs.value.length} 条日志。`, false, task)
-    await new Promise(resolve => window.setTimeout(resolve, 1000))
+    if (!await networkPollingGate.wait(1000)) return
   }
+}
+
+function resumeStoredPixTask(key, stored = null) {
+  if (stored) storedPixTasksCache = stored
+  const saved = (stored || loadStoredPixTasks())[key] || {}
+  const jobId = String(saved.jobId || '').trim()
+  if (!jobId) return false
+  const task = taskForKey(key)
+  if (task.busy.value && String(task.currentJob.value?.id || '') === jobId) return true
+  startAckPendingModes.delete(key)
+  task.busy.value = true
+  task.canceling.value = false
+  task.currentJob.value = {
+    id: jobId,
+    status: 'queued',
+    total: Number(saved.total || saved.accountCount || 0),
+    completed: 0,
+    concurrency: Number(saved.concurrency || 1),
+    running_count: 0,
+  }
+  task.logs.value = []
+  task.statusError.value = false
+  task.statusText.value = key === 'tempExtract'
+    ? '已恢复临时提链任务，正在重新同步后端进度。'
+    : '已恢复提链任务，正在重新同步后端进度。'
+  poll(jobId, task).catch(error => {
+    if (componentUnmounted) return
+    setStatus(`恢复任务失败：${cleanText(error.message || error)}`, true, task)
+  }).finally(() => {
+    if (componentUnmounted) return
+    syncPixExtractionBusy(task)
+    task.canceling.value = false
+  })
+  return true
 }
 
 function resumeStoredPixTasks() {
   const stored = loadStoredPixTasks()
-  for (const key of ['extract', 'tempExtract']) {
-    const saved = stored[key] || {}
-    const jobId = String(saved.jobId || '').trim()
-    if (!jobId) continue
-    const task = taskForKey(key)
-    task.busy.value = true
-    task.canceling.value = false
-    task.currentJob.value = {
-      id: jobId,
-      status: 'queued',
-      total: Number(saved.total || saved.accountCount || 0),
-      completed: 0,
-      concurrency: Number(saved.concurrency || 1),
-      running_count: 0,
-    }
-    task.logs.value = []
-    task.statusError.value = false
-    task.statusText.value = key === 'tempExtract'
-      ? '已恢复临时提链任务，正在重新同步后端进度。'
-      : '已恢复提链任务，正在重新同步后端进度。'
-    poll(jobId, task).catch(error => {
-      if (componentUnmounted) return
-      setStatus(`恢复任务失败：${cleanText(error.message || error)}`, true, task)
-    }).finally(() => {
-      if (componentUnmounted) return
-      task.busy.value = false
-      task.canceling.value = false
-    })
-  }
+  for (const key of ['extract', 'tempExtract']) resumeStoredPixTask(key, stored)
 }
 
 function validateStart(emails = selectedEmails.value) {
@@ -1625,6 +1916,7 @@ async function checkTempCdkStatus(options = {}) {
     const sampledCdks = cdks.slice(0, TEMP_CDK_STATUS_SAMPLE_LIMIT)
     const results = []
     for (const cdk of sampledCdks) {
+      if (!await networkPollingGate.waitUntilAvailable() || componentUnmounted) return tempCdkStatus.value
       try {
         const data = await api.getBrazilPixTempCdkStatus({ cdk, force })
         results.push({ cdk, ok: true, info: data?.cdk || {}, data })
@@ -1632,7 +1924,7 @@ async function checkTempCdkStatus(options = {}) {
         results.push({ cdk, ok: false, error: cleanText(error.message || error), info: {} })
       }
       if (sampledCdks.length > 1) {
-        await new Promise(resolve => window.setTimeout(resolve, TEMP_CDK_STATUS_REQUEST_DELAY_MS))
+        if (!await networkPollingGate.wait(TEMP_CDK_STATUS_REQUEST_DELAY_MS)) return tempCdkStatus.value
       }
     }
     const validResults = results.filter(item => item.ok && item.info && item.info.valid !== false)
@@ -1681,10 +1973,7 @@ async function checkTempCdkStatus(options = {}) {
 }
 
 function stopTempCdkStatusPolling() {
-  if (tempCdkStatusTimer) {
-    window.clearInterval(tempCdkStatusTimer)
-    tempCdkStatusTimer = null
-  }
+  tempCdkStatusPollGeneration += 1
 }
 
 function stopTempCdkStatusTimers() {
@@ -1695,17 +1984,20 @@ function stopTempCdkStatusTimers() {
   }
 }
 
+async function runTempCdkStatusPolling(generation) {
+  if (generation !== tempCdkStatusPollGeneration || !isTempExtract.value || !tempCdkLines().length) return
+  if (!await networkPollingGate.waitUntilAvailable() || generation !== tempCdkStatusPollGeneration || componentUnmounted) return
+  await checkTempCdkStatus({ silent: true })
+  if (generation !== tempCdkStatusPollGeneration || componentUnmounted) return
+  if (!await networkPollingGate.wait(TEMP_CDK_STATUS_POLL_MS)) return
+  if (generation === tempCdkStatusPollGeneration) void runTempCdkStatusPolling(generation)
+}
+
 function startTempCdkStatusPolling() {
   stopTempCdkStatusPolling()
   if (!isTempExtract.value || !tempCdkLines().length) return
-  checkTempCdkStatus({ silent: true })
-  tempCdkStatusTimer = window.setInterval(() => {
-    if (!isTempExtract.value || !tempCdkLines().length) {
-      stopTempCdkStatusPolling()
-      return
-    }
-    checkTempCdkStatus({ silent: true })
-  }, TEMP_CDK_STATUS_POLL_MS)
+  const generation = tempCdkStatusPollGeneration
+  void runTempCdkStatusPolling(generation)
 }
 
 function scheduleTempCdkStatusPolling() {
@@ -1722,51 +2014,113 @@ function scheduleTempCdkStatusPolling() {
 
 async function startWithEmails(emails, actionText = '提取') {
   const accountEmails = Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
-  if (!validateStart(accountEmails)) return
   const tempMode = isTempExtract.value
   const task = tempMode ? tempTask : extractTask
+  if (syncPixExtractionBusy(task)) {
+    setStatus('已有 PIX 提链任务正在运行或等待状态恢复；请先取消任务或等待任务结束。', true, task)
+    return false
+  }
+  if (!validateStart(accountEmails)) return false
   task.busy.value = true
   task.canceling.value = false
   task.logs.value = []
   task.currentResult.value = null
   task.currentJob.value = null
   let concurrency = tempMode ? tempForm.value.concurrency : form.value.concurrency
+  const storageTaskKey = taskKey(task)
+  let startReservation = null
+  let startAcknowledged = false
   setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${concurrency}。`, false, task)
   try {
-    let data
     if (tempMode) {
       tempCdkBalanceExpanded.value = true
       await checkTempCdkStatus({ silent: true, force: true })
+      if (componentUnmounted) return
       concurrency = Math.max(1, Number(tempForm.value.concurrency || 5))
       setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${concurrency}。`, false, task)
+    } else {
+      saveProxy()
+    }
+    storageWriter.flush()
+    startReservation = reserveStartAckGeneration({
+      storage: sessionStorage,
+      storageKey: PIX_TASKS_STORAGE_KEY,
+      scopeKey: storageTaskKey,
+      checkpoint: {
+        mode: tempMode ? 'tempExtract' : 'extract',
+        accountCount: accountEmails.length,
+        actionText,
+        concurrency,
+      },
+    })
+    if (!startReservation) throw new Error('无法持久化任务启动代际')
+    if (startReservation.status === 'occupied') {
+      applyStartAckCheckpoint(storageTaskKey, startReservation.checkpoint)
+      return
+    }
+    startAckPendingModes.add(storageTaskKey)
+    let data
+    if (tempMode) {
       data = await api.startBrazilPixTempBatch({
         accountEmails,
         cdk: tempCdkLines()[0] || '',
         cdks: tempCdkLines(),
         concurrency,
+        clientRequestId: startReservation.clientRequestId,
       })
     } else {
-      saveProxy()
       const { notificationSoundEnabled: _notificationSoundEnabled, ...payload } = form.value
-      data = await api.startBrazilPixBatch({ ...payload, accountEmails })
+      data = await api.startBrazilPixBatch({ ...payload, accountEmails, clientRequestId: startReservation.clientRequestId })
     }
-    if (!data.job_id) throw new Error('后端没有返回任务 ID')
-    task.currentJob.value = { id: data.job_id, status: 'queued', total: accountEmails.length, completed: 0, concurrency, running_count: 0 }
-    saveStoredPixTask(taskKey(task), {
-      jobId: data.job_id,
-      mode: tempMode ? 'temp' : 'extract',
-      accountCount: accountEmails.length,
-      accountEmails,
-      concurrency,
-      actionText,
-      startedAt: Date.now(),
+    const newJobId = String(data.job_id || '').trim()
+    if (!newJobId) {
+      const error = new Error('后端没有返回任务 ID')
+      error.code = 'INVALID_PAYMENT_JOB_RESPONSE'
+      throw error
+    }
+    storageWriter.flush()
+    const startAck = commitStartAckSnapshot(startReservation, {
+      componentUnmounted,
+      createSnapshot: () => ({
+        jobId: newJobId,
+        mode: tempMode ? 'temp' : 'extract',
+        accountCount: accountEmails.length,
+        accountEmails,
+        concurrency,
+        actionText,
+        clientRequestId: startReservation.clientRequestId,
+        startedAt: Date.now(),
+        savedAt: Date.now(),
+      }),
     })
-    await poll(data.job_id, task)
+    if (startAck.root) storedPixTasksCache = startAck.root
+    if (!startAck.shouldContinue) return
+    startAcknowledged = true
+    startAckPendingModes.delete(storageTaskKey)
+    task.currentJob.value = { id: newJobId, status: 'queued', total: accountEmails.length, completed: 0, concurrency, running_count: 0 }
+    await poll(newJobId, task)
   } catch (error) {
-    setStatus(cleanText(error.message || error), true, task)
+    storageWriter.flush()
+    const message = cleanText(error.message || error)
+    if (startAcknowledged) {
+      startAckPendingModes.delete(storageTaskKey)
+      if (!componentUnmounted) setStatus(message, true, task)
+    } else if (startReservation?.status === 'reserved' && isAmbiguousPaymentFailure(error)) {
+      const unknown = markStartAckGenerationUnknown(startReservation, { componentUnmounted, error: message })
+      if (!componentUnmounted) applyStartAckCheckpoint(storageTaskKey, unknown.checkpoint || startReservation.checkpoint)
+    } else {
+      const cancelled = cancelStartAckGeneration(startReservation, { componentUnmounted, error: message })
+      if (cancelled.root) storedPixTasksCache = cancelled.root
+      if (!componentUnmounted) {
+        startAckPendingModes.delete(storageTaskKey)
+        setStatus(message, true, task)
+      }
+    }
   } finally {
-    task.busy.value = false
-    task.canceling.value = false
+    if (!componentUnmounted) {
+      syncPixExtractionBusy(task)
+      task.canceling.value = false
+    }
   }
 }
 
@@ -1842,21 +2196,23 @@ function exportLinks() {
 
 onMounted(() => {
   componentUnmounted = false
+  installStartAckWatchers()
   loadExtractFormState()
   loadTempFormState()
-  const savedTab = localStorage.getItem(PIX_TAB_STORAGE_KEY)
+  const savedTab = sessionStorage.getItem(PIX_TAB_STORAGE_KEY)
   if (['payment', 'extract', 'tempExtract'].includes(savedTab)) activePixTab.value = savedTab
   loadPaymentState()
   reloadAll().then(() => {
     const removed = prunePaymentLinksByImportableAccounts(links.value)
     if (removed) paymentStatusText.value = `已同步当前账号池，移除 ${removed} 条已支付或已删除账号的本地旧链接。`
+    if (startAckPendingModes.size) installStartAckWatchers()
   })
   if (activePixTab.value === 'tempExtract') scheduleTempCdkStatusPolling()
   resumeStoredPixTasks()
 })
 
 watch(activePixTab, (tab) => {
-  localStorage.setItem(PIX_TAB_STORAGE_KEY, tab)
+  sessionStorage.setItem(PIX_TAB_STORAGE_KEY, tab)
   if (tab === 'extract' || tab === 'tempExtract') reloadAll()
   if (tab === 'tempExtract') scheduleTempCdkStatusPolling()
   else stopTempCdkStatusTimers()
@@ -1877,12 +2233,21 @@ watch(() => tempForm.value.cdk, () => {
 watch(form, saveExtractFormState, { deep: true })
 
 watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
+watch(recentResultFilter, () => { recentResultVisibleCount.value = 100 })
+watch(links, () => { linkVisibleCount.value = 100 })
+watch(paymentLinks, () => { paymentLinkVisibleCount.value = 100 })
+watch(paymentCdks, () => { paymentCdkVisibleCount.value = 100 })
+watch(currentResult, () => { recentResultVisibleCount.value = 100 })
 
 watch(tempForm, saveTempFormState, { deep: true })
 
 onBeforeUnmount(() => {
   componentUnmounted = true
+  for (const startAckWatcher of startAckWatchers) startAckWatcher.unsubscribe()
+  startAckWatchers = []
   stopTempCdkStatusTimers()
+  networkPollingGate.dispose()
+  storageWriter.dispose()
 })
 
 watch(paymentLinks, savePaymentState, { deep: true })

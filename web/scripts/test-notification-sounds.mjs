@@ -94,4 +94,13 @@ assert.match(controlSource, />\s*启用提示音\s*</, 'the merged switch should
 assert.doesNotMatch(controlSource, /需点击启用/, 'notification control should not show the old click-to-enable hint')
 assert.doesNotMatch(controlSource, /已启用后台播放/, 'notification control should not show enabled background-play hint')
 
+for (const pageName of ['MomoPage.vue', 'GCashPhPage.vue', 'KakaoPayPage.vue']) {
+  const pageSource = await readFile(new URL(`../src/components/${pageName}`, import.meta.url), 'utf8')
+  assert.match(pageSource, /const successNotificationTimers = new Set\(\)/, `${pageName} should own delayed success-sound timers`)
+  assert.match(pageSource, /successNotificationTimers\.add\(timer\)/, `${pageName} should retain every delayed timer handle`)
+  assert.match(pageSource, /successNotificationTimers\.delete\(timer\)/, `${pageName} should release fired timer handles`)
+  assert.match(pageSource, /function clearSuccessNotificationTimers\(\)[\s\S]*?window\.clearTimeout\(timer\)/, `${pageName} should expose timer cleanup`)
+  assert.match(pageSource, /onUnmounted\(\(\) => \{[\s\S]*?clearSuccessNotificationTimers\(\)/, `${pageName} should cancel delayed sounds during unmount`)
+}
+
 console.log('notification sound behavior passed')

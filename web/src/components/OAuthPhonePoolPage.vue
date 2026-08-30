@@ -83,10 +83,10 @@
             <tr v-if="!filteredItems.length">
               <td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无手机号</td>
             </tr>
-            <tr v-for="item in filteredItems" :key="item.id" class="align-top hover:bg-gray-800/30">
+            <tr v-for="item in pagedItems" :key="item.id" class="align-top hover:bg-gray-800/30">
               <td class="px-3 py-3"><input v-model="selectedIds" type="checkbox" class="accent-blue-500" :value="item.id" /></td>
               <td class="px-3 py-3">
-                <select v-model="drafts[item.id].status" class="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-blue-500">
+                <select v-model="draftFor(item).status" class="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-blue-500">
                   <option value="available">可用</option>
                   <option value="cooldown">冷却</option>
                   <option value="invalid">失效</option>
@@ -102,14 +102,14 @@
                 </div>
               </td>
               <td class="px-3 py-3">
-                <input v-model.trim="drafts[item.id].phone_number" class="w-44 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-white outline-none focus:border-blue-500" />
+                <input v-model.trim="draftFor(item).phone_number" class="w-44 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-white outline-none focus:border-blue-500" />
               </td>
               <td class="px-3 py-3">
-                <input v-model.trim="drafts[item.id].sms_url" class="min-w-[360px] rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-white outline-none focus:border-blue-500" />
-                <input v-model.trim="drafts[item.id].invalid_reason" class="mt-2 min-w-[360px] rounded-lg border border-gray-800 bg-gray-950/80 px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-blue-500" placeholder="失效原因 / 备注" />
+                <input v-model.trim="draftFor(item).sms_url" class="min-w-[360px] rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-white outline-none focus:border-blue-500" />
+                <input v-model.trim="draftFor(item).invalid_reason" class="mt-2 min-w-[360px] rounded-lg border border-gray-800 bg-gray-950/80 px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-blue-500" placeholder="失效原因 / 备注" />
               </td>
               <td class="px-3 py-3">
-                <input v-model.number="drafts[item.id].bound_count" type="number" min="0" max="3" class="w-20 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-blue-500" />
+                <input v-model.number="draftFor(item).bound_count" type="number" min="0" max="3" class="w-20 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-blue-500" />
                 <div class="mt-2 text-xs text-gray-500">剩余 {{ item.remaining }}</div>
               </td>
               <td class="max-w-xs px-3 py-3">
@@ -128,14 +128,22 @@
           </tbody>
         </table>
       </div>
+      <div v-if="filteredItems.length" class="mt-3 flex flex-col gap-3 border-t border-gray-800 pt-3 text-sm text-gray-400 sm:flex-row sm:items-center sm:justify-between">
+        <span>第 {{ page }} / {{ totalPages }} 页 · 显示 {{ (page - 1) * OAUTH_PHONE_PAGE_SIZE + 1 }}–{{ Math.min(filteredItems.length, page * OAUTH_PHONE_PAGE_SIZE) }} / {{ filteredItems.length }}</span>
+        <div class="flex items-center gap-2">
+          <button @click="page = Math.max(1, page - 1)" :disabled="page <= 1" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40">上一页</button>
+          <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40">下一页</button>
+        </div>
+      </div>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, h, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api.js'
 
+const OAUTH_PHONE_PAGE_SIZE = 100
 const items = ref([])
 const summary = reactive({ total: 0, available_count: 0, full_count: 0, cooldown_count: 0, invalid_count: 0, disabled_count: 0 })
 const drafts = reactive({})
@@ -146,6 +154,7 @@ const messageOk = ref(true)
 const keyword = ref('')
 const importText = ref('')
 const selectedIds = ref([])
+const page = ref(1)
 const newItem = reactive({ phone_number: '', sms_url: '', bound_count: 0, status: 'available' })
 
 const StatCard = (props) => h('div', { class: 'min-w-24 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3' }, [
@@ -165,10 +174,32 @@ const filteredItems = computed(() => {
   ].some((value) => String(value || '').toLowerCase().includes(q)))
 })
 
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / OAUTH_PHONE_PAGE_SIZE)))
+const pagedItems = computed(() => {
+  const start = (page.value - 1) * OAUTH_PHONE_PAGE_SIZE
+  return filteredItems.value.slice(start, start + OAUTH_PHONE_PAGE_SIZE)
+})
+
 const allVisibleSelected = computed(() => {
-  const visible = filteredItems.value.map((item) => item.id)
+  const visible = pagedItems.value.map((item) => item.id)
   return visible.length > 0 && visible.every((id) => selectedIds.value.includes(id))
 })
+
+function draftFor(item) {
+  if (drafts[item.id]) return drafts[item.id]
+  drafts[item.id] = {
+    id: item.id,
+    phone_number: item.phone_number || '',
+    sms_url: item.sms_url || '',
+    status: item.status || 'available',
+    bound_count: Number(item.bound_count || 0),
+    bound_emails: item.bound_emails || [],
+    invalid_reason: item.invalid_reason || '',
+    cooldown_until: item.cooldown_until || null,
+    note: item.note || '',
+  }
+  return drafts[item.id]
+}
 
 function setMessage(text, ok = true) {
   message.value = text
@@ -180,26 +211,16 @@ function setMessage(text, ok = true) {
 function applyItems(payload) {
   const nextItems = Array.isArray(payload?.items) ? payload.items : []
   items.value = nextItems
+  page.value = 1
   summary.total = Number(payload?.total ?? nextItems.length)
   summary.available_count = Number(payload?.available_count ?? nextItems.filter((item) => item.status === 'available').length)
   summary.full_count = Number(payload?.full_count ?? nextItems.filter((item) => item.status === 'full').length)
   summary.cooldown_count = Number(payload?.cooldown_count ?? nextItems.filter((item) => item.status === 'cooldown').length)
   summary.invalid_count = Number(payload?.invalid_count ?? nextItems.filter((item) => item.status === 'invalid').length)
   summary.disabled_count = Number(payload?.disabled_count ?? nextItems.filter((item) => item.status === 'disabled').length)
-  for (const item of nextItems) {
-    drafts[item.id] = {
-      id: item.id,
-      phone_number: item.phone_number || '',
-      sms_url: item.sms_url || '',
-      status: item.status || 'available',
-      bound_count: Number(item.bound_count || 0),
-      bound_emails: item.bound_emails || [],
-      invalid_reason: item.invalid_reason || '',
-      cooldown_until: item.cooldown_until || null,
-      note: item.note || '',
-    }
-  }
-  selectedIds.value = selectedIds.value.filter((id) => nextItems.some((item) => item.id === id))
+  for (const id of Object.keys(drafts)) delete drafts[id]
+  const nextIds = new Set(nextItems.map((item) => item.id))
+  selectedIds.value = selectedIds.value.filter((id) => nextIds.has(id))
 }
 
 async function loadItems() {
@@ -275,7 +296,7 @@ function deleteSelected() {
 }
 
 function toggleAllVisible(event) {
-  const visible = filteredItems.value.map((item) => item.id)
+  const visible = pagedItems.value.map((item) => item.id)
   if (event.target.checked) {
     selectedIds.value = Array.from(new Set([...selectedIds.value, ...visible]))
   } else {
@@ -283,6 +304,11 @@ function toggleAllVisible(event) {
     selectedIds.value = selectedIds.value.filter((id) => !visibleSet.has(id))
   }
 }
+
+watch(keyword, () => { page.value = 1 })
+watch(totalPages, (value) => {
+  if (page.value > value) page.value = value
+})
 
 function statusLabel(status) {
   return { available: '可用', full: '已满', cooldown: '冷却', invalid: '失效', disabled: '停用' }[status] || status || '-'

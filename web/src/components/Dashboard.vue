@@ -1,5 +1,14 @@
 <template>
   <div v-if="status">
+    <div v-if="accountsError" class="dashboard-stale-warning" role="status">
+      <div>
+        <strong>账号数据暂时无法刷新</strong>
+        <span>保留上次成功数据<span v-if="lastSuccessfulLabel">（{{ lastSuccessfulLabel }}）</span>，可继续查看和操作。</span>
+      </div>
+      <button type="button" :disabled="loading" @click="retryAccounts">
+        {{ loading ? '正在重试…' : '立即重试' }}
+      </button>
+    </div>
     <div class="dashboard-tabs">
       <button
         v-for="tab in dashboardTabs"
@@ -207,7 +216,7 @@
         </div>
       </div>
       <!-- OAuth 配置弹窗 -->
-      <div v-if="oauthConfigOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="oauthConfigOpen = false">
+      <AccessibleModal v-if="oauthConfigOpen" label="OAuth 配置" @close="oauthConfigOpen = false">
         <div class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
           <!-- Header -->
           <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-4">
@@ -739,7 +748,7 @@
             <button @click="saveOauthConfig" :disabled="oauthEmailSaving || oauthPhoneSmsSaving" class="px-4 py-2 text-sm rounded-lg bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition">{{ oauthEmailSaving || oauthPhoneSmsSaving ? '保存中...' : '保存配置' }}</button>
           </div>
         </div>
-      </div>
+      </AccessibleModal>
       <div class="dashboard-filter-bar">
         <div class="dashboard-filters">
           <label class="relative block">
@@ -943,6 +952,7 @@
               <td class="px-4 py-8 text-center text-gray-500" colspan="14">没有匹配的账号</td>
             </tr>
             <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
+              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email]"
               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
               :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">
               <td class="px-3 py-3">
@@ -1016,70 +1026,16 @@
               </td>
               <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ registerTimeLabel(acc) }}</td>
               <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ activationTimeLabel(acc) }}</td>
-              <td class="px-4 py-3 text-right space-x-2">
+              <td class="px-4 py-3 text-right">
                 <button
-                  @click="copyAccountAccessToken(acc.email)"
+                  type="button"
+                  @click="openAccountActionMenu(acc, $event)"
                   :disabled="accountActionBusy && actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
                   :class="accountActionBusy && actionEmail === acc.email
-                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
-                  {{ actionEmail === acc.email && actionType === 'access-token' ? '复制中...' : '获取ac' }}
-                </button>
-                <button
-                  @click="queryAccountSubscription(acc.email)"
-                  :disabled="accountActionBusy && actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="accountActionBusy && actionEmail === acc.email
-                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
-                  {{ actionEmail === acc.email && actionType === 'subscription' ? '查询中...' : '订阅查询' }}
-                </button>
-                <button
-                  @click="queryAccountLatestMail(acc.email)"
-                  :disabled="accountActionBusy && actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="accountActionBusy && actionEmail === acc.email
-                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-sky-600/10 text-sky-300 border-sky-500/30 hover:bg-sky-600/20'">
-                  {{ actionEmail === acc.email && actionType === 'latest-mail' ? '取件中...' : '获取邮件' }}
-                </button>
-                <button
-                  v-if="canOauthAuthorize(acc)"
-                  @click="oauthAuthorizeAccount(acc.email)"
-                  :disabled="loginDisabled || actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="loginDisabled || actionEmail === acc.email
-                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20'">
-                  {{ actionEmail === acc.email && actionType === 'oauth-authorize' ? '授权中...' : oauthAuthorizeLabel(acc) }}
-                </button>
-                <button
-                  v-if="canRelogin(acc)"
-                  @click="reloginAccount(acc.email)"
-                  :disabled="loginDisabled || actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="loginDisabled || actionEmail === acc.email
-                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">
-                  {{ actionEmail === acc.email && actionType === 'relogin' ? '补登录中...' : reloginLabel(acc) }}
-                </button>
-                <button
-                  v-if="!acc.is_main_account"
-                  @click="openAccountTypeEditor(acc)"
-                  :disabled="actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 disabled:opacity-50">
-                  操作
-                </button>
-                <button
-                  v-if="!acc.is_main_account"
-                  @click="removeAccount(acc.email)"
-                  :disabled="deleteDisabled || actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="deleteDisabled || actionEmail === acc.email
-                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-rose-600/10 text-rose-400 border-rose-500/30 hover:bg-rose-600/20'">
-                  {{ actionEmail === acc.email && actionType === 'delete' ? '删除中...' : '删除' }}
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-wait'
+                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white'">
+                  {{ accountActionBusy && actionEmail === acc.email ? '处理中…' : '操作' }}
                 </button>
               </td>
             </tr>
@@ -1098,16 +1054,13 @@
               {{ option.label }}
             </option>
           </select>
-          <template v-if="accountPageSize > 0">
-            <span>条，第</span>
-            <span class="font-mono text-gray-300">{{ accountCurrentPage }}</span>
-            <span>/</span>
-            <span class="font-mono text-gray-300">{{ accountTotalPages }}</span>
-            <span>页</span>
-          </template>
-          <span v-else>当前显示全部</span>
+          <span>条，第</span>
+          <span class="font-mono text-gray-300">{{ accountCurrentPage }}</span>
+          <span>/</span>
+          <span class="font-mono text-gray-300">{{ accountTotalPages }}</span>
+          <span>页</span>
         </div>
-        <div v-if="accountPageSize > 0" class="flex items-center gap-2">
+        <div class="flex items-center gap-2">
           <button
             type="button"
             @click="setAccountPage(1)"
@@ -1139,20 +1092,67 @@
         </div>
       </div>
 
+      <Teleport to="body">
+        <div
+          v-if="accountActionMenuAccount"
+          ref="accountActionDialogRef"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="account-action-dialog-title"
+          tabindex="-1"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          @click.self="closeAccountActionMenu"
+          @keydown.esc.stop="closeAccountActionMenu"
+          @keydown.tab="trapAccountActionDialogFocus"
+        >
+          <section class="w-full max-w-lg overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 shadow-2xl">
+            <header class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+              <div class="min-w-0">
+                <h3 id="account-action-dialog-title" class="font-semibold text-white">账号操作</h3>
+                <p class="mt-1 truncate font-mono text-xs text-gray-500">{{ displayEmail(accountActionMenuAccount) }}</p>
+              </div>
+              <button ref="accountActionDialogInitialFocusRef" type="button" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700" @click="closeAccountActionMenu">关闭</button>
+            </header>
+            <div class="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
+              <button type="button" :disabled="accountActionMenuBusy" class="account-action-choice text-emerald-300" @click="copyAccountAccessToken(accountActionMenuAccount.email)">
+                {{ actionEmail === accountActionMenuAccount.email && actionType === 'access-token' ? '复制中…' : '获取 Access Token' }}
+              </button>
+              <button type="button" :disabled="accountActionMenuBusy" class="account-action-choice text-teal-300" @click="queryAccountSubscription(accountActionMenuAccount.email)">
+                {{ actionEmail === accountActionMenuAccount.email && actionType === 'subscription' ? '查询中…' : '查询订阅' }}
+              </button>
+              <button type="button" :disabled="accountActionMenuBusy" class="account-action-choice text-sky-300" @click="queryAccountLatestMail(accountActionMenuAccount.email)">
+                {{ actionEmail === accountActionMenuAccount.email && actionType === 'latest-mail' ? '取件中…' : '获取邮件' }}
+              </button>
+              <button v-if="canOauthAuthorize(accountActionMenuAccount)" type="button" :disabled="loginDisabled || accountActionMenuBusy" class="account-action-choice text-amber-300" @click="oauthAuthorizeAccount(accountActionMenuAccount.email)">
+                {{ actionEmail === accountActionMenuAccount.email && actionType === 'oauth-authorize' ? '授权中…' : oauthAuthorizeLabel(accountActionMenuAccount) }}
+              </button>
+              <button v-if="canRelogin(accountActionMenuAccount)" type="button" :disabled="loginDisabled || accountActionMenuBusy" class="account-action-choice text-cyan-300" @click="reloginAccount(accountActionMenuAccount.email)">
+                {{ actionEmail === accountActionMenuAccount.email && actionType === 'relogin' ? '补登录中…' : reloginLabel(accountActionMenuAccount) }}
+              </button>
+              <button v-if="!accountActionMenuAccount.is_main_account" type="button" :disabled="accountActionMenuBusy" class="account-action-choice text-gray-200" @click="editAccountFromActionMenu">修改账号</button>
+              <button v-if="!accountActionMenuAccount.is_main_account" type="button" :disabled="deleteDisabled || accountActionMenuBusy" class="account-action-choice text-rose-300" @click="removeAccountFromActionMenu">
+                {{ actionEmail === accountActionMenuAccount.email && actionType === 'delete' ? '删除中…' : '删除账号' }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Teleport>
+
       <!-- 外部账号导入弹窗 -->
-      <div v-if="externalAccountImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeExternalAccountImport">
+      <AccessibleModal v-if="externalAccountImportOpen" label="导入账号" @close="closeExternalAccountImport">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入账号</h3>
               <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL；新账号默认 Free，绑定渠道为外部导入。</div>
             </div>
-            <button @click="closeExternalAccountImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+            <button type="button" aria-label="关闭导入账号" @click="closeExternalAccountImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
           <div class="p-4 space-y-4 overflow-y-auto flex-1">
             <div>
-              <label class="block text-xs text-gray-500 mb-2">账号内容</label>
+              <label for="external-account-import-content" class="block text-xs text-gray-500 mb-2">账号内容</label>
               <textarea
+                id="external-account-import-content"
                 v-model="externalAccountImportText"
                 rows="10"
                 placeholder="user@example.com----https://example.com/api/mail?token=..."
@@ -1189,25 +1189,26 @@
             </button>
           </div>
         </div>
-      </div>
+      </AccessibleModal>
 
       <!-- 成品账号导入弹窗 -->
-      <div v-if="finishedImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeFinishedImport">
+      <AccessibleModal v-if="finishedImportOpen" label="导入成品账号" @close="closeFinishedImport">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入成品</h3>
               <div class="text-xs text-gray-500 mt-0.5">读取成品账号 JSON 和邮箱池 TXT，离线构造 CPA/Codex 认证文件。</div>
             </div>
-            <button @click="closeFinishedImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+            <button type="button" aria-label="关闭成品账号导入" @click="closeFinishedImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
           <div class="p-4 space-y-4 overflow-y-auto flex-1">
             <div class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
               不会真实补登录，不使用手机号接码；缺失的 id_token / refresh_token 会按 CPA 字段格式构造占位值。
             </div>
             <div>
-              <label class="block text-xs text-gray-500 mb-2">账号 JSON 文件</label>
+              <label for="finished-accounts-file" class="block text-xs text-gray-500 mb-2">账号 JSON 文件</label>
               <input
+                id="finished-accounts-file"
                 type="file"
                 accept=".json,.jsonl,application/json"
                 @change="handleFinishedAccountsFile"
@@ -1216,8 +1217,9 @@
               <div class="mt-1 text-xs text-gray-500">支持连续 JSON object、JSON 数组或 {"accounts": [...]}。</div>
             </div>
             <div>
-              <label class="block text-xs text-gray-500 mb-2">邮箱池 TXT 文件，可选</label>
+              <label for="finished-mailboxes-file" class="block text-xs text-gray-500 mb-2">邮箱池 TXT 文件，可选</label>
               <input
+                id="finished-mailboxes-file"
                 type="file"
                 accept=".txt,text/plain"
                 @change="handleFinishedMailboxesFile"
@@ -1255,22 +1257,23 @@
             </button>
           </div>
         </div>
-      </div>
+      </AccessibleModal>
 
       <!-- CPA 认证导入弹窗 -->
-      <div v-if="cpaImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeCpaImport">
+      <AccessibleModal v-if="cpaImportOpen" label="导入 CPA 认证" @close="closeCpaImport">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-3xl max-h-[86vh] flex flex-col">
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入 CPA 认证</h3>
               <div class="text-xs text-gray-500 mt-0.5">支持粘贴 JSON、选择多个 JSON/ZIP 文件，或选择文件夹批量导入。</div>
             </div>
-            <button @click="closeCpaImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+            <button type="button" aria-label="关闭 CPA 认证导入" @click="closeCpaImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
           <div class="p-4 space-y-4 overflow-y-auto flex-1">
             <div>
-              <label class="block text-xs text-gray-500 mb-2">直接粘贴 CPA JSON</label>
+              <label for="cpa-import-content" class="block text-xs text-gray-500 mb-2">直接粘贴 CPA JSON</label>
               <textarea
+                id="cpa-import-content"
                 v-model="cpaImportText"
                 rows="8"
                 placeholder='{"type":"codex","email":"...","access_token":"...","id_token":"...","refresh_token":"..."}'
@@ -1331,52 +1334,22 @@
             </button>
           </div>
         </div>
-      </div>
-
-      <!-- Codex 认证导出弹窗 -->
-      <div v-if="exportData" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="exportData = null">
-        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
-          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-            <h3 class="text-white font-semibold">Codex CLI 认证文件</h3>
-            <button @click="exportData = null" class="text-gray-400 hover:text-white text-lg">&times;</button>
-          </div>
-          <div class="p-4 space-y-3 overflow-y-auto flex-1">
-            <div class="px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-300 space-y-2">
-              <div class="font-medium">使用步骤：</div>
-              <ol class="list-decimal list-inside space-y-1 text-xs text-amber-400/90">
-                <li>退出当前 Codex CLI 会话</li>
-                <li>删除旧文件：<code class="bg-gray-800 px-1 rounded">rm ~/.codex/auth.json</code></li>
-                <li>将下方内容保存到 <code class="bg-gray-800 px-1 rounded">~/.codex/auth.json</code>（Windows: <code class="bg-gray-800 px-1 rounded">%APPDATA%\codex\auth.json</code>）</li>
-                <li>重新启动 Codex CLI</li>
-              </ol>
-              <div class="text-xs text-amber-400/60">导出后 Codex CLI 直连 OpenAI，不走 CPA 代理，响应更快。</div>
-            </div>
-            <div class="relative">
-              <pre class="bg-gray-950 border border-gray-800 rounded-lg p-4 text-xs font-mono text-gray-300 overflow-x-auto whitespace-pre">{{ exportJson }}</pre>
-              <button @click="copyExport"
-                class="absolute top-2 right-2 px-2 py-1 rounded border text-xs transition"
-                :class="copied
-                  ? 'bg-green-600/20 text-green-400 border-green-500/30'
-                  : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border-gray-700'">
-                {{ copied ? '复制成功' : '复制' }}
-              </button>
-            </div>
-          </div>
-          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
-            <button @click="downloadExport"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition">
-              下载 auth.json
-            </button>
-            <button @click="exportData = null"
-              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
-              关闭
-            </button>
-          </div>
-        </div>
-      </div>
+      </AccessibleModal>
 
       <!-- 订阅状态弹窗 -->
-      <div v-if="subscriptionDialog.open" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" @click.self="closeSubscriptionDialog">
+      <Teleport to="body">
+        <div
+          v-if="subscriptionDialog.open"
+          ref="subscriptionDialogRef"
+          role="dialog"
+          aria-modal="true"
+          aria-label="ChatGPT 订阅状态"
+          tabindex="-1"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          @click.self="closeSubscriptionDialog"
+          @keydown.esc.stop="closeSubscriptionDialog"
+          @keydown.tab="trapAccountSecondaryDialogFocus($event, subscriptionDialogRef)"
+        >
         <div class="w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
           <div class="max-h-[88vh] overflow-y-auto p-6">
             <div v-if="subscriptionDialog.loading" class="rounded-xl border border-teal-500/20 bg-teal-500/10 px-4 py-10 text-center text-sm text-teal-200">
@@ -1464,21 +1437,34 @@
               </details>
             </div>
             <div class="mt-6 flex justify-end">
-              <button @click="closeSubscriptionDialog" class="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
+              <button ref="subscriptionDialogInitialFocusRef" type="button" @click="closeSubscriptionDialog" class="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
               </div>
             </div>
           </div>
-      </div>
+        </div>
+      </Teleport>
 
       <!-- 最近邮件弹窗 -->
-      <div v-if="latestMailDialog.open" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" @click.self="closeLatestMailDialog">
+      <Teleport to="body">
+        <div
+          v-if="latestMailDialog.open"
+          ref="latestMailDialogRef"
+          role="dialog"
+          aria-modal="true"
+          aria-label="最近一封邮件"
+          tabindex="-1"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          @click.self="closeLatestMailDialog"
+          @keydown.esc.stop="closeLatestMailDialog"
+          @keydown.tab="trapAccountSecondaryDialogFocus($event, latestMailDialogRef)"
+        >
         <div class="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
           <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-6 py-4">
             <div class="min-w-0">
               <h3 class="text-xl font-bold text-sky-300">最近一封邮件</h3>
               <div class="mt-1 break-all font-mono text-xs text-slate-400">{{ latestMailDialog.email }}</div>
             </div>
-            <button @click="closeLatestMailDialog" class="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
+            <button ref="latestMailDialogInitialFocusRef" type="button" @click="closeLatestMailDialog" class="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
           </div>
           <div class="max-h-[82vh] overflow-y-auto p-6">
             <div v-if="latestMailDialog.loading" class="rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-10 text-center text-sm text-sky-200">
@@ -1520,23 +1506,25 @@
               <pre v-else class="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs leading-5 text-slate-200">{{ activeLatestMail.text || activeLatestMail.content || '无正文' }}</pre>
             </div>
           </div>
+          </div>
         </div>
-      </div>
+      </Teleport>
 
       <!-- 账号操作编辑弹窗 -->
-      <div v-if="accountTypeEditAccount" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeAccountTypeEditor">
+      <AccessibleModal v-if="accountTypeEditAccount" label="编辑账号操作" @close="closeAccountTypeEditor">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">编辑账号操作</h3>
               <div class="text-xs text-gray-500 font-mono mt-0.5">{{ accountTypeEditAccount.email }}</div>
             </div>
-            <button @click="closeAccountTypeEditor" class="text-gray-400 hover:text-white text-lg">&times;</button>
+            <button type="button" aria-label="关闭账号编辑" @click="closeAccountTypeEditor" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
           <div class="p-4 space-y-4">
             <div>
-              <label class="block text-xs text-gray-500 mb-2">账号类型</label>
+              <label for="account-type-edit" class="block text-xs text-gray-500 mb-2">账号类型</label>
               <select
+                id="account-type-edit"
                 v-model="accountTypeEditValue"
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option v-for="option in editableAccountTypeOptions" :key="option.value" :value="option.value">
@@ -1545,8 +1533,9 @@
               </select>
             </div>
             <div>
-              <label class="block text-xs text-gray-500 mb-2">账号状态</label>
+              <label for="account-status-edit" class="block text-xs text-gray-500 mb-2">账号状态</label>
               <select
+                id="account-status-edit"
                 v-model="accountStatusEditValue"
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option v-for="option in editableAccountStatusOptions" :key="option.value" :value="option.value">
@@ -1555,8 +1544,9 @@
               </select>
             </div>
             <div>
-              <label class="block text-xs text-gray-500 mb-2">绑定渠道</label>
+              <label for="account-provider-edit" class="block text-xs text-gray-500 mb-2">绑定渠道</label>
               <select
+                id="account-provider-edit"
                 v-model="accountBindProviderEditValue"
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option v-for="option in editableBindProviderOptions" :key="option.value" :value="option.value">
@@ -1585,22 +1575,23 @@
             </button>
           </div>
         </div>
-      </div>
+      </AccessibleModal>
 
       <!-- 批量修改账号弹窗 -->
-      <div v-if="batchAccountEditOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeBatchAccountEditor">
+      <AccessibleModal v-if="batchAccountEditOpen" label="批量修改账号" @close="closeBatchAccountEditor">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">批量修改账号</h3>
               <div class="text-xs text-gray-500 font-mono mt-0.5">{{ batchAccountEditEmails.length }} 个账号</div>
             </div>
-            <button @click="closeBatchAccountEditor" class="text-gray-400 hover:text-white text-lg">&times;</button>
+            <button type="button" aria-label="关闭批量账号编辑" @click="closeBatchAccountEditor" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
           <div class="p-4 space-y-4">
             <div>
-              <label class="block text-xs text-gray-500 mb-2">账号类型</label>
+              <label for="batch-account-type-edit" class="block text-xs text-gray-500 mb-2">账号类型</label>
               <select
+                id="batch-account-type-edit"
                 v-model="batchAccountEditType"
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option :value="BATCH_METADATA_SKIP">不修改</option>
@@ -1610,8 +1601,9 @@
               </select>
             </div>
             <div>
-              <label class="block text-xs text-gray-500 mb-2">账号状态</label>
+              <label for="batch-account-status-edit" class="block text-xs text-gray-500 mb-2">账号状态</label>
               <select
+                id="batch-account-status-edit"
                 v-model="batchAccountEditStatus"
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option :value="BATCH_METADATA_SKIP">不修改</option>
@@ -1621,8 +1613,9 @@
               </select>
             </div>
             <div>
-              <label class="block text-xs text-gray-500 mb-2">绑定渠道</label>
+              <label for="batch-account-provider-edit" class="block text-xs text-gray-500 mb-2">绑定渠道</label>
               <select
+                id="batch-account-provider-edit"
                 v-model="batchAccountEditProvider"
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option :value="BATCH_METADATA_SKIP">不修改</option>
@@ -1652,12 +1645,12 @@
             </button>
           </div>
         </div>
-      </div>
+      </AccessibleModal>
 
       <!-- 账密导出弹窗 -->
-      <div v-if="credentialExportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeCredentialExport">
-        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg">
-          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+      <AccessibleModal v-if="credentialExportOpen" label="导出账密 TXT" @close="closeCredentialExport">
+        <div class="credential-export-panel bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden">
+          <div class="shrink-0 px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导出账密 TXT</h3>
               <div class="text-xs text-gray-500 mt-0.5">
@@ -1665,9 +1658,9 @@
               </div>
               <div class="text-xs text-gray-600 mt-1">已导出的账号也会按当前选择重复导出。</div>
             </div>
-            <button @click="closeCredentialExport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+            <button type="button" aria-label="关闭账密导出" @click="closeCredentialExport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
-          <div class="p-4 space-y-4">
+          <div class="credential-export-body p-4 space-y-4 min-h-0 flex-1 overflow-y-auto">
             <div class="grid gap-3 text-xs text-gray-300">
               <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
                 <div class="font-semibold text-gray-100 mb-1">域名邮箱</div>
@@ -1689,7 +1682,7 @@
               </div>
             </div>
           </div>
-          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+          <div class="shrink-0 px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeCredentialExport"
               class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
@@ -1706,7 +1699,7 @@
             </button>
           </div>
         </div>
-      </div>
+      </AccessibleModal>
     </div>
     </template>
 
@@ -1744,15 +1737,46 @@
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-xl h-64 animate-pulse"></div>
   </div>
+  <div v-else-if="accountsError" role="alert" class="dashboard-load-error">
+    <div class="dashboard-load-error-icon" aria-hidden="true">!</div>
+    <div>
+      <h2>账号数据加载失败</h2>
+      <p>{{ accountsError }}</p>
+      <p class="dashboard-load-error-hint">网络恢复后重试；页面不会停在无反馈的空白状态。</p>
+    </div>
+    <button type="button" @click="retryAccounts">重新加载账号</button>
+  </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { normalizeStoredPageSize } from '../accountData.js'
+import {
+  buildAccountSelectionIndex,
+  buildScopedAccountActions,
+  selectAccountsFromIndex,
+} from '../accountActionScope.js'
+import { buildAccountFacets } from '../accountFacets.js'
+import { buildAccountSearchIndex, filterAccountSearchIndex } from '../accountSearchIndex.js'
+import { confirmExportStatusBatches } from '../exportCommit.js'
+import { createMessageClearScheduler } from '../messageLifecycle.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
+import AccessibleModal from './AccessibleModal.vue'
+
+const sessionStorage = createSessionStorageFacade()
 
 const props = defineProps({
   status: Object,
   loading: Boolean,
+  accountsError: {
+    type: String,
+    default: '',
+  },
+  lastSuccessfulAt: {
+    type: [Number, String, Date],
+    default: null,
+  },
   runningTask: Object,
   refreshQuotaResultTask: {
     type: Object,
@@ -1763,7 +1787,19 @@ const props = defineProps({
     default: null,
   },
 })
-const emit = defineEmits(['refresh', 'task-started'])
+const emit = defineEmits(['refresh', 'task-started', 'retry-accounts'])
+
+const lastSuccessfulLabel = computed(() => {
+  if (!props.lastSuccessfulAt) return ''
+  const timestamp = Number(props.lastSuccessfulAt)
+  const date = new Date(Number.isFinite(timestamp) ? timestamp : props.lastSuccessfulAt)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('zh-CN', { hour12: false })
+})
+
+function retryAccounts() {
+  emit('retry-accounts')
+}
 
 const dashboardTabs = [
   { value: 'chatgpt', label: 'ChatGPT' },
@@ -1771,14 +1807,13 @@ const dashboardTabs = [
 ]
 const ACCOUNT_HUB_SYNC_MAX_EMAILS = 1000
 const ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1000
-const DEFAULT_ACCOUNT_PAGE_SIZE = 100
+const DEFAULT_ACCOUNT_PAGE_SIZE = 50
 const ACCOUNT_PAGE_SIZE_OPTIONS = [
   { value: 50, label: '50' },
   { value: 100, label: '100' },
   { value: 200, label: '200' },
-  { value: 500, label: '500' },
-  { value: 0, label: '全部' },
 ]
+const ACCOUNT_PAGE_SIZE_VALUES = ACCOUNT_PAGE_SIZE_OPTIONS.map(option => option.value)
 const ACCOUNT_PAGE_SIZE_STORAGE_KEY = 'autotoken.dashboard.accountPageSize'
 const activeDashboardTab = ref('chatgpt')
 const accountDisplayOrder = ref('asc')
@@ -1788,11 +1823,33 @@ const actionEmail = ref('')
 const actionType = ref('')
 const accountActionBusy = ref(false)
 const accountActionRequestId = ref(0)
+const accountActionMenuAccount = ref(null)
+const accountActionDialogRef = ref(null)
+const accountActionDialogInitialFocusRef = ref(null)
+const ACCOUNT_ACTION_FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+let accountActionMenuTrigger = null
+let accountActionBackgroundInertState = []
+const accountActionMenuBusy = computed(() => Boolean(
+  accountActionBusy.value
+  || (accountActionMenuAccount.value && actionEmail.value === accountActionMenuAccount.value.email)
+))
 const syncing = ref(false)
 const hubSyncing = ref(false)
 const message = ref('')
-const exportData = ref(null)
-const copied = ref(false)
+const messageClearScheduler = createMessageClearScheduler()
+
+function scheduleMessageClear(delayMs, when = () => true) {
+  messageClearScheduler.schedule(delayMs, {
+    read: () => message.value,
+    clear: () => { message.value = '' },
+    when,
+  })
+}
+
+watch(message, nextMessage => {
+  if (nextMessage) messageClearScheduler.cancel()
+}, { flush: 'sync' })
+
 const subscriptionDialog = ref({
   open: false,
   email: '',
@@ -1800,6 +1857,8 @@ const subscriptionDialog = ref({
   error: '',
   data: null,
 })
+const subscriptionDialogRef = ref(null)
+const subscriptionDialogInitialFocusRef = ref(null)
 const latestMailDialog = ref({
   open: false,
   email: '',
@@ -1807,8 +1866,11 @@ const latestMailDialog = ref({
   error: '',
   data: null,
 })
+const latestMailDialogRef = ref(null)
+const latestMailDialogInitialFocusRef = ref(null)
 const messageClass = ref('')
 const emailFilter = ref('')
+const deferredEmailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
 const trialFilter = ref('')
@@ -1954,6 +2016,7 @@ const oauthPhoneSmsCountryFallbackOptions = {
   tujie: [],
 }
 const oauthPhoneSmsCountryOptions = ref(oauthPhoneSmsCountryFallbackOptions.hero_sms)
+let oauthPhoneSmsCountryRequestId = 0
 const oauthProxyEnabled = ref(false)
 const oauthProxyMode = ref('single')
 const oauthBrowserMode = ref('protocol')
@@ -1988,7 +2051,7 @@ function loadOauthEmailConfig() {
   ]).then(([mailCfg, domainCfg]) => {
     let saved = {}
     try {
-      saved = JSON.parse(localStorage.getItem(OAUTH_EMAIL_STORAGE_KEY) || '{}')
+      saved = JSON.parse(sessionStorage.getItem(OAUTH_EMAIL_STORAGE_KEY) || '{}')
     } catch (_) {
       saved = {}
     }
@@ -2005,7 +2068,7 @@ function loadOauthEmailConfig() {
 async function saveOauthEmailConfig() {
   oauthEmailSaving.value = true
   try {
-    localStorage.setItem(OAUTH_EMAIL_STORAGE_KEY, JSON.stringify({
+    sessionStorage.setItem(OAUTH_EMAIL_STORAGE_KEY, JSON.stringify({
       mail_provider: oauthEmailMailProvider.value,
       luckmail_email_type: oauthEmailLuckmailEmailType.value,
       luckmail_preferred_domain: oauthEmailLuckmailDomain.value,
@@ -2013,7 +2076,7 @@ async function saveOauthEmailConfig() {
     }))
     message.value = 'OAuth 邮箱绑定配置已保存'
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
-    setTimeout(() => { message.value = '' }, 5000)
+    scheduleMessageClear(5000)
   } catch (e) { console.error(e) }
   oauthEmailSaving.value = false
 }
@@ -2074,12 +2137,16 @@ function normalizeOauthPhoneSmsCountryOptions(options) {
 
 async function loadOauthPhoneSmsCountries(provider = oauthPhoneSmsForm.value.provider) {
   const normalizedProvider = String(provider || 'phone_pool').trim()
+  const requestId = ++oauthPhoneSmsCountryRequestId
+  const isCurrentRequest = () => requestId === oauthPhoneSmsCountryRequestId
+    && String(oauthPhoneSmsForm.value.provider || 'phone_pool').trim() === normalizedProvider
   oauthPhoneSmsCountryError.value = ''
   oauthPhoneSmsCountryDropdownOpen.value = false
   if (normalizedProvider === 'phone_pool' || isCdkOauthPhoneProvider(normalizedProvider)) {
     oauthPhoneSmsCountryOptions.value = []
     oauthPhoneSmsCountrySearch.value = ''
-    return
+    oauthPhoneSmsCountriesLoading.value = false
+    return { provider: normalizedProvider, options: [], committed: isCurrentRequest() }
   }
   oauthPhoneSmsCountriesLoading.value = true
   try {
@@ -2087,15 +2154,39 @@ async function loadOauthPhoneSmsCountries(provider = oauthPhoneSmsForm.value.pro
     const options = Array.isArray(result.options) && result.options.length
       ? result.options
       : (oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || [])
-    oauthPhoneSmsCountryOptions.value = normalizeOauthPhoneSmsCountryOptions(options)
+    const normalizedOptions = normalizeOauthPhoneSmsCountryOptions(options)
+    if (!isCurrentRequest()) return { provider: normalizedProvider, options: normalizedOptions, committed: false }
+    oauthPhoneSmsCountryOptions.value = normalizedOptions
     oauthPhoneSmsCountryError.value = result.fallback && result.error ? result.error : ''
+    return { provider: normalizedProvider, options: normalizedOptions, committed: true }
   } catch (e) {
-    oauthPhoneSmsCountryOptions.value = oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || []
+    const fallbackOptions = normalizeOauthPhoneSmsCountryOptions(oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || [])
+    if (!isCurrentRequest()) return { provider: normalizedProvider, options: fallbackOptions, committed: false }
+    oauthPhoneSmsCountryOptions.value = fallbackOptions
     oauthPhoneSmsCountryError.value = e.message || '国家列表加载失败，已使用兜底列表'
+    return { provider: normalizedProvider, options: fallbackOptions, committed: true }
   } finally {
-    oauthPhoneSmsCountriesLoading.value = false
-    oauthPhoneSmsCountrySearch.value = currentOauthPhoneSmsCountryLabel.value
+    if (isCurrentRequest()) {
+      oauthPhoneSmsCountriesLoading.value = false
+      oauthPhoneSmsCountrySearch.value = currentOauthPhoneSmsCountryLabel.value
+    }
   }
+}
+
+function applyLoadedOauthPhoneSmsDefault(provider, loadResult) {
+  const normalizedProvider = String(provider || 'phone_pool').trim()
+  const currentProvider = String(oauthPhoneSmsForm.value.provider || 'phone_pool').trim()
+  if (!loadResult?.committed || loadResult.provider !== normalizedProvider || currentProvider !== normalizedProvider) return false
+
+  const defaultCountry = loadResult.options?.[0]?.value || '187'
+  if (normalizedProvider === 'hero_sms' && !oauthPhoneSmsForm.value.hero_sms_country) {
+    oauthPhoneSmsForm.value.hero_sms_country = defaultCountry
+  } else if (normalizedProvider === 'smsbower' && !oauthPhoneSmsForm.value.smsbower_country) {
+    oauthPhoneSmsForm.value.smsbower_country = defaultCountry
+  } else if (normalizedProvider === 'smscloud' && !oauthPhoneSmsForm.value.smscloud_country) {
+    oauthPhoneSmsForm.value.smscloud_country = defaultCountry
+  }
+  return true
 }
 
 function selectOauthPhoneSmsCountry(value) {
@@ -2177,7 +2268,7 @@ async function saveOauthConfig() {
 
 function loadOauthProxyConfig() {
   try {
-    const saved = JSON.parse(localStorage.getItem(OAUTH_PROXY_STORAGE_KEY) || '{}')
+    const saved = JSON.parse(sessionStorage.getItem(OAUTH_PROXY_STORAGE_KEY) || '{}')
     oauthProxyEnabled.value = Boolean(saved.enabled)
     oauthProxyMode.value = ['single', 'pool', 'api'].includes(saved.mode) ? saved.mode : 'single'
     oauthBrowserMode.value = ['protocol', 'roxy'].includes(saved.browserMode) ? saved.browserMode : 'protocol'
@@ -2192,7 +2283,7 @@ function loadOauthProxyConfig() {
 
 function loadOauthPhoneConfig() {
   try {
-    const saved = JSON.parse(localStorage.getItem(OAUTH_PHONE_STORAGE_KEY) || '{}')
+    const saved = JSON.parse(sessionStorage.getItem(OAUTH_PHONE_STORAGE_KEY) || '{}')
     oauthBindPhone.value = Boolean(saved.bind_phone)
   } catch (_) {
     // ignore broken local storage
@@ -2201,7 +2292,7 @@ function loadOauthPhoneConfig() {
 
 function saveOauthPhoneConfig() {
   try {
-    localStorage.setItem(OAUTH_PHONE_STORAGE_KEY, JSON.stringify({
+    sessionStorage.setItem(OAUTH_PHONE_STORAGE_KEY, JSON.stringify({
       bind_phone: oauthBindPhone.value,
     }))
   } catch (_) {
@@ -2211,7 +2302,7 @@ function saveOauthPhoneConfig() {
 
 function saveOauthProxyConfig() {
   try {
-    localStorage.setItem(OAUTH_PROXY_STORAGE_KEY, JSON.stringify({
+    sessionStorage.setItem(OAUTH_PROXY_STORAGE_KEY, JSON.stringify({
       enabled: oauthProxyEnabled.value,
       mode: oauthProxyMode.value,
       browserMode: oauthBrowserMode.value,
@@ -2412,10 +2503,7 @@ function setMessage(text, type = 'success') {
   messageClass.value = type === 'error'
     ? 'bg-red-500/10 text-red-400 border-red-500/20'
     : 'bg-green-500/10 text-green-400 border-green-500/20'
-  window.clearTimeout(setMessage._timer)
-  setMessage._timer = window.setTimeout(() => {
-    message.value = ''
-  }, 8000)
+  scheduleMessageClear(8000)
 }
 
 function fmtTs(ts) {
@@ -2443,14 +2531,8 @@ watch(oauthBindPhone, saveOauthPhoneConfig)
 watch(
   () => oauthPhoneSmsForm.value.provider,
   async (provider) => {
-    await loadOauthPhoneSmsCountries(provider)
-    if (provider === 'hero_sms' && !oauthPhoneSmsForm.value.hero_sms_country) {
-      oauthPhoneSmsForm.value.hero_sms_country = oauthPhoneSmsCountryOptionsForSelect.value[0]?.value || '187'
-    } else if (provider === 'smsbower' && !oauthPhoneSmsForm.value.smsbower_country) {
-      oauthPhoneSmsForm.value.smsbower_country = oauthPhoneSmsCountryOptionsForSelect.value[0]?.value || '187'
-    } else if (provider === 'smscloud' && !oauthPhoneSmsForm.value.smscloud_country) {
-      oauthPhoneSmsForm.value.smscloud_country = oauthPhoneSmsCountryOptionsForSelect.value[0]?.value || '187'
-    }
+    const loadResult = await loadOauthPhoneSmsCountries(provider)
+    applyLoadedOauthPhoneSmsDefault(provider, loadResult)
   },
 )
 const adminReady = computed(() => !!props.adminStatus?.configured)
@@ -2493,14 +2575,8 @@ const editableBindProviderOptions = [
 ]
 
 const allAccounts = computed(() => props.status?.accounts || [])
-
-function accountBindTs(acc) {
-  return Number(acc?.plus_bound_at || acc?.last_bind_at || 0) || 0
-}
-
-function accountBindProviderFilterValue(acc) {
-  return String(acc?.last_bind_provider || '').trim().toLowerCase() || '__none__'
-}
+const accountFacets = computed(() => buildAccountFacets(allAccounts.value))
+const accountSearchIndex = computed(() => buildAccountSearchIndex(allAccounts.value))
 
 function accountBindProviderFilterLabel(value) {
   const normalized = String(value || '').trim().toLowerCase()
@@ -2514,10 +2590,6 @@ function accountRegisterTs(acc) {
 
 function accountExportTs(acc) {
   return Number(acc?.credentials_exported_at || 0) || 0
-}
-
-function isPlusAccount(acc) {
-  return String(acc?.account_type || '').toLowerCase() === 'plus'
 }
 
 function accountKakaoLinkExtracted(acc) {
@@ -2542,15 +2614,6 @@ function displayEmailPreview(acc) {
   return `${email.slice(0, maxVisible)}…`
 }
 
-function isBindableFreeAccount(acc) {
-  if (!acc?.email || acc?.is_main_account) return false
-  if (String(acc?.account_type || '').toLowerCase() !== 'free') return false
-  if (!acc?.auth_session_file) return false
-  const status = String(acc?.status || '').toLowerCase()
-  if (['fail', 'auth_invalid', 'auth_revoked', 'orphan', 'exhausted', 'standby'].includes(status)) return false
-  return true
-}
-
 function dateKey(date) {
   const d = date instanceof Date ? date : new Date(date)
   if (Number.isNaN(d.getTime())) return ''
@@ -2559,15 +2622,12 @@ function dateKey(date) {
 }
 
 function normalizeAccountPageSize(value) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return DEFAULT_ACCOUNT_PAGE_SIZE
-  const allowed = new Set(ACCOUNT_PAGE_SIZE_OPTIONS.map(option => option.value))
-  return allowed.has(numeric) ? numeric : DEFAULT_ACCOUNT_PAGE_SIZE
+  return normalizeStoredPageSize(value, DEFAULT_ACCOUNT_PAGE_SIZE, ACCOUNT_PAGE_SIZE_VALUES)
 }
 
 function loadAccountPageSize() {
   try {
-    return normalizeAccountPageSize(localStorage.getItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY))
+    return normalizeAccountPageSize(sessionStorage.getItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY))
   } catch {
     return DEFAULT_ACCOUNT_PAGE_SIZE
   }
@@ -2575,7 +2635,7 @@ function loadAccountPageSize() {
 
 function saveAccountPageSize() {
   try {
-    localStorage.setItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY, String(accountPageSize.value))
+    sessionStorage.setItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY, String(accountPageSize.value))
   } catch {}
 }
 
@@ -2595,12 +2655,7 @@ function dateLabel(value) {
 }
 
 const bindDateOptions = computed(() => {
-  const values = new Set([dateKey(new Date())])
-  for (const acc of allAccounts.value) {
-    const ts = accountBindTs(acc)
-    if (!ts) continue
-    values.add(dateKey(ts * 1000))
-  }
+  const values = new Set([dateKey(new Date()), ...accountFacets.value.bindDateKeys])
   return Array.from(values)
     .filter(Boolean)
     .sort((a, b) => b.localeCompare(a))
@@ -2608,28 +2663,12 @@ const bindDateOptions = computed(() => {
 })
 
 const registerDateOptions = computed(() => {
-  const values = new Set()
-  for (const acc of allAccounts.value) {
-    const ts = accountRegisterTs(acc)
-    if (!ts) continue
-    values.add(dateKey(ts * 1000))
-  }
-  return Array.from(values)
-    .filter(Boolean)
-    .sort((a, b) => b.localeCompare(a))
+  return accountFacets.value.registerDateKeys
     .map(value => ({ value, label: dateLabel(value) }))
 })
 
 const exportDateOptions = computed(() => {
-  const values = new Set()
-  for (const acc of allAccounts.value) {
-    const ts = accountExportTs(acc)
-    if (!ts) continue
-    values.add(dateKey(ts * 1000))
-  }
-  return Array.from(values)
-    .filter(Boolean)
-    .sort((a, b) => b.localeCompare(a))
+  return accountFacets.value.exportDateKeys
     .map(value => ({ value, label: dateLabel(value) }))
 })
 
@@ -2717,83 +2756,51 @@ watch(
   resetAccountPageAndEmit,
 )
 
+let emailFilterTimer = null
+watch(emailFilter, value => {
+  if (emailFilterTimer !== null) clearTimeout(emailFilterTimer)
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) {
+    deferredEmailFilter.value = ''
+    emailFilterTimer = null
+    return
+  }
+  emailFilterTimer = setTimeout(() => {
+    deferredEmailFilter.value = normalized
+    emailFilterTimer = null
+  }, 120)
+})
+
+onBeforeUnmount(() => {
+  if (emailFilterTimer !== null) clearTimeout(emailFilterTimer)
+  messageClearScheduler.dispose()
+  restoreAccountActionBackgroundInert()
+})
+
 const filteredAccounts = computed(() => {
-  const emailNeedle = emailFilter.value.trim().toLowerCase()
-  const statusNeedle = statusFilter.value
-  const typeNeedle = accountTypeFilter.value
-  const trialNeedle = trialFilter.value
-  const bindProviderNeedle = bindProviderFilter.value
-  const registerRange = registerTimeRange.value
-  const exportNeedle = credentialExportFilter.value
-  const exportRange = exportTimeRange.value
-  const hubSyncNeedle = accountHubSyncFilter.value
-  const authNeedle = authCredentialFilter.value
-  const bindRange = bindTimeRange.value
-  const items = allAccounts.value
-    .map((acc, index) => ({ acc, index }))
-    .filter(({ acc }) => {
-      const email = `${acc?.email || ''} ${displayEmail(acc)}`.toLowerCase()
-      const status = normalizedStatus(acc?.status)
-      const accountType = String(acc?.account_type || 'unknown')
-      const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
-      const hubSyncStatus = acc?.account_hub_synced ? 'synced' : 'unsynced'
-      const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
-      if (emailNeedle && !email.includes(emailNeedle)) return false
-      if (statusNeedle && status !== statusNeedle) return false
-      if (typeNeedle && accountType !== typeNeedle) return false
-      if (trialNeedle === 'eligible' && !Boolean(acc.trial_eligible)) return false
-      if (trialNeedle === 'not_eligible' && Boolean(acc.trial_eligible)) return false
-      if (bindProviderNeedle && accountBindProviderFilterValue(acc) !== bindProviderNeedle) return false
-      if (registerRange.start || registerRange.end) {
-        const registerTs = accountRegisterTs(acc)
-        if (!registerTs) return false
-        if (registerRange.start && registerTs < registerRange.start) return false
-        if (registerRange.end && registerTs > registerRange.end) return false
-      }
-      if (exportNeedle && exportStatus !== exportNeedle) return false
-      if (exportRange.start || exportRange.end) {
-        const exportTs = accountExportTs(acc)
-        if (!exportTs) return false
-        if (exportRange.start && exportTs < exportRange.start) return false
-        if (exportRange.end && exportTs > exportRange.end) return false
-      }
-      if (hubSyncNeedle && hubSyncStatus !== hubSyncNeedle) return false
-      if (authNeedle && authStatus !== authNeedle) return false
-      if (bindRange.start || bindRange.end) {
-        const bindTs = accountBindTs(acc)
-        if (!bindTs) return false
-        if (bindRange.start && bindTs < bindRange.start) return false
-        if (bindRange.end && bindTs > bindRange.end) return false
-      }
-      return true
-    })
-    .sort((a, b) => {
-      const aPlus = isPlusAccount(a.acc)
-      const bPlus = isPlusAccount(b.acc)
-      if (aPlus && bPlus) {
-        const diff = accountBindTs(b.acc) - accountBindTs(a.acc)
-        if (diff) return diff
-      }
-      if (aPlus !== bPlus) return aPlus ? -1 : 1
-      return a.index - b.index
-    })
-    .map(({ acc }) => acc)
-  return accountDisplayOrder.value === 'desc' ? items.reverse() : items
+  return filterAccountSearchIndex(accountSearchIndex.value, {
+    email: deferredEmailFilter.value,
+    status: statusFilter.value,
+    accountType: accountTypeFilter.value,
+    trial: trialFilter.value,
+    bindProvider: bindProviderFilter.value,
+    registerRange: registerTimeRange.value,
+    credentialExport: credentialExportFilter.value,
+    exportRange: exportTimeRange.value,
+    hubSync: accountHubSyncFilter.value,
+    authCredential: authCredentialFilter.value,
+    bindRange: bindTimeRange.value,
+  }, accountDisplayOrder.value)
 })
 const accountFilteredTotal = computed(() => filteredAccounts.value.length)
 const accountPoolTotal = computed(() => allAccounts.value.length)
-const effectiveAccountPageSize = computed(() => Math.max(0, Number(accountPageSize.value) || 0))
+const effectiveAccountPageSize = computed(() => normalizeAccountPageSize(accountPageSize.value))
 const accountTotalPages = computed(() => {
-  if (effectiveAccountPageSize.value <= 0) return 1
   return Math.max(1, Math.ceil(accountFilteredTotal.value / effectiveAccountPageSize.value) || 1)
 })
 const accountCurrentPage = computed(() => Math.max(1, Math.min(Number(accountPage.value || 1), accountTotalPages.value)))
-const accountPageStartIndex = computed(() => {
-  if (effectiveAccountPageSize.value <= 0) return 0
-  return (accountCurrentPage.value - 1) * effectiveAccountPageSize.value
-})
+const accountPageStartIndex = computed(() => (accountCurrentPage.value - 1) * effectiveAccountPageSize.value)
 const paginatedAccounts = computed(() => {
-  if (effectiveAccountPageSize.value <= 0) return filteredAccounts.value
   return filteredAccounts.value.slice(accountPageStartIndex.value, accountPageStartIndex.value + effectiveAccountPageSize.value)
 })
 const accountPageStartDisplay = computed(() => accountFilteredTotal.value && paginatedAccounts.value.length ? accountPageStartIndex.value + 1 : 0)
@@ -2801,36 +2808,18 @@ const accountPageEndDisplay = computed(() =>
   accountFilteredTotal.value && paginatedAccounts.value.length ? Math.min(accountFilteredTotal.value, accountPageStartIndex.value + paginatedAccounts.value.length) : 0
 )
 const accountStatusOptions = computed(() => {
-  const counts = new Map()
-  counts.set('auth_invalid', 0)
-  counts.set('auth_revoked', 0)
-  counts.set('stashed', 0)
-  for (const acc of allAccounts.value) {
-    const status = normalizedStatus(acc?.status)
-    if (!status) continue
-    counts.set(status, (counts.get(status) || 0) + 1)
-  }
-  return Array.from(counts.entries())
+  return Array.from(accountFacets.value.statusCounts.entries())
     .sort((a, b) => statusLabel(a[0]).localeCompare(statusLabel(b[0]), 'zh-Hans-CN'))
     .map(([value, count]) => ({ value, label: statusLabel(value), count }))
 })
 const accountTypeOptions = computed(() => {
-  const counts = new Map()
-  for (const acc of allAccounts.value) {
-    const accountType = String(acc?.account_type || 'unknown')
-    counts.set(accountType, (counts.get(accountType) || 0) + 1)
-  }
-  return Array.from(counts.entries())
+  return Array.from(accountFacets.value.accountTypeCounts.entries())
     .sort((a, b) => accountTypeLabel(a[0]).localeCompare(accountTypeLabel(b[0]), 'zh-Hans-CN'))
     .map(([value, count]) => ({ value, label: accountTypeLabel(value), count }))
 })
-const trialEligibleCount = computed(() => allAccounts.value.filter(acc => Boolean(acc.trial_eligible)).length)
+const trialEligibleCount = computed(() => accountFacets.value.trialEligibleCount)
 const accountBindProviderFilterOptions = computed(() => {
-  const counts = new Map()
-  for (const acc of allAccounts.value) {
-    const provider = accountBindProviderFilterValue(acc)
-    counts.set(provider, (counts.get(provider) || 0) + 1)
-  }
+  const counts = accountFacets.value.bindProviderCounts
   const knownOrder = ['__none__', ...editableBindProviderOptions.map(option => option.value).filter(Boolean)]
   const known = knownOrder
     .filter((value, index, arr) => arr.indexOf(value) === index)
@@ -2843,67 +2832,39 @@ const accountBindProviderFilterOptions = computed(() => {
   return [...known, ...extra]
 })
 const credentialExportOptions = computed(() => {
-  let exported = 0
-  let unexported = 0
-  for (const acc of allAccounts.value) {
-    if (acc?.credentials_exported) exported += 1
-    else unexported += 1
-  }
+  const { exported, unexported } = accountFacets.value.credentialCounts
   return [
     { value: 'unexported', label: '未导出', count: unexported },
     { value: 'exported', label: '已导出', count: exported },
   ]
 })
 const accountHubSyncOptions = computed(() => {
-  let synced = 0
-  let unsynced = 0
-  for (const acc of allAccounts.value) {
-    if (acc?.account_hub_synced) synced += 1
-    else unsynced += 1
-  }
+  const { synced, unsynced } = accountFacets.value.hubSyncCounts
   return [
     { value: 'unsynced', label: '未同步', count: unsynced },
     { value: 'synced', label: '已同步', count: synced },
   ]
 })
 const authCredentialOptions = computed(() => {
-  let hasAuth = 0
-  let missingAuth = 0
-  for (const acc of allAccounts.value) {
-    if (acc?.is_main_account) continue
-    if (hasCodexAuthFile(acc)) hasAuth += 1
-    else missingAuth += 1
-  }
+  const { hasAuth, missingAuth } = accountFacets.value.authCredentialCounts
   return [
     { value: 'missing_auth', label: '无凭证', count: missingAuth },
     { value: 'has_auth', label: '有凭证', count: hasAuth },
   ]
 })
-const selectableEmails = computed(() =>
-  filteredAccounts.value.filter(a => !a.is_main_account).map(a => a.email)
-)
-const selectedEmails = computed(() =>
-  selectableEmails.value.filter(e => selectedSet.value.has(e.toLowerCase()))
-)
-const exportableAccounts = computed(() => {
-  const selected = new Set(selectedEmails.value.map(email => email.toLowerCase()))
-  if (selected.size) {
-    return filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
-  }
-  return filteredAccounts.value
-})
-const scopedAccounts = computed(() => {
-  const selected = new Set(selectedEmails.value.map(email => email.toLowerCase()))
-  return selected.size
-    ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
-    : filteredAccounts.value
-})
-const oauthAuthorizableAccounts = computed(() => {
-  return scopedAccounts.value.filter(acc => canOauthAuthorize(acc))
-})
-const reloginableAccounts = computed(() => {
-  return scopedAccounts.value.filter(acc => canRelogin(acc))
-})
+const accountSelectionIndex = computed(() => buildAccountSelectionIndex(filteredAccounts.value))
+const selectedAccounts = computed(() => selectAccountsFromIndex(accountSelectionIndex.value, selectedSet.value))
+const selectableEmails = computed(() => accountSelectionIndex.value.selectableEmails)
+const selectedEmails = computed(() => selectedAccounts.value.map(account => account.email))
+const scopedAccounts = computed(() => selectedAccounts.value.length ? selectedAccounts.value : filteredAccounts.value)
+const exportableAccounts = computed(() => scopedAccounts.value)
+const accountActions = computed(() => buildScopedAccountActions(scopedAccounts.value, {
+  canOauthAuthorize,
+  canRelogin,
+  hasCodexAuthFile,
+}))
+const oauthAuthorizableAccounts = computed(() => accountActions.value.oauthAuthorizableAccounts)
+const reloginableAccounts = computed(() => accountActions.value.reloginableAccounts)
 const batchLoginableAccounts = computed(() => {
   return oauthAuthorizableAccounts.value
 })
@@ -2949,22 +2910,10 @@ const batchReloginButtonLabel = computed(() => {
   if (reloginBatchRunning.value) return '补登录运行中...'
   return `批量补登录 (${reloginableAccounts.value.length})`
 })
-const cpaExportableAccounts = computed(() => {
-  return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
-})
-const bindableFreeAccounts = computed(() =>
-  allAccounts.value.filter(isBindableFreeAccount)
-)
-const refreshableQuotaAccounts = computed(() =>
-  scopedAccounts.value.filter(acc =>
-    !acc.is_main_account && String(acc.status || '').toLowerCase() !== 'fail'
-  )
-)
-const invalidCredentialAccounts = computed(() =>
-  allAccounts.value.filter(acc =>
-    !acc.is_main_account && String(acc.status || '').toLowerCase() === 'fail'
-  )
-)
+const cpaExportableAccounts = computed(() => accountActions.value.cpaExportableAccounts)
+const bindableFreeAccounts = computed(() => accountFacets.value.bindableFreeAccounts)
+const refreshableQuotaAccounts = computed(() => accountActions.value.refreshableQuotaAccounts)
+const invalidCredentialAccounts = computed(() => accountFacets.value.invalidCredentialAccounts)
 const refreshQuotaTask = computed(() => {
   const task = props.runningTask
   if (!task || task.command !== 'refresh-quota') return null
@@ -3064,9 +3013,10 @@ watch(
       messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     }
     pendingRefreshQuotaTaskId.value = ''
-    setTimeout(() => {
-      if (!refreshQuotaRunning.value && taskId === lastRefreshQuotaTaskId.value) message.value = ''
-    }, 15000)
+    scheduleMessageClear(
+      15000,
+      () => !refreshQuotaRunning.value && taskId === lastRefreshQuotaTaskId.value,
+    )
   }
 )
 const allSelectableChecked = computed(() =>
@@ -3238,7 +3188,7 @@ function cleanupBrazilPixPaymentStateForEmails(emails) {
   if (!targets.size) return { linksRemoved: 0, cdksReleased: 0 }
 
   try {
-    const state = JSON.parse(localStorage.getItem(BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY) || '{}')
+    const state = JSON.parse(sessionStorage.getItem(BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY) || '{}')
     const links = Array.isArray(state.links) ? state.links : []
     const cdks = Array.isArray(state.cdks) ? state.cdks : []
     const removedLinkIds = new Set()
@@ -3266,7 +3216,7 @@ function cleanupBrazilPixPaymentStateForEmails(emails) {
       return cdk
     })
 
-    localStorage.setItem(
+    sessionStorage.setItem(
       BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY,
       JSON.stringify({ ...state, links: keptLinks, cdks: nextCdks, savedAt: Date.now() })
     )
@@ -3295,6 +3245,105 @@ function clearFilters() {
   bindDateFilter.value = ''
   bindStartTimeFilter.value = ''
   bindEndTimeFilter.value = ''
+}
+
+async function openAccountActionMenu(account, event) {
+  accountActionMenuTrigger = event?.currentTarget || document.activeElement
+  accountActionMenuAccount.value = account || null
+  if (!accountActionMenuAccount.value) return
+  await nextTick()
+  setAccountActionBackgroundInert(accountActionDialogRef.value)
+  accountActionDialogInitialFocusRef.value?.focus()
+}
+
+async function closeAccountActionMenu() {
+  const trigger = accountActionMenuTrigger
+  accountActionMenuAccount.value = null
+  restoreAccountActionBackgroundInert()
+  await nextTick()
+  if (accountActionMenuAccount.value || accountActionMenuTrigger !== trigger) return
+  accountActionMenuTrigger = null
+  if (trigger?.isConnected && typeof trigger.focus === 'function') trigger.focus()
+}
+
+function setAccountActionBackgroundInert(dialog) {
+  restoreAccountActionBackgroundInert()
+  if (!dialog || typeof document === 'undefined') return
+  accountActionBackgroundInertState = [...document.body.children]
+    .filter(element => element !== dialog && !element.contains(dialog))
+    .map(element => ({ element, inert: Boolean(element.inert) }))
+  for (const { element } of accountActionBackgroundInertState) element.inert = true
+}
+
+function restoreAccountActionBackgroundInert() {
+  for (const { element, inert } of accountActionBackgroundInertState) {
+    if (element?.isConnected) element.inert = inert
+  }
+  accountActionBackgroundInertState = []
+}
+
+function trapDialogFocus(event, dialog) {
+  if (!dialog) return
+  const focusable = [...dialog.querySelectorAll(ACCOUNT_ACTION_FOCUSABLE_SELECTOR)]
+    .filter(element => element.getClientRects().length > 0 && element.getAttribute('aria-hidden') !== 'true')
+  if (!focusable.length) {
+    event.preventDefault()
+    dialog.focus()
+    return
+  }
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  const current = document.activeElement
+  const focusOutsideCycle = current === dialog || !dialog.contains(current)
+  if (event.shiftKey && (focusOutsideCycle || current === first)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (focusOutsideCycle || current === last)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function trapAccountActionDialogFocus(event) {
+  trapDialogFocus(event, accountActionDialogRef.value)
+}
+
+function trapAccountSecondaryDialogFocus(event, dialogRef) {
+  trapDialogFocus(event, dialogRef?.value || dialogRef)
+}
+
+async function transitionAccountActionToSecondaryDialog(dialogRef, initialFocusRef, openDialog) {
+  accountActionMenuAccount.value = null
+  restoreAccountActionBackgroundInert()
+  openDialog()
+  await nextTick()
+  if (!dialogRef.value) return
+  setAccountActionBackgroundInert(dialogRef.value)
+  initialFocusRef.value?.focus()
+}
+
+async function finishAccountSecondaryDialogClose() {
+  const trigger = accountActionMenuTrigger
+  restoreAccountActionBackgroundInert()
+  await nextTick()
+  if (subscriptionDialog.value.open || latestMailDialog.value.open || accountActionMenuAccount.value) return
+  if (accountActionMenuTrigger !== trigger) return
+  accountActionMenuTrigger = null
+  if (trigger?.isConnected && typeof trigger.focus === 'function') trigger.focus()
+}
+
+async function editAccountFromActionMenu() {
+  const account = accountActionMenuAccount.value
+  if (!account || accountActionMenuBusy.value) return
+  await closeAccountActionMenu()
+  openAccountTypeEditor(account)
+}
+
+async function removeAccountFromActionMenu() {
+  const email = accountActionMenuAccount.value?.email
+  if (!email || accountActionMenuBusy.value) return
+  await removeAccount(email)
+  await closeAccountActionMenu()
 }
 
 function openAccountTypeEditor(acc) {
@@ -3370,7 +3419,7 @@ async function submitExternalAccountImport() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     externalAccountImporting.value = false
-    setTimeout(() => { message.value = '' }, 10000)
+    scheduleMessageClear(10000)
   }
 }
 
@@ -3439,7 +3488,7 @@ async function submitFinishedImport() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     finishedImporting.value = false
-    setTimeout(() => { message.value = '' }, 10000)
+    scheduleMessageClear(10000)
   }
 }
 
@@ -3499,7 +3548,7 @@ async function submitCpaImport() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     cpaImporting.value = false
-    setTimeout(() => { message.value = '' }, 10000)
+    scheduleMessageClear(10000)
   }
 }
 
@@ -3793,22 +3842,6 @@ function subscriptionActive(subscription) {
   return Boolean(subscription?.active)
 }
 
-const exportJson = computed(() => {
-  if (!exportData.value) return ''
-  return JSON.stringify(exportData.value.codex_auth, null, 2)
-})
-
-async function exportCodexAuth(email) {
-  try {
-    exportData.value = await api.getCodexAuth(email)
-    copied.value = false
-  } catch (e) {
-    message.value = e.message
-    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
-    setTimeout(() => { message.value = '' }, 8000)
-  }
-}
-
 async function writeClipboard(value) {
   try {
     await navigator.clipboard.writeText(value)
@@ -3822,12 +3855,6 @@ async function writeClipboard(value) {
     document.execCommand('copy')
     document.body.removeChild(ta)
   }
-}
-
-async function copyExport() {
-  await writeClipboard(exportJson.value)
-  copied.value = true
-  setTimeout(() => { copied.value = false }, 3000)
 }
 
 async function copyAccountAccessToken(email) {
@@ -3856,7 +3883,7 @@ async function copyAccountAccessToken(email) {
       accountActionBusy.value = false
       actionEmail.value = ''
       actionType.value = ''
-      setTimeout(() => { message.value = '' }, 8000)
+      scheduleMessageClear(8000)
     }
   }
 }
@@ -3868,13 +3895,19 @@ async function queryAccountSubscription(email) {
   accountActionBusy.value = true
   actionEmail.value = email
   actionType.value = 'subscription'
-  subscriptionDialog.value = {
-    open: true,
-    email,
-    loading: true,
-    error: '',
-    data: null,
-  }
+  await transitionAccountActionToSecondaryDialog(
+    subscriptionDialogRef,
+    subscriptionDialogInitialFocusRef,
+    () => {
+      subscriptionDialog.value = {
+        open: true,
+        email,
+        loading: true,
+        error: '',
+        data: null,
+      }
+    },
+  )
   try {
     const result = await api.getAccountSubscription(email)
     if (requestId !== accountActionRequestId.value || !subscriptionDialog.value.open) return
@@ -3910,13 +3943,19 @@ async function queryAccountLatestMail(email) {
   accountActionBusy.value = true
   actionEmail.value = email
   actionType.value = 'latest-mail'
-  latestMailDialog.value = {
-    open: true,
-    email,
-    loading: true,
-    error: '',
-    data: null,
-  }
+  await transitionAccountActionToSecondaryDialog(
+    latestMailDialogRef,
+    latestMailDialogInitialFocusRef,
+    () => {
+      latestMailDialog.value = {
+        open: true,
+        email,
+        loading: true,
+        error: '',
+        data: null,
+      }
+    },
+  )
   try {
     const result = await api.getAccountLatestMail(email)
     if (requestId !== accountActionRequestId.value || !latestMailDialog.value.open) return
@@ -3945,7 +3984,7 @@ async function queryAccountLatestMail(email) {
   }
 }
 
-function closeSubscriptionDialog() {
+async function closeSubscriptionDialog() {
   if (actionType.value === 'subscription') {
     accountActionRequestId.value += 1
     accountActionBusy.value = false
@@ -3959,9 +3998,10 @@ function closeSubscriptionDialog() {
     error: '',
     data: null,
   }
+  await finishAccountSecondaryDialogClose()
 }
 
-function closeLatestMailDialog() {
+async function closeLatestMailDialog() {
   if (actionType.value === 'latest-mail') {
     accountActionRequestId.value += 1
     accountActionBusy.value = false
@@ -3975,16 +4015,7 @@ function closeLatestMailDialog() {
     error: '',
     data: null,
   }
-}
-
-function downloadExport() {
-  const blob = new Blob([exportJson.value], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'auth.json'
-  a.click()
-  URL.revokeObjectURL(url)
+  await finishAccountSecondaryDialogClose()
 }
 
 function exportAccounts() {
@@ -4056,7 +4087,7 @@ function exportAccounts() {
   URL.revokeObjectURL(url)
   message.value = `已导出 ${rows.length} 个账号`
   messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
-  setTimeout(() => { message.value = '' }, 5000)
+  scheduleMessageClear(5000)
 }
 
 async function downloadCredentials() {
@@ -4074,6 +4105,7 @@ async function downloadCredentials() {
     a.download = result.filename || `accounts-credentials-${new Date().toISOString().slice(0, 10)}.txt`
     a.click()
     URL.revokeObjectURL(url)
+    await confirmDownloadedExport(result)
     credentialExportOpen.value = false
     const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无账密记录账号` : ''
     message.value = `已导出 ${result.count || 0} 条账密${missing}`
@@ -4084,7 +4116,7 @@ async function downloadCredentials() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     credentialExporting.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4111,7 +4143,7 @@ async function exportSelectedAccessTokens() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     accessTokenExporting.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4130,6 +4162,26 @@ function downloadBase64File(contentBase64, filename, contentType) {
   URL.revokeObjectURL(url)
 }
 
+async function confirmDownloadedExport(result) {
+  try {
+    await confirmExportStatusBatches(
+      result,
+      emails => api.updateAccountsExportStatus(emails, true),
+    )
+  } catch (error) {
+    const detail = String(error?.message || error || '未知错误')
+    const confirmedCount = Number(error?.confirmedCount || 0)
+    if (confirmedCount > 0) emit('refresh')
+    const progress = confirmedCount > 0
+      ? `已确认前 ${confirmedCount} 个，剩余 ${error.remainingCount} 个保持未导出；`
+      : ''
+    const wrapped = new Error(`文件已开始下载，但导出状态确认失败：${progress}${detail}`)
+    wrapped.confirmedCount = confirmedCount
+    wrapped.remainingCount = Number(error?.remainingCount || 0)
+    throw wrapped
+  }
+}
+
 async function exportCpaAuths() {
   const emails = cpaExportableAccounts.value.map(acc => acc.email).filter(Boolean)
   if (!emails.length) return
@@ -4139,6 +4191,7 @@ async function exportCpaAuths() {
   try {
     const result = await api.exportAccountCpaAuths(emails)
     downloadBase64File(result.content_base64, result.filename, result.content_type)
+    await confirmDownloadedExport(result)
     const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无认证文件账号` : ''
     message.value = `已导出 ${result.count || 0} 个 CPA 认证文件${missing}`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
@@ -4148,7 +4201,7 @@ async function exportCpaAuths() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     cpaExporting.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4161,6 +4214,7 @@ async function exportSubAuths() {
   try {
     const result = await api.exportAccountSubAuths(emails)
     downloadBase64File(result.content_base64, result.filename, result.content_type)
+    await confirmDownloadedExport(result)
     const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无认证文件账号` : ''
     const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，${result.invalid.length} 个认证文件无法转换` : ''
     message.value = `已导出 ${result.count || 0} 个 Sub2API 认证账号${missing}${invalid}`
@@ -4171,7 +4225,7 @@ async function exportSubAuths() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     subExporting.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4192,7 +4246,7 @@ async function batchUpdateExportStatus(exported) {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     exportStatusUpdating.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4228,7 +4282,7 @@ async function batchOauthAuthorizeAccounts() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     batchOauthAuthorizing.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4252,7 +4306,7 @@ async function batchReloginAccounts() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     batchReloggingIn.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4275,9 +4329,10 @@ async function refreshAllQuota() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     quotaRefreshing.value = false
-    setTimeout(() => {
-      if (!pendingRefreshQuotaTaskId.value && !refreshQuotaRunning.value) message.value = ''
-    }, 8000)
+    scheduleMessageClear(
+      8000,
+      () => !pendingRefreshQuotaTaskId.value && !refreshQuotaRunning.value,
+    )
   }
 }
 
@@ -4317,7 +4372,7 @@ async function deleteInvalidCredentials() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     invalidDeleting.value = false
-    setTimeout(() => { message.value = '' }, 12000)
+    scheduleMessageClear(12000)
   }
 }
 
@@ -4335,7 +4390,7 @@ async function syncAccounts() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     syncing.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4344,13 +4399,13 @@ async function syncToAccountHub() {
   if (!emails.length) {
     message.value = '请先勾选要同步到账号 Hub 的账号'
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-    setTimeout(() => { message.value = '' }, 5000)
+    scheduleMessageClear(5000)
     return
   }
   if (emails.length > ACCOUNT_HUB_SYNC_MAX_EMAILS) {
     message.value = `账号 Hub 单次最多同步 ${ACCOUNT_HUB_SYNC_MAX_EMAILS} 个账号，请缩小筛选或分批选择`
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
     return
   }
   hubSyncing.value = true
@@ -4365,7 +4420,7 @@ async function syncToAccountHub() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     hubSyncing.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4396,7 +4451,7 @@ async function saveAccountType() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     accountTypeSaving.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4432,7 +4487,7 @@ async function saveBatchAccountMetadata() {
     if (saved) {
       closeBatchAccountEditor()
     }
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4498,7 +4553,7 @@ async function oauthAuthorizeAccount(email) {
   } finally {
     actionEmail.value = ''
     actionType.value = ''
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4522,7 +4577,7 @@ async function reloginAccount(email) {
   } finally {
     actionEmail.value = ''
     actionType.value = ''
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4530,7 +4585,7 @@ async function kickAccount(email) {
   if (kickDisabled.value) {
     message.value = '移出 Team 需要先完成管理员登录'
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
     return
   }
 
@@ -4551,7 +4606,7 @@ async function kickAccount(email) {
   } finally {
     actionEmail.value = ''
     actionType.value = ''
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4577,7 +4632,7 @@ async function removeAccount(email) {
   } finally {
     actionEmail.value = ''
     actionType.value = ''
-    setTimeout(() => { message.value = '' }, 8000)
+    scheduleMessageClear(8000)
   }
 }
 
@@ -4624,7 +4679,7 @@ async function batchDelete() {
   } finally {
     batchDeleting.value = false
     batchProgress.value = ''
-    setTimeout(() => { message.value = '' }, 12000)
+    scheduleMessageClear(12000)
   }
 }
 </script>

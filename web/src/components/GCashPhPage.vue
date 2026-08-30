@@ -225,7 +225,7 @@
                 <option value="failed">提链失败</option>
               </select>
             </div>
-            <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+            <div v-if="recentResultFilter !== 'failed'" v-for="item in visibleRecentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
                 <a :href="gcashLinkUrl(item.link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!gcashLinkUrl(item.link) ? 'pointer-events-none opacity-50' : ''">打开</a>
@@ -233,13 +233,17 @@
                 <button @click="copy(gcashQrValue(item.link))" :disabled="!gcashQrValue(item.link)" class="rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-cyan-100 disabled:opacity-50">复制二维码</button>
               </div>
             </div>
-            <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            <div v-if="recentResultFilter !== 'success'" v-for="item in visibleRecentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               {{ item.email }}：{{ recentResultErrorText(item) }}
             </div>
-            <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
+            <div v-if="recentResultFilter === 'all'" v-for="item in visibleRecentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
             </div>
             <div v-if="!filteredRecentResultCount" class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-8 text-center text-xs text-gray-500">当前筛选下暂无结果</div>
+            <div v-if="hiddenRecentResultCount > 0" class="sticky bottom-0 flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+              <span>已显示 {{ visibleRecentResultCount }} / {{ filteredRecentResultCount }}，剩余 {{ hiddenRecentResultCount }} 项</span>
+              <button @click="showMoreRecentResults" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+            </div>
           </div>
         </section>
       </div>
@@ -278,7 +282,7 @@
             <tr v-if="!links.length">
               <td colspan="9" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
             </tr>
-            <tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50">
+            <tr v-for="link in visibleLinks" :key="link.id" class="hover:bg-gray-900/50">
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
               <td class="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{{ link.created_at }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td>
@@ -301,6 +305,10 @@
             </tr>
           </tbody>
         </table>
+        <div v-if="hiddenLinkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+          <span>已显示 {{ visibleLinks.length }} / {{ links.length }}，剩余 {{ hiddenLinkCount }} 项</span>
+          <button @click="showMoreLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+        </div>
       </div>
     </section>
   </div>
@@ -309,8 +317,14 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { createPollingLifecycle } from '../pollingLifecycle.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
+import { cancelStartAckGeneration, commitStartAckSnapshot, markStartAckGenerationUnknown, reserveStartAckGeneration, watchStartAckGeneration } from '../startAckCas.js'
+import { isAmbiguousPaymentFailure } from '../paymentRequestState.js'
 import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
+
+const sessionStorage = createSessionStorageFacade()
 
 const PROXY_STORAGE_KEY = 'autotoken_gcash_ph_proxies'
 const FORM_STORAGE_KEY = 'autotoken_gcash_ph_form'
@@ -320,11 +334,13 @@ const GCASH_LINK_TTL_MS = 10 * 60 * 1000
 
 const accounts = ref([])
 const links = ref([])
+const linkVisibleCount = ref(100)
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const logs = ref([])
 const loading = ref(false)
 const starting = ref(false)
+const startAckPending = ref(false)
 const cancelling = ref(false)
 const activeJobId = ref('')
 const activeJobStatus = ref('')
@@ -336,18 +352,22 @@ const accountFilter = ref('')
 const accountStatusFilter = ref('all')
 const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
+const recentResultVisibleCount = ref(100)
 const deletingGCashAccounts = ref(new Set())
 const lastFailedEmails = ref([])
 const notifiedSuccessKeys = ref(new Set())
+const successNotificationTimers = new Set()
 const nowMs = ref(Date.now())
 const logRef = ref(null)
-let timer = null
-let expiryTimer = null
+const jobPolling = createPollingLifecycle()
+const expiryClock = createPollingLifecycle()
+let expiryClockToken = null
 let componentUnmounted = false
+let startAckWatcher = null
 
 const savedForm = loadForm()
 const form = ref({
-  proxies: localStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
+  proxies: sessionStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
   concurrency: savedForm.concurrency || 1,
   maxAttempts: savedForm.maxAttempts || 5,
   proxyPreflightAttempts: savedForm.proxyPreflightAttempts || 5,
@@ -356,14 +376,16 @@ const form = ref({
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const jobRunning = computed(() => Boolean(activeJobId.value && !TERMINAL_STATUSES.has(activeJobStatus.value)))
-const inputLocked = computed(() => starting.value || cancelling.value || jobRunning.value)
+const inputLocked = computed(() => starting.value || startAckPending.value || cancelling.value || jobRunning.value)
 const busy = computed(() => loading.value || inputLocked.value)
 const progressText = computed(() => {
+  if (startAckPending.value) return '正在确认任务启动结果...'
   if (starting.value) return '正在创建任务...'
   if (jobRunning.value) return `任务 ${activeJobStatus.value || 'running'}`
   return '刷新中...'
 })
 const badgeText = computed(() => {
+  if (startAckPending.value && !activeJobId.value) return '启动确认中'
   if (!activeJobId.value) return '等待任务'
   if (activeJobStatus.value === 'success') return '已完成'
   if (['error', 'failed'].includes(activeJobStatus.value)) return '失败'
@@ -387,6 +409,8 @@ const filteredAccounts = computed(() => {
 })
 const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
 const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
+const visibleLinks = computed(() => links.value.slice(0, linkVisibleCount.value))
+const hiddenLinkCount = computed(() => Math.max(0, links.value.length - visibleLinks.value.length))
 const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? currentResult.value.successes : [])
 const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? currentResult.value.errors : [])
 const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? currentResult.value.skipped : [])
@@ -395,6 +419,24 @@ const filteredRecentResultCount = computed(() => {
   if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
   return currentResultSuccesses.value.length + currentResultErrors.value.length + currentResultSkipped.value.length
 })
+const visibleRecentResultSuccesses = computed(() => {
+  if (recentResultFilter.value === 'failed') return []
+  return currentResultSuccesses.value.slice(0, recentResultVisibleCount.value)
+})
+const visibleRecentResultErrors = computed(() => {
+  if (recentResultFilter.value === 'success') return []
+  const remaining = recentResultFilter.value === 'failed'
+    ? recentResultVisibleCount.value
+    : Math.max(0, recentResultVisibleCount.value - visibleRecentResultSuccesses.value.length)
+  return currentResultErrors.value.slice(0, remaining)
+})
+const visibleRecentResultSkipped = computed(() => {
+  if (recentResultFilter.value !== 'all') return []
+  const remaining = Math.max(0, recentResultVisibleCount.value - visibleRecentResultSuccesses.value.length - visibleRecentResultErrors.value.length)
+  return currentResultSkipped.value.slice(0, remaining)
+})
+const visibleRecentResultCount = computed(() => visibleRecentResultSuccesses.value.length + visibleRecentResultErrors.value.length + visibleRecentResultSkipped.value.length)
+const hiddenRecentResultCount = computed(() => Math.max(0, filteredRecentResultCount.value - visibleRecentResultCount.value))
 const accountEmailByLower = computed(() => {
   const map = new Map()
   for (const account of accounts.value) {
@@ -423,7 +465,7 @@ watch(logs, () => nextTick(scrollLogsToBottom))
 
 function loadForm() {
   try {
-    const data = JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) || '{}')
+    const data = JSON.parse(sessionStorage.getItem(FORM_STORAGE_KEY) || '{}')
     return data && typeof data === 'object' ? data : {}
   } catch {
     return {}
@@ -431,13 +473,48 @@ function loadForm() {
 }
 
 function saveForm() {
-  localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value))
-  localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
+  sessionStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value))
+  sessionStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
 }
 
 function setStatus(message, error = false) {
   statusText.value = message
   statusError.value = Boolean(error)
+}
+
+function applyStartAckCheckpoint(checkpoint) {
+  startAckPending.value = Boolean(checkpoint)
+  if (!checkpoint) return
+  const requestId = String(checkpoint.clientRequestId || '').trim()
+  const suffix = requestId ? `（请求 ${requestId}）` : ''
+  if (checkpoint.status === 'unknown') {
+    setStatus(`上次 GCash 任务启动结果未知${suffix}，已锁定重复提交；请保留当前会话等待人工核对。`, true)
+    return
+  }
+  setStatus(`上次 GCash 任务仍在等待后端确认${suffix}，当前页面会在 ACK 到达后自动恢复。`)
+}
+
+function installStartAckWatcher() {
+  startAckWatcher?.unsubscribe()
+  startAckWatcher = watchStartAckGeneration({
+    storage: sessionStorage,
+    storageKey: JOB_STORAGE_KEY,
+    onChange: (event) => {
+      if (componentUnmounted) return
+      if (event.type === 'acknowledged') {
+        applyStartAckCheckpoint(null)
+        void restoreActiveJob()
+        return
+      }
+      if (event.type === 'unknown') {
+        applyStartAckCheckpoint(event.checkpoint)
+        return
+      }
+      applyStartAckCheckpoint(null)
+      setStatus(`上次 GCash 任务启动失败：${event.error || '请求未被后端接受'}`, true)
+    },
+  })
+  applyStartAckCheckpoint(startAckWatcher.checkpoint)
 }
 
 function cleanError(error) {
@@ -451,7 +528,7 @@ function isJobNotFound(error) {
 function saveActiveJobSnapshot(job = currentJob.value) {
   const jobId = String(job?.id || activeJobId.value || '').trim()
   if (!jobId) return
-  localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({
+  sessionStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({
     jobId,
     accountCount: Number(job?.total || 0),
     concurrency: Number(job?.concurrency || form.value.concurrency || 1),
@@ -468,7 +545,7 @@ function clearActiveJob({ removeStored = true } = {}) {
   notifiedSuccessKeys.value = new Set()
   cancelling.value = false
   starting.value = false
-  if (removeStored) localStorage.removeItem(JOB_STORAGE_KEY)
+  if (removeStored) sessionStorage.removeItem(JOB_STORAGE_KEY)
 }
 
 function rememberFailedEmails(result) {
@@ -494,6 +571,11 @@ function successNotificationKey(item, index) {
   return email || link || id || `success-${index}`
 }
 
+function clearSuccessNotificationTimers() {
+  for (const timer of successNotificationTimers) window.clearTimeout(timer)
+  successNotificationTimers.clear()
+}
+
 function notifyNewSuccesses(result) {
   const successes = Array.isArray(result?.successes) ? result.successes : []
   if (!successes.length) return
@@ -505,9 +587,12 @@ function notifyNewSuccesses(result) {
     if (seen.has(key)) return
     seen.add(key)
     changed = true
-    window.setTimeout(() => {
-      playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
+    const timer = window.setTimeout(() => {
+      successNotificationTimers.delete(timer)
+      if (componentUnmounted) return
+      void playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
     }, delay)
+    successNotificationTimers.add(timer)
     delay += 450
   })
   if (changed) notifiedSuccessKeys.value = seen
@@ -592,6 +677,14 @@ function clearSelectedAccounts() {
 
 function showMoreAccounts() {
   accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
+}
+
+function showMoreLinks() {
+  linkVisibleCount.value = Math.min(links.value.length, linkVisibleCount.value + 100)
+}
+
+function showMoreRecentResults() {
+  recentResultVisibleCount.value = Math.min(filteredRecentResultCount.value, recentResultVisibleCount.value + 100)
 }
 
 function toggleLink(id) {
@@ -715,7 +808,24 @@ async function startWithEmails(emails, actionText = '提取', qualificationOnly 
   starting.value = true
   statusError.value = false
   saveForm()
+  let startReservation = null
   try {
+    startReservation = reserveStartAckGeneration({
+      storage: sessionStorage,
+      storageKey: JOB_STORAGE_KEY,
+      checkpoint: {
+        mode: 'extract',
+        accountCount: accountEmails.length,
+        actionText,
+        qualificationOnly: qualificationOnly === true,
+      },
+    })
+    if (!startReservation) throw new Error('无法持久化任务启动代际')
+    if (startReservation.status === 'occupied') {
+      applyStartAckCheckpoint(startReservation.checkpoint)
+      return
+    }
+    startAckPending.value = true
     const data = await api.startGCashPhBatch({
       accountEmails,
       proxies: form.value.proxies,
@@ -724,20 +834,50 @@ async function startWithEmails(emails, actionText = '提取', qualificationOnly 
       proxyPreflightAttempts: form.value.proxyPreflightAttempts,
       region: 'PH',
       qualificationOnly: qualificationOnly === true,
+      clientRequestId: startReservation.clientRequestId,
     })
-    activeJobId.value = data.job_id || ''
+    const newJobId = String(data.job_id || '').trim()
+    if (!newJobId) {
+      const error = new Error('后端没有返回任务 ID')
+      error.code = 'INVALID_PAYMENT_JOB_RESPONSE'
+      throw error
+    }
+    const startAck = commitStartAckSnapshot(startReservation, {
+      componentUnmounted,
+      createSnapshot: () => ({
+        jobId: newJobId,
+        accountCount: accountEmails.length,
+        accountEmails,
+        concurrency: Number(form.value.concurrency || 1),
+        status: 'queued',
+        clientRequestId: startReservation.clientRequestId,
+        startedAt: Date.now(),
+      }),
+    })
+    if (!startAck.shouldContinue) return
+    startAckPending.value = false
+    activeJobId.value = newJobId
     activeJobStatus.value = 'queued'
     currentJob.value = { id: activeJobId.value, status: 'queued', total: accountEmails.length, completed: 0, concurrency: form.value.concurrency || 1, running_count: 0 }
     currentResult.value = null
     notifiedSuccessKeys.value = new Set()
     logs.value = []
-    saveActiveJobSnapshot(currentJob.value)
     setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} GCash，并发 ${form.value.concurrency || 1}。`)
     startPolling()
   } catch (error) {
-    setStatus(`启动失败：${cleanError(error)}`, true)
+    const message = cleanError(error)
+    if (startReservation?.status === 'reserved' && isAmbiguousPaymentFailure(error)) {
+      const unknown = markStartAckGenerationUnknown(startReservation, { componentUnmounted, error: message })
+      if (!componentUnmounted) applyStartAckCheckpoint(unknown.checkpoint || startReservation?.checkpoint)
+    } else {
+      cancelStartAckGeneration(startReservation, { componentUnmounted, error: message })
+      if (!componentUnmounted) {
+        startAckPending.value = false
+        setStatus(`启动失败：${message}`, true)
+      }
+    }
   } finally {
-    starting.value = false
+    if (!componentUnmounted) starting.value = false
   }
 }
 
@@ -749,11 +889,12 @@ async function startQualificationOnly() {
   await startWithEmails(selectedEmails.value, '检测资格', true)
 }
 
-async function pollJob() {
+async function pollJob(pollToken = null) {
   if (!activeJobId.value) return
+  if (pollToken !== null && !jobPolling.isActive(pollToken)) return
   try {
     const job = await api.getGCashPhJob(activeJobId.value)
-    if (componentUnmounted) return
+    if (componentUnmounted || (pollToken !== null && !jobPolling.isActive(pollToken))) return
     currentJob.value = job
     activeJobStatus.value = String(job.status || '')
     logs.value = Array.isArray(job.logs) ? job.logs : []
@@ -773,6 +914,7 @@ async function pollJob() {
       await Promise.all([refreshAccounts(), refreshLinks()])
     }
   } catch (error) {
+    if (pollToken !== null && !jobPolling.isActive(pollToken)) return
     if (isJobNotFound(error)) {
       clearActiveJob()
       await Promise.all([refreshAccounts(), refreshLinks()])
@@ -795,19 +937,26 @@ async function retryFailedAccounts() {
 }
 
 function startPolling() {
-  stopPolling()
-  pollJob()
-  timer = window.setInterval(pollJob, 3000)
+  const pollToken = jobPolling.start()
+  if (pollToken !== null) void runPollingLoop(pollToken)
 }
 
 function stopPolling() {
-  if (timer) window.clearInterval(timer)
-  timer = null
+  jobPolling.cancel()
+}
+
+async function runPollingLoop(pollToken) {
+  if (!jobPolling.isActive(pollToken)) return
+  if (!await jobPolling.waitUntilAvailable(pollToken)) return
+  await pollJob(pollToken)
+  if (!jobPolling.isActive(pollToken) || !activeJobId.value || TERMINAL_STATUSES.has(activeJobStatus.value)) return
+  if (await jobPolling.wait(3000, pollToken)) void runPollingLoop(pollToken)
 }
 
 async function cancelJob() {
   if (!activeJobId.value) return
   cancelling.value = true
+  stopPolling()
   try {
     await api.cancelGCashPhJob(activeJobId.value)
     await pollJob()
@@ -821,6 +970,7 @@ async function cancelJob() {
     setStatus(`取消失败：${cleanError(error)}`, true)
   } finally {
     cancelling.value = false
+    if (!componentUnmounted && activeJobId.value && !TERMINAL_STATUSES.has(activeJobStatus.value)) startPolling()
   }
 }
 
@@ -908,7 +1058,7 @@ function exportLinks() {
 
 async function restoreActiveJob() {
   try {
-    const saved = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}')
+    const saved = JSON.parse(sessionStorage.getItem(JOB_STORAGE_KEY) || '{}')
     const jobId = String(saved?.jobId || '').trim()
     if (!jobId) return
     activeJobId.value = jobId
@@ -922,30 +1072,50 @@ async function restoreActiveJob() {
       running_count: 0,
     }
     setStatus('已恢复 GCash 提链任务，正在重新同步后端进度。')
-    await pollJob()
-    if (!componentUnmounted && activeJobId.value && !TERMINAL_STATUSES.has(activeJobStatus.value)) startPolling()
+    if (!componentUnmounted) startPolling()
   } catch (error) {
-    localStorage.removeItem(JOB_STORAGE_KEY)
+    sessionStorage.removeItem(JOB_STORAGE_KEY)
     clearActiveJob({ removeStored: false })
     setStatus(`恢复任务失败：${cleanError(error)}`, true)
   }
 }
 
+async function runExpiryClock(pollToken) {
+  while (expiryClock.isActive(pollToken)) {
+    if (!await expiryClock.wait(1000, pollToken)) return
+    if (!await expiryClock.waitUntilAvailable(pollToken)) return
+    if (!expiryClock.isActive(pollToken)) return
+    nowMs.value = Date.now()
+  }
+}
+
+function startExpiryClock() {
+  expiryClockToken = expiryClock.start()
+  if (expiryClockToken !== null) void runExpiryClock(expiryClockToken)
+}
+
 onMounted(async () => {
   componentUnmounted = false
+  installStartAckWatcher()
   nowMs.value = Date.now()
-  expiryTimer = window.setInterval(() => {
-    nowMs.value = Date.now()
-  }, 1000)
+  startExpiryClock()
   await reloadAll()
+  if (startAckPending.value) installStartAckWatcher()
   await restoreActiveJob()
 })
 watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
+watch(recentResultFilter, () => { recentResultVisibleCount.value = 100 })
+watch(links, () => { linkVisibleCount.value = 100 })
+watch(currentResult, () => { recentResultVisibleCount.value = 100 })
 onUnmounted(() => {
   componentUnmounted = true
+  startAckWatcher?.unsubscribe()
+  startAckWatcher = null
+  clearSuccessNotificationTimers()
   stopPolling()
-  if (expiryTimer) window.clearInterval(expiryTimer)
-  expiryTimer = null
+  jobPolling.dispose()
+  expiryClock.dispose()
+  expiryClockToken = null
 })
 </script>
 

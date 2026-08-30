@@ -731,7 +731,7 @@
                 <div class="text-xs text-gray-500 mt-0.5">显示最近的注册相关日志</div>
               </div>
               <button
-                @click="loadRegisterLogs"
+                @click="loadRegisterLogs()"
                 :disabled="logsLoading"
                 class="shrink-0 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-50">
                 {{ logsLoading ? '加载中...' : '刷新日志' }}
@@ -1008,11 +1008,11 @@
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-800">
-                <tr v-for="item in mailComPoolItems" :key="item.email" class="text-gray-300">
+                <tr v-for="item in mailComPoolPagedItems" :key="item.email" class="text-gray-300">
                   <td class="px-5 py-3 align-middle">
                     <input
                       type="checkbox"
-                      :checked="mailComPoolSelectedEmails.includes(normalizeMailComEmail(item.email))"
+                      :checked="mailComPoolSelectedSet.has(normalizeMailComEmail(item.email))"
                       :disabled="mailComPoolDeleting"
                       class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
                       @change="toggleMailComPoolEmail(item.email, $event.target.checked)"
@@ -1044,6 +1044,30 @@
                 </tr>
               </tbody>
             </table>
+            <div class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 px-5 py-3 text-xs text-gray-400">
+              <span>
+                显示 {{ mailComPoolPageOffset + 1 }}-{{ mailComPoolPageOffset + mailComPoolPagedItems.length }} 条，共 {{ mailComPoolItems.length }} 条
+              </span>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  :disabled="mailComPoolPage <= 1"
+                  class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="mailComPoolPage = clampMailComPoolPage(mailComPoolPage - 1, mailComPoolTotalPages)"
+                >
+                  上一页
+                </button>
+                <span class="min-w-24 text-center">第 {{ mailComPoolPage }} / {{ mailComPoolTotalPages }} 页</span>
+                <button
+                  type="button"
+                  :disabled="mailComPoolPage >= mailComPoolTotalPages"
+                  class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="mailComPoolPage = clampMailComPoolPage(mailComPoolPage + 1, mailComPoolTotalPages)"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
           </div>
           <div v-else-if="!mailComPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
             邮箱池暂无记录
@@ -1155,12 +1179,17 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { api } from '../api.js'
 import { accountPoolAllAccounts, accountPoolVisibleAccounts as resolveAccountPoolVisibleAccounts } from '../accountPoolStatus.js'
 import { bindCountryOptions } from '../bindLinkPayload.js'
+import { createPollingLifecycle } from '../pollingLifecycle.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
+
+const sessionStorage = createSessionStorageFacade()
 
 const REGISTER_FORM_STORAGE_KEY = 'autotoken_register_form_v1'
+const MAIL_COM_POOL_PAGE_SIZE = 100
 const OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY = 'autotoken_oauth_phone_sms_countries_v2'
 const OAUTH_PHONE_SMS_COUNTRIES_CACHE_TTL_MS = 30 * 60 * 1000
 
@@ -1193,7 +1222,7 @@ const outlookPoolError = ref('')
 const outlookPoolStatus = ref(null)
 const outlookPoolSelectedEmails = ref([])
 const outlookPoolStatusFilter = ref('all')
-const mailComPoolStatus = ref(null)
+const mailComPoolStatus = shallowRef(null)
 const mailComPoolLoading = ref(false)
 const mailComPoolError = ref('')
 const mailComImportDialogOpen = ref(false)
@@ -1203,6 +1232,7 @@ const mailComImportResultOk = ref(true)
 const mailComPoolDialogOpen = ref(false)
 const mailComPoolSelectedEmails = ref([])
 const mailComPoolDeleting = ref(false)
+const mailComPoolPage = ref(1)
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
@@ -1587,11 +1617,16 @@ const mailComPoolItems = computed(() => (
     : []
 ))
 const mailComPoolVisibleEmails = computed(() => mailComPoolItems.value.map(item => normalizeMailComEmail(item.email)).filter(Boolean))
+const mailComPoolSelectedSet = computed(() => new Set(mailComPoolSelectedEmails.value))
 const mailComPoolSelectedCount = computed(() => mailComPoolSelectedEmails.value.length)
 const mailComPoolAllVisibleSelected = computed(() => {
   const visible = mailComPoolVisibleEmails.value
-  return visible.length > 0 && visible.every(email => mailComPoolSelectedEmails.value.includes(email))
+  const selected = mailComPoolSelectedSet.value
+  return visible.length > 0 && visible.every(email => selected.has(email))
 })
+const mailComPoolTotalPages = computed(() => Math.max(1, Math.ceil(mailComPoolItems.value.length / MAIL_COM_POOL_PAGE_SIZE)))
+const mailComPoolPageOffset = computed(() => (clampMailComPoolPage(mailComPoolPage.value, mailComPoolTotalPages.value) - 1) * MAIL_COM_POOL_PAGE_SIZE)
+const mailComPoolPagedItems = computed(() => pageMailComPoolItems(mailComPoolItems.value, mailComPoolPage.value))
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
   if (registerProviderUsesPool.value) return true
@@ -1599,14 +1634,14 @@ const canSubmitRegister = computed(() => {
     ? selectedRegisterDomains.value.length > 0
     : Boolean(registerForm.value.domain)
 })
-let logsTimer = null
-let statsTimer = null
 let statsLoading = false
 let mailProviderWatchReady = false
 let registerPageMounted = false
 let registerInitTimers = []
 const REGISTER_LOG_FETCH_LIMIT = 300
 const REGISTER_POLL_INTERVAL_MS = 5000
+const registerPolling = createPollingLifecycle()
+let registerPollingToken = null
 const statCards = computed(() => {
   const scope = statsMode.value === 'today' ? registerStats.value.today : currentTaskStats.value
   const prefix = statsMode.value === 'today' ? '今日' : '本次'
@@ -1766,6 +1801,20 @@ function isMailComEmail(email) {
   return normalized.endsWith('@mail.com')
 }
 
+function clampMailComPoolPage(value, totalPages) {
+  const lastPage = Math.max(1, Math.trunc(Number(totalPages) || 1))
+  const page = Math.max(1, Math.trunc(Number(value) || 1))
+  return Math.min(page, lastPage)
+}
+
+function pageMailComPoolItems(items, page) {
+  const source = Array.isArray(items) ? items : []
+  const totalPages = Math.max(1, Math.ceil(source.length / MAIL_COM_POOL_PAGE_SIZE))
+  const currentPage = clampMailComPoolPage(page, totalPages)
+  const start = (currentPage - 1) * MAIL_COM_POOL_PAGE_SIZE
+  return source.slice(start, start + MAIL_COM_POOL_PAGE_SIZE)
+}
+
 function parseMailComImportContent(content) {
   const lines = String(content || '').split(/\r?\n/)
   const emails = []
@@ -1874,6 +1923,7 @@ async function importMailComAccounts() {
 
 function openMailComPoolDialog() {
   mailComPoolDialogOpen.value = true
+  mailComPoolPage.value = 1
   loadMailComPoolStatus()
 }
 
@@ -2046,7 +2096,7 @@ function outlookPoolAccountStatusClass(status) {
 
 function loadSavedRegisterForm() {
   try {
-    const raw = localStorage.getItem(REGISTER_FORM_STORAGE_KEY)
+    const raw = sessionStorage.getItem(REGISTER_FORM_STORAGE_KEY)
     if (!raw) return
     const saved = JSON.parse(raw)
     if (!saved || typeof saved !== 'object') return
@@ -2143,7 +2193,7 @@ function saveRegisterForm() {
     if (!oauthPhoneSmsCountryDisabled(oauthProvider)) {
       savedOauthPhoneSmsMaxPrices[oauthProvider] = oauthMaxPrice
     }
-    localStorage.setItem(
+    sessionStorage.setItem(
       REGISTER_FORM_STORAGE_KEY,
       JSON.stringify({
         mode: registerForm.value.mode,
@@ -2307,7 +2357,7 @@ function normalizeOAuthPhoneSmsCountryOptions(options) {
 
 function readOAuthPhoneSmsCountriesCache(provider) {
   try {
-    const raw = localStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
+    const raw = sessionStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     const entry = parsed?.[provider]
@@ -2322,13 +2372,13 @@ function readOAuthPhoneSmsCountriesCache(provider) {
 
 function writeOAuthPhoneSmsCountriesCache(provider, options) {
   try {
-    const raw = localStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
+    const raw = sessionStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
     const parsed = raw ? JSON.parse(raw) : {}
     parsed[provider] = {
       cachedAt: Date.now(),
       options: normalizeOAuthPhoneSmsCountryOptions(options),
     }
-    localStorage.setItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY, JSON.stringify(parsed))
+    sessionStorage.setItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY, JSON.stringify(parsed))
   } catch (e) {
     console.error('writeOAuthPhoneSmsCountriesCache', e)
   }
@@ -2336,16 +2386,19 @@ function writeOAuthPhoneSmsCountriesCache(provider, options) {
 
 async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPhoneSmsProvider) {
   const normalizedProvider = String(provider || 'phone_pool')
+  const isCurrentProvider = () => String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool') === normalizedProvider
   oauthPhoneSmsCountryError.value = ''
   oauthPhoneSmsCountryDropdownOpen.value = false
   if (oauthPhoneSmsCountryDisabled(normalizedProvider)) {
     oauthPhoneSmsCountryOptions.value = []
+    oauthPhoneSmsCountriesLoading.value = false
     syncOAuthPhoneSmsCountrySearch()
     return
   }
   const cachedOptions = readOAuthPhoneSmsCountriesCache(normalizedProvider)
   if (cachedOptions) {
     oauthPhoneSmsCountryOptions.value = cachedOptions
+    oauthPhoneSmsCountriesLoading.value = false
     syncOAuthPhoneSmsCountrySearch()
     return
   }
@@ -2360,13 +2413,16 @@ async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPho
     const options = Array.isArray(result.options) && result.options.length
       ? result.options
       : (oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || [])
-    oauthPhoneSmsCountryOptions.value = normalizeOAuthPhoneSmsCountryOptions(options)
-    if (!result.fallback && oauthPhoneSmsCountryOptions.value.length) {
-      writeOAuthPhoneSmsCountriesCache(normalizedProvider, oauthPhoneSmsCountryOptions.value)
+    const normalizedOptions = normalizeOAuthPhoneSmsCountryOptions(options)
+    if (!result.fallback && normalizedOptions.length) {
+      writeOAuthPhoneSmsCountriesCache(normalizedProvider, normalizedOptions)
     }
+    if (!isCurrentProvider()) return
+    oauthPhoneSmsCountryOptions.value = normalizedOptions
     oauthPhoneSmsCountryError.value = result.fallback && result.error ? result.error : ''
     syncOAuthPhoneSmsCountrySearch()
   } catch (e) {
+    if (!isCurrentProvider()) return
     oauthPhoneSmsCountryOptions.value = oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || []
     oauthPhoneSmsCountryError.value = e.message || '国家列表加载失败，已使用兜底列表'
     syncOAuthPhoneSmsCountrySearch()
@@ -2374,35 +2430,47 @@ async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPho
     if (oauthPhoneSmsCountryRequests.get(normalizedProvider) === request) {
       oauthPhoneSmsCountryRequests.delete(normalizedProvider)
     }
-    oauthPhoneSmsCountriesLoading.value = false
+    if (isCurrentProvider()) {
+      oauthPhoneSmsCountriesLoading.value = false
+    }
   }
 }
 
-async function loadRegisterLogs() {
+function canCommitRegisterPoll(pollToken) {
+  return pollToken === undefined || registerPolling.isActive(pollToken)
+}
+
+async function loadRegisterLogs(pollToken) {
+  if (!canCommitRegisterPoll(pollToken)) return
   if (logsLoading.value) return
   logsLoading.value = true
   try {
     const result = await api.getLogs(REGISTER_LOG_FETCH_LIMIT)
+    if (!canCommitRegisterPoll(pollToken)) return
     registerLogs.value = (result.logs || []).filter(entry => {
       const msg = String(entry.message || '')
       return msg.includes('[注册账号]') || msg.includes('[直接注册]') || msg.includes('[注册]') || msg.includes('[协议注册]') || msg.includes('[phone-first]') || msg.includes('[Codex]')
     })
     await nextTick()
+    if (!canCommitRegisterPoll(pollToken)) return
     if (logsContainer.value) {
       logsContainer.value.scrollTop = logsContainer.value.scrollHeight
     }
   } catch (e) {
+    if (!canCommitRegisterPoll(pollToken)) return
     setMessage(`读取注册日志失败: ${e.message}`, false)
   } finally {
     logsLoading.value = false
   }
 }
 
-async function loadRegisterStats() {
+async function loadRegisterStats(pollToken) {
+  if (!canCommitRegisterPoll(pollToken)) return
   if (statsLoading) return
   statsLoading = true
   try {
     const tasks = await api.getTasks()
+    if (!canCommitRegisterPoll(pollToken)) return
     const registerTasks = (tasks || []).filter(task => task.command === 'register')
     const todayStart = new Date()
     todayStart.setHours(0, 0, 0, 0)
@@ -2459,6 +2527,7 @@ async function loadRegisterStats() {
           },
     }
   } catch (e) {
+    if (!canCommitRegisterPoll(pollToken)) return
     console.error('loadRegisterStats', e)
   } finally {
     statsLoading = false
@@ -2599,6 +2668,10 @@ watch(
   }
 )
 
+watch(mailComPoolTotalPages, value => {
+  mailComPoolPage.value = clampMailComPoolPage(mailComPoolPage.value, value)
+}, { flush: 'sync' })
+
 watch(
   () => registerForm.value.oauthPhoneSmsProvider,
   async (provider, previousProvider) => {
@@ -2644,24 +2717,24 @@ function scheduleRegisterInit(fn, delayMs) {
   registerInitTimers.push(timer)
 }
 
-function startRegisterPolling() {
-  if (!statsTimer) {
-    statsTimer = window.setInterval(loadRegisterStats, REGISTER_POLL_INTERVAL_MS)
-  }
-  if (!logsTimer) {
-    logsTimer = window.setInterval(loadRegisterLogs, REGISTER_POLL_INTERVAL_MS)
+async function runRegisterPolling(pollToken) {
+  while (registerPolling.isActive(pollToken)) {
+    if (!await registerPolling.wait(REGISTER_POLL_INTERVAL_MS, pollToken)) return
+    if (!await registerPolling.waitUntilAvailable(pollToken)) return
+    if (!registerPolling.isActive(pollToken)) return
+    await Promise.all([loadRegisterStats(pollToken), loadRegisterLogs(pollToken)])
   }
 }
 
+function startRegisterPolling() {
+  if (registerPolling.isActive(registerPollingToken)) return
+  registerPollingToken = registerPolling.start()
+  if (registerPollingToken !== null) void runRegisterPolling(registerPollingToken)
+}
+
 function stopRegisterPolling() {
-  if (logsTimer) {
-    window.clearInterval(logsTimer)
-    logsTimer = null
-  }
-  if (statsTimer) {
-    window.clearInterval(statsTimer)
-    statsTimer = null
-  }
+  registerPolling.cancel()
+  registerPollingToken = null
 }
 
 onMounted(() => {
@@ -2696,6 +2769,7 @@ onUnmounted(() => {
   }
   registerInitTimers = []
   stopRegisterPolling()
+  registerPolling.dispose()
 })
 watch(() => props.runningTask?.task_id, (newId, oldId) => {
   if (newId !== oldId) {

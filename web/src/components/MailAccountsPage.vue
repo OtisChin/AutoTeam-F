@@ -88,6 +88,9 @@
       <div v-if="message" class="border-b border-gray-800 px-4 py-3 text-sm" :class="messageClass">
         {{ message }}
       </div>
+      <div v-if="batchSelectionLimitError" class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+        {{ batchSelectionLimitError }}
+      </div>
 
       <div class="overflow-x-auto">
         <table class="min-w-[1180px] w-full text-left text-sm">
@@ -107,11 +110,11 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-800">
-            <tr v-for="(row, index) in filteredRows" :key="row.email" class="bg-gray-950/30 hover:bg-gray-900/70">
+            <tr v-for="(row, index) in pagedRows" :key="row.email" class="bg-gray-950/30 hover:bg-gray-900/70">
               <td class="px-4 py-3">
                 <input type="checkbox" :checked="selected.has(row.email)" @change="toggleSelected(row.email)" />
               </td>
-              <td class="px-3 py-3 text-gray-500">{{ index + 1 }}</td>
+              <td class="px-3 py-3 text-gray-500">{{ accountPageOffset + index + 1 }}</td>
               <td class="px-3 py-3">
                 <div class="font-semibold text-gray-100">{{ row.email }}</div>
                 <div class="mt-1 max-w-[280px] truncate font-mono text-xs text-gray-600" :title="row.refresh_token">
@@ -174,6 +177,36 @@
           </tbody>
         </table>
       </div>
+      <div v-if="filteredRows.length" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 px-4 py-3 text-sm text-gray-400">
+        <div>
+          显示 {{ accountPageOffset + 1 }}-{{ accountPageOffset + pagedRows.length }} 条，共 {{ filteredRows.length }} 条
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="flex items-center gap-2">
+            <span>每页</span>
+            <select v-model.number="accountPageSize" class="rounded-lg border border-gray-800 bg-gray-950 px-2 py-1.5 text-gray-200">
+              <option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            :disabled="accountPage <= 1"
+            class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+            @click="accountPage = clampPage(accountPage - 1, accountTotalPages)"
+          >
+            上一页
+          </button>
+          <span class="min-w-24 text-center">第 {{ accountPage }} / {{ accountTotalPages }} 页</span>
+          <button
+            type="button"
+            :disabled="accountPage >= accountTotalPages"
+            class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+            @click="accountPage = clampPage(accountPage + 1, accountTotalPages)"
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </section>
 
     <div v-if="dialog" class="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4">
@@ -235,7 +268,7 @@
             </div>
             <div class="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
               <article
-                v-for="item in passwordResults"
+                v-for="item in pagedPasswordResults"
                 :key="item.email"
                 class="rounded-lg border px-3 py-3 text-sm"
                 :class="item.status === 'success' ? 'border-green-500/20 bg-green-500/10 text-green-200' : 'border-red-500/20 bg-red-500/10 text-red-200'"
@@ -245,6 +278,34 @@
                   {{ item.status === 'success' ? '官网改密成功，已更新本地 SQLite' : (item.error || '官网改密失败') }}
                 </div>
               </article>
+            </div>
+            <div v-if="passwordResults.length" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-3 text-sm text-gray-400">
+              <span>本页 {{ pagedPasswordResults.length }} 条，共 {{ passwordResults.length }} 条</span>
+              <div class="flex flex-wrap items-center gap-2">
+                <label class="flex items-center gap-2">
+                  <span>每页</span>
+                  <select v-model.number="passwordPageSize" class="rounded-lg border border-gray-800 bg-gray-950 px-2 py-1.5 text-gray-200">
+                    <option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  :disabled="passwordPage <= 1"
+                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="passwordPage = clampPage(passwordPage - 1, passwordTotalPages)"
+                >
+                  上一页
+                </button>
+                <span class="min-w-24 text-center">第 {{ passwordPage }} / {{ passwordTotalPages }} 页</span>
+                <button
+                  type="button"
+                  :disabled="passwordPage >= passwordTotalPages"
+                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="passwordPage = clampPage(passwordPage + 1, passwordTotalPages)"
+                >
+                  下一页
+                </button>
+              </div>
             </div>
           </template>
 
@@ -289,42 +350,70 @@
               ></iframe>
               <pre v-else class="mt-4 max-h-[42vh] overflow-auto whitespace-pre-wrap rounded-lg border border-gray-800 bg-gray-950 p-4 text-xs leading-5 text-gray-200">{{ activeFetchedMessage.message.text || '无正文' }}</pre>
             </div>
-            <div v-for="result in fetchedResults" :key="result.email" class="space-y-3">
-              <div class="flex items-center justify-between gap-3">
-                <div class="font-mono text-sm text-gray-200">{{ result.email }}</div>
-                <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="result.status === 'ok' ? 'bg-green-500/10 text-green-300' : 'bg-red-500/10 text-red-300'">
-                  {{ result.status === 'ok' ? `返回 ${(result.messages || []).length} 封` : '取件失败' }}
-                </span>
-              </div>
-              <div v-if="result.error" class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {{ result.error }}
-              </div>
-              <div v-else-if="!(result.messages || []).length" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-sm text-gray-500">
-                收件箱暂无邮件
-              </div>
-              <div v-else class="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
-                <article
-                  v-for="message in result.messages"
-                  :key="message.id || `${result.email}-${message.subject}`"
-                  class="rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-3"
-                >
+            <div v-if="pagedFetchedRows.length" class="max-h-[52vh] space-y-3 overflow-y-auto pr-1">
+              <div
+                v-for="entry in pagedFetchedRows"
+                :key="`${entry.result.email || 'mail'}-${entry.message?.id || entry.messageIndex}`"
+                class="space-y-3 rounded-xl border border-gray-800 bg-gray-950/40 p-3"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <div class="font-mono text-sm text-gray-200">{{ entry.result.email }}</div>
+                  <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="entry.result.status === 'ok' ? 'bg-green-500/10 text-green-300' : 'bg-red-500/10 text-red-300'">
+                    {{ entry.result.status === 'ok' ? `返回 ${(entry.result.messages || []).length} 封` : '取件失败' }}
+                  </span>
+                </div>
+                <div v-if="entry.result.error" class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                  {{ entry.result.error }}
+                </div>
+                <div v-else-if="!entry.message" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-sm text-gray-500">
+                  收件箱暂无邮件
+                </div>
+                <article v-else class="rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-3">
                   <div class="flex flex-wrap items-start justify-between gap-3">
                     <div class="min-w-0">
-                      <h4 class="truncate text-sm font-semibold text-white">{{ message.subject || '(无主题)' }}</h4>
-                      <p class="mt-1 text-xs text-gray-500">{{ message.sendEmail || '-' }}</p>
+                      <h4 class="truncate text-sm font-semibold text-white">{{ entry.message.subject || '(无主题)' }}</h4>
+                      <p class="mt-1 text-xs text-gray-500">{{ entry.message.sendEmail || '-' }}</p>
                     </div>
-                    <div class="text-xs text-gray-500">{{ formatTime(message.createTime || message.createdAt) }}</div>
+                    <div class="text-xs text-gray-500">{{ formatTime(entry.message.createTime || entry.message.createdAt) }}</div>
                   </div>
-                  <p v-if="message.text" class="mt-2 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-gray-300">
-                    {{ message.text }}
+                  <p v-if="entry.message.text" class="mt-2 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-gray-300">
+                    {{ entry.message.text }}
                   </p>
                   <button
-                    @click="openFetchedDetail(result.email, message)"
+                    @click="openFetchedDetail(entry.result.email, entry.message)"
                     class="mt-2 inline-flex text-xs font-semibold text-blue-300 hover:text-blue-200"
                   >
                     查看详情
                   </button>
                 </article>
+              </div>
+            </div>
+            <div v-if="fetchedRowCount" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-3 text-sm text-gray-400">
+              <span>本页 {{ pagedFetchedRows.length }} 条，共 {{ fetchedRowCount }} 条</span>
+              <div class="flex flex-wrap items-center gap-2">
+                <label class="flex items-center gap-2">
+                  <span>每页</span>
+                  <select v-model.number="fetchedPageSize" class="rounded-lg border border-gray-800 bg-gray-950 px-2 py-1.5 text-gray-200">
+                    <option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  :disabled="fetchedPage <= 1"
+                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="fetchedPage = clampPage(fetchedPage - 1, fetchedTotalPages)"
+                >
+                  上一页
+                </button>
+                <span class="min-w-24 text-center">第 {{ fetchedPage }} / {{ fetchedTotalPages }} 页</span>
+                <button
+                  type="button"
+                  :disabled="fetchedPage >= fetchedTotalPages"
+                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="fetchedPage = clampPage(fetchedPage + 1, fetchedTotalPages)"
+                >
+                  下一页
+                </button>
               </div>
             </div>
           </template>
@@ -342,8 +431,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+
+const DEFAULT_MAIL_PAGE_SIZE = 100
+const MAIL_PAGE_SIZE_OPTIONS = Object.freeze([50, 100, 200, 500])
+const MAIL_AUTH_SESSION_BATCH_MAX_ITEMS = 1_000
+const MAIL_ACCOUNT_BATCH_MAX_ITEMS = 2_000
 
 const emit = defineEmits(['task-started'])
 
@@ -357,6 +451,8 @@ const checkFilter = ref('')
 const statusFilter = ref('')
 const emailQuery = ref('')
 const noteQuery = ref('')
+const accountPage = ref(1)
+const accountPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const dialog = ref('')
 const importText = ref('')
 const editingEmail = ref('')
@@ -366,12 +462,17 @@ const newPassword = ref('')
 const newStatus = ref('enabled')
 const newNote = ref('')
 const fetchedResults = ref([])
+const fetchedPage = ref(1)
+const fetchedPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const activeFetchedMessage = ref(null)
 const passwordResults = ref([])
 const passwordSummary = ref({ updated: 0, failed: 0 })
+const passwordPage = ref(1)
+const passwordPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const visiblePasswords = ref(new Set())
 
 const selectedEmails = computed(() => Array.from(selected.value))
+const batchSelectionLimitError = computed(() => mailAccountBatchLimitError(selectedEmails.value))
 const filteredRows = computed(() => {
   const emailNeedle = emailQuery.value.toLowerCase()
   const noteNeedle = noteQuery.value.toLowerCase()
@@ -384,10 +485,23 @@ const filteredRows = computed(() => {
   })
 })
 const filteredEmails = computed(() => filteredRows.value.map(row => row.email))
+const effectiveAccountPageSize = computed(() => normalizeMailPageSize(accountPageSize.value))
+const accountTotalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / effectiveAccountPageSize.value)))
+const accountPageOffset = computed(() => (clampPage(accountPage.value, accountTotalPages.value) - 1) * effectiveAccountPageSize.value)
+const pagedRows = computed(() => pageRows(filteredRows.value, accountPage.value, effectiveAccountPageSize.value))
 const allFilteredSelected = computed(() => filteredEmails.value.length > 0 && filteredEmails.value.every(email => selected.value.has(email)))
-const messageClass = computed(() => messageType.value === 'error'
-  ? 'bg-red-500/10 text-red-300'
-  : 'bg-green-500/10 text-green-300')
+const fetchedWindow = computed(() => buildFetchedPage(fetchedResults.value, fetchedPage.value, fetchedPageSize.value))
+const pagedFetchedRows = computed(() => fetchedWindow.value.rows)
+const fetchedRowCount = computed(() => fetchedWindow.value.totalRows)
+const fetchedTotalPages = computed(() => fetchedWindow.value.totalPages)
+const effectivePasswordPageSize = computed(() => normalizeMailPageSize(passwordPageSize.value))
+const passwordTotalPages = computed(() => Math.max(1, Math.ceil(passwordResults.value.length / effectivePasswordPageSize.value)))
+const pagedPasswordResults = computed(() => pageRows(passwordResults.value, passwordPage.value, effectivePasswordPageSize.value))
+const messageClass = computed(() => {
+  if (messageType.value === 'error') return 'bg-red-500/10 text-red-300'
+  if (messageType.value === 'warning') return 'bg-amber-500/10 text-amber-200'
+  return 'bg-green-500/10 text-green-300'
+})
 const dialogTitle = computed(() => ({
   import: '导入 mail 邮箱',
   edit: editingEmail.value ? '编辑 mail 邮箱' : '新增 mail 邮箱',
@@ -397,6 +511,139 @@ const dialogTitle = computed(() => ({
   note: `批量备注（${selectedEmails.value.length} 个）`,
   fetched: '取件结果',
 })[dialog.value] || '')
+
+watch([checkFilter, statusFilter, emailQuery, noteQuery, accountPageSize], () => {
+  accountPage.value = 1
+})
+
+watch(accountTotalPages, value => {
+  accountPage.value = clampPage(accountPage.value, value)
+}, { flush: 'sync' })
+
+watch(fetchedPageSize, () => {
+  fetchedPage.value = 1
+})
+
+watch(fetchedTotalPages, value => {
+  fetchedPage.value = clampPage(fetchedPage.value, value)
+}, { flush: 'sync' })
+
+watch(passwordPageSize, () => {
+  passwordPage.value = 1
+})
+
+watch(passwordTotalPages, value => {
+  passwordPage.value = clampPage(passwordPage.value, value)
+}, { flush: 'sync' })
+
+function normalizeMailPageSize(value) {
+  const size = Number(value)
+  return MAIL_PAGE_SIZE_OPTIONS.includes(size) ? size : DEFAULT_MAIL_PAGE_SIZE
+}
+
+function clampPage(value, totalPages) {
+  const lastPage = Math.max(1, Math.trunc(Number(totalPages) || 1))
+  const page = Math.max(1, Math.trunc(Number(value) || 1))
+  return Math.min(page, lastPage)
+}
+
+function pageRows(items, page, pageSize) {
+  const source = Array.isArray(items) ? items : []
+  const size = normalizeMailPageSize(pageSize)
+  const totalPages = Math.max(1, Math.ceil(source.length / size))
+  const currentPage = clampPage(page, totalPages)
+  const start = (currentPage - 1) * size
+  return source.slice(start, start + size)
+}
+
+function buildFetchedPage(results, page, pageSize) {
+  const source = Array.isArray(results) ? results : []
+  const size = normalizeMailPageSize(pageSize)
+  let totalRows = 0
+  for (const result of source) {
+    const messages = Array.isArray(result?.messages) ? result.messages : []
+    totalRows += result?.error ? 1 : Math.max(1, messages.length)
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalRows / size))
+  const currentPage = clampPage(page, totalPages)
+  const start = (currentPage - 1) * size
+  const end = start + size
+  const visible = []
+  let offset = 0
+
+  for (const result of source) {
+    const messages = Array.isArray(result?.messages) ? result.messages : []
+    const resultRowCount = result?.error ? 1 : Math.max(1, messages.length)
+    const resultStart = offset
+    const resultEnd = resultStart + resultRowCount
+    offset = resultEnd
+
+    if (resultEnd <= start) continue
+    if (resultStart >= end) break
+
+    if (result?.error || !messages.length) {
+      visible.push({ result, message: null, messageIndex: -1 })
+      continue
+    }
+
+    const messageStart = Math.max(0, start - resultStart)
+    const messageEnd = Math.min(messages.length, end - resultStart)
+    for (let messageIndex = messageStart; messageIndex < messageEnd; messageIndex += 1) {
+      visible.push({ result, message: messages[messageIndex], messageIndex })
+    }
+  }
+
+  return { rows: visible, totalRows, totalPages, page: currentPage, pageSize: size }
+}
+
+function planMailAuthSessionLogin(emails) {
+  const source = Array.isArray(emails) ? emails : []
+  const supportedEmails = source.slice(0, MAIL_AUTH_SESSION_BATCH_MAX_ITEMS)
+  return {
+    emails: supportedEmails,
+    total: source.length,
+    deferred: Math.max(0, source.length - supportedEmails.length),
+  }
+}
+
+function mailAccountBatchLimitError(emails) {
+  const count = Array.isArray(emails) ? emails.length : 0
+  if (count <= MAIL_ACCOUNT_BATCH_MAX_ITEMS) return ''
+  return `已选择 ${count} 个 mail 邮箱账号，单次最多支持 ${MAIL_ACCOUNT_BATCH_MAX_ITEMS} 个；请筛选或取消部分选择后重试。`
+}
+
+function formatMailImportOutcome(result, loginPlan, loginError = '') {
+  const imported = Number(result?.imported || 0)
+  const skipped = Number(result?.skipped || 0)
+  const started = Number(loginPlan?.emails?.length || 0)
+  const deferred = Number(loginPlan?.deferred || 0)
+  const base = `导入 ${imported} 条，跳过 ${skipped} 条`
+  if (loginError) {
+    const deferredMessage = deferred > 0
+      ? `；另有 ${deferred} 个因单批上限 ${MAIL_AUTH_SESSION_BATCH_MAX_ITEMS} 未启动`
+      : ''
+    return `${base}；导入已完成，但后续 auth_session 登录启动失败：${String(loginError)}${deferredMessage}`
+  }
+  if (!started) return base
+  if (deferred > 0) {
+    return `${base}；auth_session 登录仅启动前 ${started} 个，剩余 ${deferred} 个未启动（单批上限 ${MAIL_AUTH_SESSION_BATCH_MAX_ITEMS}）`
+  }
+  return `${base}，已启动 ${started} 个登陆获取 auth_session`
+}
+
+function ensureMailAccountBatchWithinLimit(emails) {
+  const error = mailAccountBatchLimitError(emails)
+  if (!error) return true
+  setMessage(error, 'error')
+  return false
+}
+
+function currentMailAccountDialogBatchEmails() {
+  if (dialog.value === 'password') return dialogEmails.value
+  if (dialog.value === 'status' || dialog.value === 'note') return selectedEmails.value
+  return null
+}
 
 function blankForm() {
   return { email: '', gptPassword: '', mailPassword: '', refreshToken: '', status: 'enabled', note: '' }
@@ -596,6 +843,8 @@ function closeFetchedDetail() {
 }
 
 async function submitDialog() {
+  const dialogBatchEmails = currentMailAccountDialogBatchEmails()
+  if (dialogBatchEmails && !ensureMailAccountBatchWithinLimit(dialogBatchEmails)) return
   busy.value = true
   let shouldClose = true
   try {
@@ -605,17 +854,26 @@ async function submitDialog() {
       const loginEmails = Array.isArray(result.login_emails)
         ? result.login_emails.map(email => String(email || '').trim().toLowerCase()).filter(Boolean)
         : []
-      if (loginEmails.length) {
-        await api.loginMailAccountsAuthSession(loginEmails)
-        emit('task-started')
+      const loginPlan = planMailAuthSessionLogin(loginEmails)
+      let importMessage = formatMailImportOutcome(result, loginPlan)
+      let importMessageType = loginPlan.deferred > 0 ? 'warning' : 'success'
+      if (loginPlan.emails.length) {
+        try {
+          await api.loginMailAccountsAuthSession(loginPlan.emails)
+          emit('task-started')
+        } catch (loginError) {
+          importMessage = formatMailImportOutcome(result, loginPlan, loginError.message)
+          importMessageType = 'warning'
+        }
       }
-      setMessage(`导入 ${result.imported || 0} 条，跳过 ${result.skipped || 0} 条${loginEmails.length ? `，已启动 ${loginEmails.length} 个登陆获取 auth_session` : ''}`)
+      setMessage(importMessage, importMessageType)
     } else if (dialog.value === 'edit') {
       await api.saveMailAccount(form.value, editingEmail.value)
       setMessage('mail 邮箱账号已保存')
       await loadRows()
     } else if (dialog.value === 'password') {
       const result = await api.changeMailAccountPassword(dialogEmails.value, newPassword.value)
+      passwordPage.value = 1
       passwordResults.value = result.results || []
       passwordSummary.value = { updated: result.updated || 0, failed: result.failed || 0 }
       setMessage(`改密成功 ${result.updated || 0} 个，失败 ${result.failed || 0} 个`)
@@ -642,7 +900,7 @@ async function submitDialog() {
 }
 
 async function checkRows(emails) {
-  if (!emails.length) return
+  if (!emails.length || !ensureMailAccountBatchWithinLimit(emails)) return
   busy.value = true
   try {
     const result = await api.checkMailAccounts(emails)
@@ -656,9 +914,11 @@ async function checkRows(emails) {
 }
 
 async function fetchRows(emails) {
+  if (!emails.length || !ensureMailAccountBatchWithinLimit(emails)) return
   busy.value = true
   try {
     const result = await api.fetchMailAccounts(emails)
+    fetchedPage.value = 1
     fetchedResults.value = result.results || []
     activeFetchedMessage.value = null
     dialog.value = 'fetched'
@@ -673,7 +933,8 @@ async function fetchRows(emails) {
 }
 
 async function deleteRows(emails) {
-  if (!emails.length || !window.confirm(`确认删除 ${emails.length} 个 mail 邮箱账号？`)) return
+  if (!emails.length || !ensureMailAccountBatchWithinLimit(emails)) return
+  if (!window.confirm(`确认删除 ${emails.length} 个 mail 邮箱账号？`)) return
   busy.value = true
   try {
     const result = await api.deleteMailAccounts(emails)

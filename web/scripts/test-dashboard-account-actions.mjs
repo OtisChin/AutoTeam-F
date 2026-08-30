@@ -1,26 +1,83 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 const api = readFileSync(new URL('../src/api.js', import.meta.url), 'utf8')
 const dashboard = readFileSync(new URL('../src/components/Dashboard.vue', import.meta.url), 'utf8')
 const settings = readFileSync(new URL('../src/components/Settings.vue', import.meta.url), 'utf8')
 const registerAccountPage = readFileSync(new URL('../src/components/RegisterAccountPage.vue', import.meta.url), 'utf8')
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+const accessibleModalUrl = new URL('../src/components/AccessibleModal.vue', import.meta.url)
+const accessibleModal = existsSync(accessibleModalUrl) ? readFileSync(accessibleModalUrl, 'utf8') : ''
 
 assert.match(api, /getAccountAccessToken:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/access-token`\)/, 'API exposes per-account access token route')
 assert.match(api, /exportAccountAccessTokens:\s*\(emails\)\s*=>\s*request\('POST',\s*'\/accounts\/export-access-tokens',\s*\{\s*emails\s*\}\)/, 'API exposes batch access token export route')
-assert.match(api, /getAccountSubscription:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/subscription`\)/, 'API exposes per-account subscription route')
-assert.match(api, /getAccountLatestMail:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/latest-mail`\)/, 'API exposes per-account latest mail route')
+assert.match(api, /getAccountSubscription:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/subscription`,\s*null,\s*\{\s*timeoutMs:\s*270_000\s*\}\)/, 'API exposes per-account subscription route with its provider-aware deadline')
+assert.match(api, /getAccountLatestMail:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/latest-mail`,\s*null,\s*\{\s*timeoutMs:\s*0\s*\}\)/, 'API exposes per-account latest mail route without abandoning the backend fallback chain')
 assert.match(api, /loginAccount:\s*\(email,\s*payload\s*=\s*\{\}\)\s*=>\s*request\('POST',\s*'\/accounts\/login',\s*\{\s*\.\.\.payload,\s*email\s*\}\)/, 'API account login accepts arbitrary payload for OAuth authorization and relogin')
 
-assert.match(dashboard, /@click="copyAccountAccessToken\(acc\.email\)"/, 'account row has 获取ac action')
+assert.match(accessibleModal, /<Teleport to="body">[\s\S]*role="dialog"[\s\S]*aria-modal="true"/, 'the shared modal shell should render as a body-level modal dialog')
+assert.match(accessibleModal, /@keydown\.esc\.stop="requestClose"[\s\S]*@keydown\.tab="trapFocus"/, 'the shared modal shell should support Escape and a focus loop')
+assert.match(accessibleModal, /setBackgroundInert\(dialogRef\.value\)[\s\S]*focusInitialTarget\(\)/, 'the shared modal shell should isolate the background before moving focus inside')
+assert.match(accessibleModal, /onBeforeUnmount\([\s\S]*restoreBackgroundInert\(\)[\s\S]*opener[\s\S]*\.focus\(\)/, 'the shared modal shell should restore background state and opener focus on every unmount')
+assert.match(accessibleModal, /class="accessible-modal-layer/, 'the shared modal shell should own a reusable viewport layout class')
+assert.match(accessibleModal, /\.accessible-modal-layer\s*\{[\s\S]*overflow-y:\s*auto[\s\S]*align-items:\s*safe center/, 'short modal content should remain scrollable and use safe centering')
+assert.match(dashboard, /import AccessibleModal from '\.\/AccessibleModal\.vue'/, 'Dashboard should use the shared accessible modal shell')
+assert.equal((dashboard.match(/<AccessibleModal\b/g) || []).length, 7, 'all seven reachable legacy Dashboard overlays should use the accessible modal shell')
+for (const state of ['oauthConfigOpen', 'externalAccountImportOpen', 'finishedImportOpen', 'cpaImportOpen', 'accountTypeEditAccount', 'batchAccountEditOpen', 'credentialExportOpen']) {
+  assert.match(dashboard, new RegExp(`<AccessibleModal[^>]*v-if="${state.replace('.', '\\.')}"`), `${state} should open through the accessible modal shell`)
+}
+for (const label of ['关闭导入账号', '关闭成品账号导入', '关闭 CPA 认证导入', '关闭账号编辑', '关闭批量账号编辑', '关闭账密导出']) {
+  assert.match(dashboard, new RegExp(`aria-label="${label}"`), `${label} button should expose a useful accessible name`)
+}
+for (const [label, id] of [
+  ['账号内容', 'external-account-import-content'],
+  ['账号 JSON 文件', 'finished-accounts-file'],
+  ['邮箱池 TXT 文件，可选', 'finished-mailboxes-file'],
+  ['直接粘贴 CPA JSON', 'cpa-import-content'],
+  ['账号类型', 'account-type-edit'],
+  ['账号状态', 'account-status-edit'],
+  ['绑定渠道', 'account-provider-edit'],
+  ['账号类型', 'batch-account-type-edit'],
+  ['账号状态', 'batch-account-status-edit'],
+  ['绑定渠道', 'batch-account-provider-edit'],
+]) {
+  assert.match(dashboard, new RegExp(`<label[^>]*for="${id}"[^>]*>${label}<\\/label>[\\s\\S]{0,160}?<(?:textarea|input|select)[^>]*id="${id}"`), `${label} should be programmatically associated with ${id}`)
+}
+assert.match(dashboard, /credential-export-panel[\s\S]*max-h-\[calc\(100dvh-2rem\)\][\s\S]*flex flex-col/, 'the credential export panel should fit the viewport')
+assert.match(dashboard, /credential-export-body[\s\S]*min-h-0 flex-1 overflow-y-auto/, 'credential export details should scroll inside the bounded panel')
+assert.doesNotMatch(dashboard, /\bexportCodexAuth\b|\bexportData\b/, 'the unreachable legacy Codex auth export dialog should be removed instead of retained as dead modal code')
+
+assert.match(dashboard, /@click="openAccountActionMenu\(acc, \$event\)"/, 'account row opens one on-demand action surface and retains its trigger')
+assert.match(dashboard, /ref="accountActionDialogRef"/, 'account action dialog exposes its focus boundary')
+assert.match(dashboard, /ref="accountActionDialogInitialFocusRef"/, 'account action dialog exposes a deterministic initial focus target')
+assert.match(dashboard, /@keydown\.tab="trapAccountActionDialogFocus"/, 'account action dialog traps Tab and Shift+Tab')
+assert.match(dashboard, /@keydown\.esc\.stop="closeAccountActionMenu"/, 'account action dialog closes from the keyboard')
+assert.match(dashboard, /async function openAccountActionMenu\(account, event\)[\s\S]*await nextTick\(\)[\s\S]*accountActionDialogInitialFocusRef\.value\?\.focus\(\)/, 'opening the account action dialog moves focus inside it')
+assert.match(dashboard, /async function closeAccountActionMenu\(\)[\s\S]*await nextTick\(\)[\s\S]*trigger\?\.isConnected[\s\S]*trigger\.focus\(\)/, 'closing the account action dialog restores focus to its connected trigger')
+assert.match(dashboard, /function trapAccountActionDialogFocus\(event\)/, 'account action dialog implements a focus loop')
+assert.match(dashboard, /function setAccountActionBackgroundInert\(dialog\)/, 'account action dialog makes background application surfaces inert')
+assert.match(dashboard, /function restoreAccountActionBackgroundInert\(\)/, 'account action dialog restores prior inert states on close')
+assert.match(dashboard, /async function openAccountActionMenu\(account, event\)[\s\S]*setAccountActionBackgroundInert\(accountActionDialogRef\.value\)/, 'opening the account action dialog isolates it from background controls')
+assert.match(dashboard, /async function closeAccountActionMenu\(\)[\s\S]*restoreAccountActionBackgroundInert\(\)/, 'closing the account action dialog restores background controls')
+assert.match(dashboard, /@click="copyAccountAccessToken\(accountActionMenuAccount\.email\)"/, 'shared account action dialog has 获取ac action')
 assert.match(dashboard, /@click="exportSelectedAccessTokens"/, 'dashboard has one-click selected access token export action')
 assert.match(dashboard, /导出ac/, 'dashboard renders 导出ac button')
 assert.match(dashboard, /api\.exportAccountAccessTokens\(emails\)/, '导出ac action calls batch access token export API')
 assert.doesNotMatch(dashboard, /@click="convertSessionCpaAuths"/, '直接转换CPA认证按钮已移除')
 assert.doesNotMatch(dashboard, /直接转换CPA认证/, '直接转换CPA认证文案已移除')
-assert.match(dashboard, /@click="queryAccountSubscription\(acc\.email\)"/, 'account row has 订阅查询 action')
-assert.match(dashboard, /@click="queryAccountLatestMail\(acc\.email\)"/, 'account row has 获取邮件 action')
+assert.match(dashboard, /@click="queryAccountSubscription\(accountActionMenuAccount\.email\)"/, 'shared account action dialog has 订阅查询 action')
+assert.match(dashboard, /@click="queryAccountLatestMail\(accountActionMenuAccount\.email\)"/, 'shared account action dialog has 获取邮件 action')
+assert.match(dashboard, /<Teleport to="body">\s*<div\s+v-if="subscriptionDialog\.open"[\s\S]*?ref="subscriptionDialogRef"[\s\S]*?role="dialog"/, 'subscription results use their own body-level modal focus boundary')
+assert.match(dashboard, /<Teleport to="body">\s*<div\s+v-if="latestMailDialog\.open"[\s\S]*?ref="latestMailDialogRef"[\s\S]*?role="dialog"/, 'latest-mail results use their own body-level modal focus boundary')
+assert.match(dashboard, /v-if="subscriptionDialog\.open"[\s\S]*?@keydown\.esc\.stop="closeSubscriptionDialog"[\s\S]*?@keydown\.tab="trapAccountSecondaryDialogFocus\(\$event, subscriptionDialogRef\)"/, 'subscription dialog supports Escape and a trapped focus loop')
+assert.match(dashboard, /v-if="latestMailDialog\.open"[\s\S]*?@keydown\.esc\.stop="closeLatestMailDialog"[\s\S]*?@keydown\.tab="trapAccountSecondaryDialogFocus\(\$event, latestMailDialogRef\)"/, 'latest-mail dialog supports Escape and a trapped focus loop')
+assert.match(dashboard, /function trapAccountSecondaryDialogFocus\(event, dialogRef\)[\s\S]*dialogRef\?\.value \|\| dialogRef/, 'secondary focus trap accepts Vue template-unwrapped element refs')
+const subscriptionAction = dashboard.slice(dashboard.indexOf('async function queryAccountSubscription'), dashboard.indexOf('async function queryAccountLatestMail'))
+const latestMailAction = dashboard.slice(dashboard.indexOf('async function queryAccountLatestMail'), dashboard.indexOf('function closeSubscriptionDialog'))
+assert.match(subscriptionAction, /await transitionAccountActionToSecondaryDialog\([\s\S]*subscriptionDialogRef[\s\S]*subscriptionDialogInitialFocusRef/, 'subscription action must replace the account menu before issuing its request')
+assert.match(latestMailAction, /await transitionAccountActionToSecondaryDialog\([\s\S]*latestMailDialogRef[\s\S]*latestMailDialogInitialFocusRef/, 'latest-mail action must replace the account menu before issuing its request')
+assert.match(dashboard, /async function transitionAccountActionToSecondaryDialog[\s\S]*accountActionMenuAccount\.value = null[\s\S]*restoreAccountActionBackgroundInert\(\)[\s\S]*setAccountActionBackgroundInert\(dialogRef\.value\)[\s\S]*initialFocusRef\.value\?\.focus\(\)/, 'secondary account dialogs atomically replace the inert account menu and receive focus')
+assert.match(dashboard, /async function finishAccountSecondaryDialogClose[\s\S]*restoreAccountActionBackgroundInert\(\)[\s\S]*trigger\?\.isConnected[\s\S]*trigger\.focus\(\)/, 'closing a secondary account dialog restores focus to the original row action')
 assert.match(dashboard, /最近一封邮件/, 'dashboard renders latest mail dialog')
 assert.match(dashboard, /activeLatestMail/, 'dashboard tracks latest mail message')
 assert.match(dashboard, /getAccountLatestMail\(email\)/, '获取邮件 action calls latest mail API')
@@ -32,8 +89,8 @@ assert.match(dashboard, /OAuth授权/, 'existing OAuth credential action is labe
 assert.match(dashboard, /RoxyBrowser 模式/, 'dashboard exposes manual RoxyBrowser mode for OAuth/relogin')
 assert.match(dashboard, /oauth_browser_mode:\s*'roxy'/, 'dashboard sends roxy OAuth browser mode when selected')
 assert.match(dashboard, /protocol_only:\s*!useRoxyBrowser/, 'dashboard disables protocol-only when RoxyBrowser mode is selected')
-assert.match(dashboard, /@click="oauthAuthorizeAccount\(acc\.email\)"/, 'account row OAuth credential action is distinct from relogin')
-assert.match(dashboard, /@click="reloginAccount\(acc\.email\)"/, 'account row has new 补登录 action')
+assert.match(dashboard, /@click="oauthAuthorizeAccount\(accountActionMenuAccount\.email\)"/, 'shared action dialog OAuth credential action is distinct from relogin')
+assert.match(dashboard, /@click="reloginAccount\(accountActionMenuAccount\.email\)"/, 'shared action dialog has 补登录 action')
 assert.match(dashboard, /batchReloginAccounts/, 'dashboard has batch relogin action')
 assert.match(dashboard, /refresh_auth_session:\s*true/, 'relogin action refreshes auth_session while OAuth authorization keeps old payload')
 assert.match(dashboard, /function buildDashboardReloginPayload\(\)[\s\S]*delete proxyPayload\.oauth_browser_mode[\s\S]*refresh_auth_session:\s*true/, '补登录 uses auth_session refresh payload and does not request browser OAuth mode')
@@ -154,13 +211,13 @@ assert.doesNotMatch(
 assert.match(app, /refreshTaskStateOnly/, 'App has lightweight task-only polling while background tasks run')
 assert.match(app, /lastDashboardRefreshQuotaTask/, 'App keeps last refresh quota task so Dashboard can display completion result')
 assert.match(app, /:refresh-quota-result-task="lastDashboardRefreshQuotaTask"/, 'App passes last refresh quota task result to Dashboard')
-assert.match(app, /await refreshTaskStateOnly\(\)/, 'active polling avoids reloading dashboard accounts every tick')
-assert.match(app, /hadBusyTasks && !busyTasks\.value\.length[\s\S]*await refresh\(\)/, 'App refreshes dashboard accounts once after active tasks finish')
+assert.match(app, /await refreshTaskStateOnlyOnce\(epoch\)/, 'active polling runs the lightweight task-only refresh through an auth-epoch single-flight guard')
+assert.match(app, /hadBusyTasks && !busyTasks\.value\.length[\s\S]*await refreshDashboardAccounts\(epoch\)/, 'App refreshes dashboard accounts once after active tasks finish')
 
-assert.match(app, /ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS\s*=\s*10000/, 'App refreshes dashboard accounts every 10 seconds during active tasks')
-assert.match(app, /Date\.now\(\) - lastDashboardStatusRefreshAt >= ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS/, 'App throttles dashboard account refreshes while active tasks run')
+assert.doesNotMatch(app, /ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS/, 'active polling must not repeatedly rebuild and download the full account pool')
+assert.doesNotMatch(app, /Date\.now\(\) - lastDashboardStatusRefreshAt/, 'task polling should refresh the full account pool only on the terminal transition')
 
-assert.match(dashboard, /DEFAULT_ACCOUNT_PAGE_SIZE\s*=\s*100/, 'dashboard account pool default page size is 100')
+assert.match(dashboard, /DEFAULT_ACCOUNT_PAGE_SIZE\s*=\s*50/, 'dashboard account pool default page size is 50')
 assert.match(dashboard, /ACCOUNT_PAGE_SIZE_OPTIONS/, 'dashboard exposes selectable account page sizes')
 assert.match(dashboard, /v-model\.number="accountPageSize"/, 'dashboard renders a page size selector')
 assert.doesNotMatch(dashboard, /page_size: accountPageSize\.value/, 'dashboard no longer sends page size changes to backend')
@@ -189,12 +246,12 @@ assert.match(dashboard, /kakao_link_extracted/, 'dashboard recognizes Kakao extr
 assert.doesNotMatch(dashboard, /kakao_extract: kakaoExtractFilter\.value/, 'dashboard no longer exports removed Kakao extraction filter metadata')
 const kakaoExtractFn = dashboard.match(/function accountKakaoLinkExtracted\(acc\) \{[\s\S]*?\n\}/)?.[0] || ''
 assert.doesNotMatch(kakaoExtractFn, /kakao_link_expires_at|expires_at|Date\.now/, 'Kakao extracted filter is not tied to link expiry')
-assert.doesNotMatch(api, /URLSearchParams/, 'getAccounts no longer builds backend pagination query parameters')
+assert.match(api, /const params = new URLSearchParams\(\)/, 'getAccounts encodes dashboard view and session-stub options safely')
 assert.doesNotMatch(api, /addParam\('page'/, 'getAccounts no longer sends requested page')
 assert.doesNotMatch(api, /addParam\('page_size'/, 'getAccounts no longer sends requested page size')
 assert.doesNotMatch(api, /wantsPagedPayload/, 'getAccounts no longer handles backend pagination payloads')
 assert.doesNotMatch(app, /dashboardAccountQuery/, 'App no longer stores dashboard backend account query')
 assert.doesNotMatch(app, /isPagedPayload|filter_options/, 'App no longer handles backend pagination metadata')
 assert.doesNotMatch(dashboard, /accountFilterOptions|filter_options/, 'Dashboard no longer uses backend filter metadata')
-assert.match(app, /api\.getAccounts\(\)/, 'App loads the full account pool once for frontend pagination')
+assert.match(app, /api\.getAccounts\(\{[\s\S]*view:\s*'dashboard',[\s\S]*timeoutMs:\s*20_000,[\s\S]*signal,[\s\S]*\}\)/, 'App gives large dashboard bodies the standard 20-second bounded, abortable request budget')
 assert.doesNotMatch(app, /refreshFullStatusInBackground\(\)\s*\n}/, 'Dashboard refresh no longer overwrites paged accounts with full status payload')

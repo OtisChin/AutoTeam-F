@@ -79,7 +79,7 @@ assert.match(page, /togglePhonePoolReuse/, '153支付页面可以切换手机号
 assert.match(page, /PHONE_POOL_REUSE_STORAGE_KEY/, '153支付页会持久化手机号复用开关')
 assert.match(page, /extractBaTokenText|displayBaToken/, '153支付列表只展示 BA token 段')
 assert.match(page, /已支付/, '153支付账号列表会标记已支付账号')
-assert.match(page, /item\.paypalStatus === 'paid'/, '153支付账号列表会禁用已支付账号')
+assert.match(page, /!paymentLinkAccountSelectable\(item, pay153PaymentAccountStatus\)/, '153支付账号列表会禁用已支付、运行中和结果未知账号')
 assert.match(page, /pay153PaymentAccountStatus\(item\)/, '153支付列表按当前支付任务状态显示账号状态')
 assert.match(page, /pay153PaymentAccountStatusText[\s\S]*支付中/, '153支付中账号状态显示为支付中')
 assert.match(page, /if \(status === 'failed' \|\| status === 'error'\) return '支付失败'/, '153支付列表失败状态统一显示支付失败')

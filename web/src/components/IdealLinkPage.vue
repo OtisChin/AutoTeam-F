@@ -69,8 +69,9 @@
           </details>
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
             <button @click="start" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">{{ busy ? '提取中...' : `开始提链 (${selectedEmails.length})` }}</button>
-            <button v-if="busy" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">{{ canceling ? '取消中...' : '取消提链' }}</button>
-            <button @click="reloadAll" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
+            <button v-if="busy && currentJobStatus !== 'unknown_outcome'" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">{{ canceling ? '取消中...' : '取消提链' }}</button>
+            <button v-if="currentJobStatus === 'unknown_outcome'" @click="releaseUnknownIdealJob" :disabled="reconcilingUnknown" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20 disabled:opacity-50">{{ reconcilingUnknown ? '解除中...' : '已核对，解除隔离' }}</button>
+            <button @click="reloadAll()" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
             <button @click="testProxy" :disabled="busy || testingProxy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">{{ testingProxy ? '测试中...' : '测试代理' }}</button>
             <button @click="saveProxy" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理</button>
             <button @click="retryFailedAccounts" :disabled="busy || !retryFailedEmails.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50">失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}</button>
@@ -87,11 +88,11 @@
         </div>
         <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
           <input v-model.trim="accountFilter" placeholder="搜索账号邮箱" class="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" />
-          <select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"><option value="all">全部状态</option><option value="pending">未提链</option><option value="failed">提链失败</option><option value="success">已提链</option><option value="paid">已支付</option></select>
+          <select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"><option value="all">全部状态</option><option value="pending">未提链</option><option value="queued">等待提链</option><option value="running">提链中</option><option value="cancelling">取消中</option><option value="unknown_outcome">结果未知</option><option value="failed">提链失败</option><option value="success">已提链</option><option value="paid">已支付</option></select>
           <div class="flex flex-wrap gap-2"><button @click="selectAllFiltered" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button><button @click="clearSelectedAccounts" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button><button @click="deleteSelectedIdealAccounts" :disabled="busy || deletingIdealAccounts.size > 0 || !selectedEmails.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">删除选中{{ selectedEmails.length ? ` (${selectedEmails.length})` : '' }}</button></div>
         </div>
         <div class="mt-4 max-h-[520px] overflow-y-auto rounded-xl border border-gray-800">
-          <table class="w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">邮箱</th><th class="px-3 py-2">有效期</th><th class="px-3 py-2">提链状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td></tr><tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" /></td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ account.email }}</td><td class="px-3 py-2 text-xs text-gray-500">{{ ttlText(account.ttl_seconds) }}</td><td class="px-3 py-2 text-xs"><span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">{{ accountStatusText(account) }}</span></td><td class="px-3 py-2 text-right"><button @click="deleteIdealAccount(account.email)" :disabled="busy || deletingIdealAccounts.has(account.email)" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">{{ deletingIdealAccounts.has(account.email) ? '删除中' : '删除' }}</button></td></tr></tbody></table>
+          <table class="w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">邮箱</th><th class="px-3 py-2">有效期</th><th class="px-3 py-2">提链状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td></tr><tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" /></td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ account.email }}</td><td class="px-3 py-2 text-xs text-gray-500">{{ ttlText(account.ttl_seconds) }}</td><td class="px-3 py-2 text-xs"><span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">{{ accountStatusText(account) }}</span></td><td class="px-3 py-2 text-right"><button @click="deleteIdealAccount(account.email)" :disabled="busy || deletingIdealAccounts.has(account.email) || !accountSelectable(account)" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">{{ deletingIdealAccounts.has(account.email) ? '删除中' : '删除' }}</button></td></tr></tbody></table>
           <div v-if="hiddenAccountCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500"><span>已显示 {{ visibleAccounts.length }} / {{ filteredAccounts.length }} 个账号</span><button @click="showMoreAccounts" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button></div>
         </div>
       </section>
@@ -110,8 +111,14 @@
     </div>
 
     <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
-      <div class="flex flex-col gap-3 border-b border-gray-800 pb-4 md:flex-row md:items-end md:justify-between"><div><p class="text-xs font-semibold text-gray-500">链接管理</p><h3 class="mt-1 text-xl font-bold text-white">已提取 iDEAL 链接</h3></div><div class="flex flex-wrap gap-2"><button @click="refreshLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800">刷新</button><button @click="exportLinks" :disabled="!links.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">导出 JSON</button><button @click="deleteSelectedLinks" :disabled="!selectedLinkIds.size" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button><button @click="clearLinks" :disabled="!links.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">清空</button></div></div>
-      <div class="mt-4 max-h-[520px] overflow-auto rounded-xl border border-gray-800"><table class="min-w-[1120px] w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">时间</th><th class="px-3 py-2">账号</th><th class="px-3 py-2">金额</th><th class="px-3 py-2">CS ID</th><th class="px-3 py-2">操作</th><th class="px-3 py-2">iDEAL 链接</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!links.length"><td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td></tr><tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td><td class="px-3 py-2 text-xs text-gray-500">{{ link.created_at || '-' }}</td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td><td class="px-3 py-2 text-xs text-gray-400">{{ link.amount_display || link.amount || '-' }}</td><td class="px-3 py-2 font-mono text-xs text-gray-500">{{ link.cs_id || '-' }}</td><td class="px-3 py-2"><div class="flex flex-wrap gap-2"><a :href="link.ideal_link || link.long_url || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-100" :class="!(link.ideal_link || link.long_url) ? 'pointer-events-none opacity-50' : ''">打开</a><button @click="copy(link.ideal_link || link.long_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100">复制链</button></div></td><td class="max-w-[460px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ link.ideal_link || link.long_url || '-' }}</td></tr></tbody></table></div>
+      <div class="flex flex-col gap-3 border-b border-gray-800 pb-4 md:flex-row md:items-end md:justify-between"><div><p class="text-xs font-semibold text-gray-500">链接管理</p><h3 class="mt-1 text-xl font-bold text-white">已提取 iDEAL 链接</h3></div><div class="flex flex-wrap gap-2"><button @click="refreshLinks()" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800">刷新</button><button @click="exportLinks" :disabled="!links.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">导出 JSON</button><button @click="deleteSelectedLinks" :disabled="!selectedLinkIds.size" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button><button @click="clearLinks" :disabled="!links.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">清空</button></div></div>
+      <div class="mt-4 max-h-[520px] overflow-auto rounded-xl border border-gray-800">
+        <table class="min-w-[1120px] w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">时间</th><th class="px-3 py-2">账号</th><th class="px-3 py-2">金额</th><th class="px-3 py-2">CS ID</th><th class="px-3 py-2">操作</th><th class="px-3 py-2">iDEAL 链接</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!links.length"><td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td></tr><tr v-for="link in visibleLinks" :key="link.id" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td><td class="px-3 py-2 text-xs text-gray-500">{{ link.created_at || '-' }}</td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td><td class="px-3 py-2 text-xs text-gray-400">{{ link.amount_display || link.amount || '-' }}</td><td class="px-3 py-2 font-mono text-xs text-gray-500">{{ link.cs_id || '-' }}</td><td class="px-3 py-2"><div class="flex flex-wrap gap-2"><a :href="link.ideal_link || link.long_url || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-100" :class="!(link.ideal_link || link.long_url) ? 'pointer-events-none opacity-50' : ''">打开</a><button @click="copy(link.ideal_link || link.long_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100">复制链</button></div></td><td class="max-w-[460px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ link.ideal_link || link.long_url || '-' }}</td></tr></tbody></table>
+        <div v-if="hiddenLinkCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+          <span>已显示 {{ visibleLinks.length }} / {{ links.length }}，剩余 {{ hiddenLinkCount }} 项</span>
+          <button @click="showMoreLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+        </div>
+      </div>
     </section>
   </div>
 </template>
@@ -119,11 +126,19 @@
 <script setup>
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { isAmbiguousPaymentFailure } from '../paymentRequestState.js'
+import { createPollingLifecycle } from '../pollingLifecycle.js'
+import { readPollingSnapshot } from '../pollingRecovery.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
 import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const STORAGE_KEY = 'autotoken_ideal_form_v1'
 const SAVED_PROXY_KEY = 'autotoken_ideal_saved_proxy'
+const JOB_STORAGE_KEY = 'autotoken_ideal_active_job_v1'
+const BLOCKING_JOB_STATUSES = new Set(['submitting', 'queued', 'running', 'cancelling', 'unknown_outcome'])
+const BATCH_TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled'])
+const LONG_LINK_TERMINAL_STATUSES = new Set(['done', 'error', 'failed', 'cancelled'])
 
 const ResultRow = defineComponent({
   props: { label: String, value: String },
@@ -168,7 +183,13 @@ const steps = ref([])
 const result = ref(null)
 const qrUrl = ref('')
 const currentJobId = ref('')
-const pollTimer = ref(null)
+const currentClientRequestId = ref('')
+const currentJobKind = ref('')
+const currentJobStatus = ref('')
+const activeJobEmails = ref(new Set())
+const idealPolling = createPollingLifecycle()
+const storageFacade = createSessionStorageFacade()
+let componentUnmounted = false
 const logRef = ref(null)
 const proxyTestResult = ref('')
 const workflowStage = ref(1)
@@ -180,10 +201,12 @@ const logs = ref([])
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
 const accountVisibleCount = ref(100)
+const linkVisibleCount = ref(100)
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const deletingIdealAccounts = ref(new Set())
 const canceling = ref(false)
+const reconcilingUnknown = ref(false)
 
 const DEFAULT_PROXY_CHAIN_BY_TYPE = {
   ideal: { checkout: 'JP', provider: 'NL' },
@@ -232,6 +255,8 @@ const filteredAccounts = computed(() => {
 })
 const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
 const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
+const visibleLinks = computed(() => links.value.slice(0, linkVisibleCount.value))
+const hiddenLinkCount = computed(() => Math.max(0, links.value.length - visibleLinks.value.length))
 const retryFailedEmails = computed(() => accounts.value
   .filter(account => account.ideal_status === 'failed' && accountSelectable(account))
   .map(account => account.email)
@@ -291,6 +316,175 @@ function readAccessTokenInput() {
 function setStatus(text, isError = false) {
   statusText.value = text
   statusError.value = isError
+}
+
+function normalizedEmails(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : []).map(value => String(value || '').trim()).filter(Boolean)))
+}
+
+function isBlockingIdealJob(status = currentJobStatus.value) {
+  return BLOCKING_JOB_STATUSES.has(String(status || '').trim().toLowerCase())
+}
+
+function canCommitIdealTask(pollToken) {
+  return !componentUnmounted && (pollToken === undefined || idealPolling.isActive(pollToken))
+}
+
+function createIdealClientRequestId() {
+  const randomId = globalThis.crypto?.randomUUID?.()
+  if (randomId) return `ideal-long-link-${randomId}`
+  return `ideal-long-link-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+function persistIdealJob(snapshot = {}) {
+  if (componentUnmounted) return false
+  const jobId = String(snapshot.jobId || currentJobId.value || '').trim()
+  const clientRequestId = String(snapshot.clientRequestId || currentClientRequestId.value || '').trim()
+  if (!jobId && !clientRequestId) return false
+  const kind = snapshot.kind === 'long-link' ? 'long-link' : (snapshot.kind || currentJobKind.value || 'batch')
+  const status = String(snapshot.status || currentJobStatus.value || 'queued').trim().toLowerCase()
+  const accountEmails = normalizedEmails(snapshot.accountEmails || Array.from(activeJobEmails.value))
+  const durable = { jobId, clientRequestId, kind, status, accountEmails, updatedAt: Date.now() }
+  if (!storageFacade.setItem(JOB_STORAGE_KEY, JSON.stringify(durable))) return false
+  currentJobId.value = jobId
+  currentClientRequestId.value = clientRequestId
+  currentJobKind.value = kind
+  currentJobStatus.value = status
+  activeJobEmails.value = new Set(accountEmails)
+  return true
+}
+
+function clearPersistedIdealJob(jobId = currentJobId.value, clientRequestId = currentClientRequestId.value) {
+  try {
+    const saved = JSON.parse(storageFacade.getItem(JOB_STORAGE_KEY) || '{}')
+    const matchesJob = jobId && saved.jobId && String(saved.jobId) === String(jobId)
+    const matchesRequest = clientRequestId && saved.clientRequestId && String(saved.clientRequestId) === String(clientRequestId)
+    if ((!jobId && !clientRequestId) || (!saved.jobId && !saved.clientRequestId) || matchesJob || matchesRequest) {
+      storageFacade.removeItem(JOB_STORAGE_KEY)
+    }
+  } catch {
+    storageFacade.removeItem(JOB_STORAGE_KEY)
+  }
+  currentClientRequestId.value = ''
+  activeJobEmails.value = new Set()
+}
+
+function restoreIdealJob() {
+  try {
+    const saved = JSON.parse(storageFacade.getItem(JOB_STORAGE_KEY) || '{}')
+    const jobId = String(saved.jobId || '').trim()
+    const clientRequestId = String(saved.clientRequestId || '').trim()
+    const kind = saved.kind === 'long-link' ? 'long-link' : 'batch'
+    const status = String(saved.status || 'queued').trim().toLowerCase()
+    const terminal = kind === 'long-link' ? LONG_LINK_TERMINAL_STATUSES : BATCH_TERMINAL_STATUSES
+    const hasRecoverableIdentity = Boolean(jobId || (kind === 'long-link' && clientRequestId))
+    if (!hasRecoverableIdentity || terminal.has(status)) {
+      if (jobId || clientRequestId) storageFacade.removeItem(JOB_STORAGE_KEY)
+      return null
+    }
+    const restored = { jobId, clientRequestId, kind, status, accountEmails: normalizedEmails(saved.accountEmails) }
+    persistIdealJob(restored)
+    busy.value = true
+    runtimeBadge.value = { text: status === 'unknown_outcome' ? '结果未知' : '恢复任务', kind: status === 'unknown_outcome' ? 'error' : 'running' }
+    setStatus(status === 'unknown_outcome' ? '已恢复结果未知的任务；相关账号继续隔离，不会自动重发。' : '已恢复 iDEAL 任务，正在重新同步后端进度。', status === 'unknown_outcome')
+    return restored
+  } catch {
+    storageFacade.removeItem(JOB_STORAGE_KEY)
+    return null
+  }
+}
+
+function quarantineCurrentIdealJob(error) {
+  if (componentUnmounted || (!currentJobId.value && !currentClientRequestId.value) || !isBlockingIdealJob()) return false
+  currentJobStatus.value = 'unknown_outcome'
+  persistIdealJob({ jobId: currentJobId.value, clientRequestId: currentClientRequestId.value, kind: currentJobKind.value, status: 'unknown_outcome', accountEmails: Array.from(activeJobEmails.value) })
+  runtimeBadge.value = { text: '结果未知', kind: 'error' }
+  setStatus(`任务状态无法确认，已保持账号隔离且不会自动重发：${cleanText(error?.message || error)}`, true)
+  busy.value = true
+  return true
+}
+
+async function lookupRestoredIdealLongLinkJob(clientRequestId, pollToken) {
+  let lookupFailures = 0
+  for (;;) {
+    if (!canCommitIdealTask(pollToken)) return { kind: 'stopped' }
+    if (!await idealPolling.waitUntilAvailable(pollToken)) return { kind: 'stopped' }
+    if (!canCommitIdealTask(pollToken)) return { kind: 'stopped' }
+    const recovery = await readPollingSnapshot({
+      request: () => api.getIdealLongLinkJobByClientRequest(clientRequestId),
+      wait: delayMs => idealPolling.wait(delayMs, pollToken),
+      attempt: lookupFailures,
+      onTransientError: (error, delayMs) => {
+        if (!canCommitIdealTask(pollToken)) return
+        setStatus(`长链任务身份同步失败，${Math.ceil(delayMs / 1000)} 秒后自动重试：${cleanText(error?.message || error)}`, true)
+      },
+    })
+    if (!canCommitIdealTask(pollToken)) return { kind: 'stopped' }
+    if (recovery.kind === 'retry') {
+      lookupFailures = recovery.attempt
+      continue
+    }
+    if (recovery.kind !== 'snapshot') return recovery
+    const recovered = recovery.value
+    const jobId = String(recovered?.job_id || '').trim()
+    if (!jobId) {
+      return {
+        kind: 'permanent',
+        error: new Error('后端没有返回可恢复的长链任务 ID'),
+        attempt: recovery.attempt,
+      }
+    }
+    return { ...recovery, jobId }
+  }
+}
+
+async function pollRestoredIdealJob(saved, pollToken = idealPolling.start()) {
+  if (!canCommitIdealTask(pollToken)) return
+  try {
+    if (saved.kind === 'long-link') {
+      let jobId = saved.jobId
+      if (!jobId && saved.clientRequestId) {
+        const recovery = await lookupRestoredIdealLongLinkJob(saved.clientRequestId, pollToken)
+        if (!canCommitIdealTask(pollToken)) return
+        if (recovery.kind === 'stopped') return
+        if (recovery.kind === 'missing') {
+          quarantineCurrentIdealJob(recovery.error || new Error('未找到可恢复的长链任务'))
+          return
+        }
+        if (recovery.kind === 'permanent') {
+          quarantineCurrentIdealJob(recovery.error || new Error('长链任务身份查询被服务端拒绝'))
+          return
+        }
+        if (recovery.kind === 'paused') {
+          quarantineCurrentIdealJob(recovery.error || new Error('长链任务身份连续查询失败，已暂停恢复'))
+          return
+        }
+        if (recovery.kind !== 'snapshot') return
+        const recovered = recovery.value
+        jobId = recovery.jobId
+        if (!persistIdealJob({
+          jobId,
+          clientRequestId: saved.clientRequestId,
+          kind: 'long-link',
+          status: recovered.status || 'running',
+          accountEmails: [],
+        })) throw new Error('无法持久化恢复后的长链任务 ID')
+      }
+      await pollJob(jobId, pollToken)
+      if (!canCommitIdealTask(pollToken)) return
+    } else {
+      await pollIdealJob(saved.jobId, pollToken)
+      if (!canCommitIdealTask(pollToken)) return
+    }
+  } catch (error) {
+    if (!canCommitIdealTask(pollToken)) return
+    if (!quarantineCurrentIdealJob(error)) {
+      runtimeBadge.value = { text: '执行失败', kind: 'error' }
+      setStatus(cleanText(error?.message || error), true)
+    }
+  } finally {
+    if (canCommitIdealTask(pollToken)) busy.value = isBlockingIdealJob()
+  }
 }
 
 function badgeClass(kind) {
@@ -410,11 +604,14 @@ function ttlText(seconds) {
 }
 
 function accountSelectable(account) {
-  return String(account?.ideal_status || 'pending') !== 'paid' && Boolean(account?.email)
+  if (account?.ideal_selectable === false) return false
+  const email = String(account?.email || '').trim()
+  const status = String(account?.ideal_status || 'pending')
+  return Boolean(email) && !activeJobEmails.value.has(email) && !['paid', 'queued', 'running', 'cancelling', 'unknown_outcome'].includes(status)
 }
 
 function accountStatusText(account) {
-  return account?.ideal_status_text || ({ pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }[account?.ideal_status] || '未提链')
+  return account?.ideal_status_text || ({ pending: '未提链', queued: '等待提链', running: '提链中', cancelling: '取消中', unknown_outcome: '结果未知（已隔离）', success: '已提链', failed: '提链失败', paid: '已支付' }[account?.ideal_status] || '未提链')
 }
 
 function accountStatusError(account) {
@@ -424,7 +621,10 @@ function accountStatusError(account) {
 function accountStatusClass(account) {
   return {
     success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    queued: 'border-blue-500/30 bg-blue-500/10 text-blue-300',
     running: 'border-blue-500/30 bg-blue-500/10 text-blue-300',
+    cancelling: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+    unknown_outcome: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
     failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
     paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
   }[String(account?.ideal_status || 'pending')] || 'border-gray-700 bg-gray-900 text-gray-400'
@@ -433,7 +633,10 @@ function accountStatusClass(account) {
 function toggleAccount(email) {
   const next = new Set(selectedAccounts.value)
   if (next.has(email)) next.delete(email)
-  else next.add(email)
+  else {
+    const account = accounts.value.find(item => item.email === email)
+    if (accountSelectable(account)) next.add(email)
+  }
   selectedAccounts.value = next
 }
 
@@ -447,6 +650,10 @@ function clearSelectedAccounts() {
 
 function showMoreAccounts() {
   accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
+}
+
+function showMoreLinks() {
+  linkVisibleCount.value = Math.min(links.value.length, linkVisibleCount.value + 100)
 }
 
 function toggleLink(id) {
@@ -463,39 +670,91 @@ async function copy(value) {
   setStatus('已复制。')
 }
 
-async function refreshAccounts() {
-  const data = await api.getIdealAccounts()
-  accounts.value = Array.isArray(data.accounts) ? data.accounts : []
-  const live = new Set(accounts.value.map(account => account.email).filter(Boolean))
-  selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(email => live.has(email)))
+function canCommitIdealRefresh(pollToken) {
+  return canCommitIdealTask(pollToken)
 }
 
-async function refreshLinks() {
+async function refreshAccounts(pollToken) {
+  if (!canCommitIdealRefresh(pollToken)) return
+  const data = await api.getIdealAccounts()
+  if (!canCommitIdealRefresh(pollToken)) return
+  accounts.value = Array.isArray(data.accounts) ? data.accounts : []
+  const byEmail = new Map(accounts.value.map(account => [account.email, account]))
+  selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(email => accountSelectable(byEmail.get(email))))
+}
+
+async function refreshLinks(pollToken) {
+  if (!canCommitIdealRefresh(pollToken)) return
   const data = await api.getIdealLinks()
+  if (!canCommitIdealRefresh(pollToken)) return
   links.value = Array.isArray(data.links) ? data.links : []
   const live = new Set(links.value.map(link => link.id).filter(Boolean))
   selectedLinkIds.value = new Set(Array.from(selectedLinkIds.value).filter(id => live.has(id)))
 }
 
-async function reloadAll() {
+async function reloadAll(pollToken) {
+  if (!canCommitIdealRefresh(pollToken)) return
+  if (pollToken !== undefined) {
+    if (!await idealPolling.waitUntilAvailable(pollToken)) return
+    if (!idealPolling.isActive(pollToken)) return
+  }
   setStatus('正在刷新账号和链接。')
-  await Promise.all([refreshAccounts(), refreshLinks()])
+  await Promise.all([refreshAccounts(pollToken), refreshLinks(pollToken)])
+  if (!canCommitIdealRefresh(pollToken)) return
   setStatus('账号和链接已刷新。')
 }
 
-async function pollIdealJob(jobId) {
+async function pollIdealJob(jobId, pollToken = idealPolling.start()) {
+  if (!idealPolling.isActive(pollToken)) return
   currentJobId.value = jobId
+  let pollFailures = 0
   for (;;) {
-    const data = await api.getIdealJob(jobId)
+    if (!idealPolling.isActive(pollToken)) return
+    if (!await idealPolling.waitUntilAvailable(pollToken)) return
+    if (!idealPolling.isActive(pollToken)) return
+    const recovery = await readPollingSnapshot({
+      request: () => api.getIdealJob(jobId),
+      wait: delayMs => idealPolling.wait(delayMs, pollToken),
+      attempt: pollFailures,
+      onTransientError: (error, delayMs) => {
+        if (!idealPolling.isActive(pollToken)) return
+        persistIdealJob({ jobId, kind: 'batch', status: currentJobStatus.value || 'running', accountEmails: Array.from(activeJobEmails.value) })
+        setStatus(`任务进度同步失败，${Math.ceil(delayMs / 1000)} 秒后自动重试：${cleanText(error?.message || error)}`, true)
+      },
+    })
+    if (!idealPolling.isActive(pollToken)) return
+    if (recovery.kind === 'retry') {
+      pollFailures = recovery.attempt
+      continue
+    }
+    if (['missing', 'permanent', 'paused'].includes(recovery.kind)) {
+      persistIdealJob({ jobId, kind: 'batch', status: currentJobStatus.value || 'running', accountEmails: Array.from(activeJobEmails.value) })
+      quarantineCurrentIdealJob(recovery.error)
+      return
+    }
+    if (recovery.kind !== 'snapshot') return
+    const data = recovery.value
+    if (!idealPolling.isActive(pollToken)) return
+    pollFailures = 0
+    persistIdealJob({ jobId, kind: 'batch', status: data.status || 'running', accountEmails: data.account_emails || Array.from(activeJobEmails.value) })
     logs.value = Array.isArray(data.logs) ? data.logs : []
     if (data.current_result) result.value = data.current_result
     await nextTick()
+    if (!idealPolling.isActive(pollToken)) return
     if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
+    if (data.status === 'unknown_outcome') {
+      runtimeBadge.value = { text: '结果未知', kind: 'error' }
+      resultBadge.value = { text: '等待人工核对', kind: 'error' }
+      setStatus(data.error || '后端无法确认任务结果，相关账号保持隔离且不会自动重发。', true)
+      return
+    }
     if (data.status === 'success' || data.status === 'error' || data.status === 'cancelled') {
       const lastSuccess = Array.isArray(data.successes) && data.successes.length ? data.successes[data.successes.length - 1] : null
       if (lastSuccess?.result) result.value = lastSuccess.result
       if (result.value?.long_url) {
-        try { await renderQr(result.value.long_url) } catch {}
+        if (!idealPolling.isActive(pollToken)) return
+        try { await renderQr(result.value.long_url, pollToken) } catch {}
+        if (!idealPolling.isActive(pollToken)) return
       }
       if (data.status === 'success') {
         runtimeBadge.value = { text: '执行完成', kind: 'success' }
@@ -509,21 +768,32 @@ async function pollIdealJob(jobId) {
         runtimeBadge.value = { text: '执行失败', kind: 'error' }
         setStatus(data.error || '任务执行失败。', true)
       }
-      await reloadAll()
+      clearPersistedIdealJob(jobId)
+      if (!idealPolling.isActive(pollToken)) return
+      await reloadAll(pollToken)
+      if (!idealPolling.isActive(pollToken)) return
       return
     }
     setStatus(`任务执行中：${data.completed || 0}/${data.total || 0}。`)
-    await new Promise(resolve => {
-      pollTimer.value = window.setTimeout(resolve, 1200)
-    })
+    if (!await idealPolling.wait(1200, pollToken)) return
   }
 }
 
 async function start() {
-  if (!selectedEmails.value.length) {
+  if (busy.value) return
+  const accountEmails = selectedEmails.value.filter((email) => accountSelectable(accounts.value.find(account => account.email === email)))
+  if (!accountEmails.length) {
     setStatus('请先选择至少一个 iDEAL 账号。', true)
     return
   }
+  idealPolling.cancel()
+  const pollToken = idealPolling.start()
+  if (!canCommitIdealTask(pollToken)) return
+  currentJobId.value = ''
+  currentClientRequestId.value = ''
+  currentJobKind.value = 'batch'
+  currentJobStatus.value = ''
+  activeJobEmails.value = new Set(accountEmails)
   busy.value = true
   result.value = null
   steps.value = []
@@ -532,30 +802,76 @@ async function start() {
   qrUrl.value = ''
   runtimeBadge.value = { text: '正在执行', kind: 'running' }
   resultBadge.value = { text: '等待结果', kind: 'neutral' }
-  setStatus(`任务已提交，正在为 ${selectedEmails.value.length} 个账号提取 iDEAL 链。`)
+  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号提取 iDEAL 链。`)
   try {
     persistForm()
-    const data = await api.startIdealBatch(batchPayload())
+    const data = await api.startIdealBatch({ ...batchPayload(), accountEmails })
+    if (!canCommitIdealTask(pollToken)) return
     if (!data.job_id) throw new Error('后端没有返回任务 ID')
-    await pollIdealJob(data.job_id)
+    persistIdealJob({ jobId: data.job_id, kind: 'batch', status: 'queued', accountEmails })
+    await pollIdealJob(data.job_id, pollToken)
+    if (!canCommitIdealTask(pollToken)) return
   } catch (error) {
-    setStatus(cleanText(error.message || error), true)
-    runtimeBadge.value = { text: '执行失败', kind: 'error' }
+    if (!canCommitIdealTask(pollToken)) return
+    if (!quarantineCurrentIdealJob(error)) {
+      setStatus(cleanText(error.message || error), true)
+      runtimeBadge.value = { text: '执行失败', kind: 'error' }
+    }
   } finally {
-    busy.value = false
+    if (canCommitIdealTask(pollToken)) busy.value = isBlockingIdealJob()
   }
 }
 
 async function cancelJob() {
   if (!currentJobId.value) return
+  if (currentJobKind.value && currentJobKind.value !== 'batch') {
+    setStatus('当前长链任务不支持远端取消；任务身份已保留并继续同步。', true)
+    return
+  }
   canceling.value = true
   try {
-    await api.cancelIdealJob(currentJobId.value)
+    const data = await api.cancelIdealJob(currentJobId.value)
+    persistIdealJob({ jobId: currentJobId.value, kind: 'batch', status: data.status || 'cancelling', accountEmails: Array.from(activeJobEmails.value) })
     setStatus('已请求取消任务。')
   } catch (error) {
     setStatus(cleanText(error.message || error), true)
   } finally {
     canceling.value = false
+  }
+}
+
+async function releaseUnknownIdealJob() {
+  const jobId = String(currentJobId.value || '').trim()
+  const clientRequestId = String(currentClientRequestId.value || '').trim()
+  const reviewedIdentity = jobId || clientRequestId
+  if (!reviewedIdentity || currentJobStatus.value !== 'unknown_outcome' || reconcilingUnknown.value) return
+  if (!window.confirm('请仅在已核对远端结果后解除隔离。解除后账号可再次选择，但此操作不会自动重提。确认继续？')) return
+  reconcilingUnknown.value = true
+  let released
+  try {
+    released = currentJobKind.value === 'long-link'
+      ? { ok: true, job_id: jobId, client_request_id: clientRequestId, released: true, account_emails: [] }
+      : await api.releaseIdealUnknownJob(jobId)
+  } catch (error) {
+    setStatus(`解除隔离失败：${cleanText(error?.message || error)}`, true)
+    reconcilingUnknown.value = false
+    return
+  }
+  idealPolling.cancel()
+  clearPersistedIdealJob(jobId)
+  currentJobId.value = ''
+  currentJobKind.value = ''
+  currentJobStatus.value = 'cancelled'
+  busy.value = false
+  canceling.value = false
+  runtimeBadge.value = { text: '已人工解除', kind: 'neutral' }
+  try {
+    await reloadAll()
+    setStatus(`已人工核对并解除任务 ${reviewedIdentity.slice(0, 8)} 的未知结果隔离；释放 ${released.account_emails?.length || 0} 个账号，未自动重提。`)
+  } catch (error) {
+    setStatus(`隔离已解除且未自动重提，但账号列表刷新失败：${cleanText(error?.message || error)}`, true)
+  } finally {
+    reconcilingUnknown.value = false
   }
 }
 
@@ -568,6 +884,11 @@ async function retryFailedAccounts() {
 async function deleteIdealAccount(email) {
   const target = String(email || '').trim()
   if (!target || deletingIdealAccounts.value.has(target)) return
+  const account = accounts.value.find(item => item.email === target)
+  if (!accountSelectable(account)) {
+    setStatus(`${target} 正被运行中或结果未知的任务占用，不能删除。`, true)
+    return
+  }
   if (!window.confirm(`确认从 iDEAL 账号池和仪表盘账号池中删除 ${target}？`)) return
   deletingIdealAccounts.value = new Set([...deletingIdealAccounts.value, target])
   try {
@@ -585,7 +906,7 @@ async function deleteIdealAccount(email) {
 }
 
 async function deleteSelectedIdealAccounts() {
-  const emails = selectedEmails.value
+  const emails = selectedEmails.value.filter((email) => accountSelectable(accounts.value.find(account => account.email === email)))
   if (!emails.length || deletingIdealAccounts.value.size) return
   if (!window.confirm(`确认批量删除选中的 ${emails.length} 个账号？这些账号会同时从 iDEAL 账号池和仪表盘账号池删除。`)) return
   deletingIdealAccounts.value = new Set(emails)
@@ -630,20 +951,60 @@ function exportLinks() {
   URL.revokeObjectURL(url)
 }
 
-async function renderQr(value) {
-  if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
-  qrUrl.value = ''
+async function renderQr(value, pollToken) {
+  if (!idealPolling.isActive(pollToken)) return false
+  if (!await idealPolling.waitUntilAvailable(pollToken)) return false
+  if (!idealPolling.isActive(pollToken)) return false
   const blob = await api.getIdealQrBlob(value)
+  if (!idealPolling.isActive(pollToken)) return false
+  if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
   qrUrl.value = URL.createObjectURL(blob)
+  return true
 }
 
-async function pollJob(jobId) {
+async function pollJob(jobId, pollToken = idealPolling.start()) {
+  if (!idealPolling.isActive(pollToken)) return
   currentJobId.value = jobId
+  let pollFailures = 0
   for (;;) {
-    const data = await api.getIdealLongLinkJob(jobId)
+    if (!idealPolling.isActive(pollToken)) return
+    if (!await idealPolling.waitUntilAvailable(pollToken)) return
+    if (!idealPolling.isActive(pollToken)) return
+    const recovery = await readPollingSnapshot({
+      request: () => api.getIdealLongLinkJob(jobId),
+      wait: delayMs => idealPolling.wait(delayMs, pollToken),
+      attempt: pollFailures,
+      onTransientError: (error, delayMs) => {
+        if (!idealPolling.isActive(pollToken)) return
+        persistIdealJob({ jobId, kind: 'long-link', status: currentJobStatus.value || 'running', accountEmails: Array.from(activeJobEmails.value) })
+        setStatus(`长链任务进度同步失败，${Math.ceil(delayMs / 1000)} 秒后自动重试：${cleanText(error?.message || error)}`, true)
+      },
+    })
+    if (!idealPolling.isActive(pollToken)) return
+    if (recovery.kind === 'retry') {
+      pollFailures = recovery.attempt
+      continue
+    }
+    if (['missing', 'permanent', 'paused'].includes(recovery.kind)) {
+      persistIdealJob({ jobId, kind: 'long-link', status: currentJobStatus.value || 'running', accountEmails: Array.from(activeJobEmails.value) })
+      quarantineCurrentIdealJob(recovery.error)
+      return
+    }
+    if (recovery.kind !== 'snapshot') return
+    const data = recovery.value
+    if (!idealPolling.isActive(pollToken)) return
+    pollFailures = 0
+    persistIdealJob({ jobId, kind: 'long-link', status: data.status || 'running', accountEmails: Array.from(activeJobEmails.value) })
     steps.value = Array.isArray(data.steps) ? data.steps : []
     await nextTick()
+    if (!idealPolling.isActive(pollToken)) return
     if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
+    if (data.status === 'unknown_outcome') {
+      runtimeBadge.value = { text: '结果未知', kind: 'error' }
+      resultBadge.value = { text: '等待人工核对', kind: 'error' }
+      setStatus(data.error || '后端无法确认长链任务结果；任务身份保持隔离且不会自动重发。', true)
+      return
+    }
     if (data.status === 'done') {
       result.value = data.result || {}
       workflowStage.value = 3
@@ -651,34 +1012,46 @@ async function pollJob(jobId) {
       resultBadge.value = { text: '生成二维码', kind: 'running' }
       const url = safeHttpUrl(result.value.long_url || '')
       if (url) {
-        await renderQr(url)
+        if (!idealPolling.isActive(pollToken)) return
+        await renderQr(url, pollToken)
+        if (!idealPolling.isActive(pollToken)) return
         resultBadge.value = { text: '二维码就绪', kind: 'success' }
       } else {
         resultBadge.value = { text: '无有效长链', kind: 'error' }
       }
       setStatus('iDEAL 链与二维码已生成。')
       if (url) playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
+      clearPersistedIdealJob(jobId)
       return
     }
     if (data.status === 'error') {
       if (data.result) result.value = data.result
       runtimeBadge.value = { text: '执行失败', kind: 'error' }
       resultBadge.value = { text: '未生成', kind: 'error' }
+      clearPersistedIdealJob(jobId)
       throw new Error(data.error || '生成失败')
     }
     setStatus(`任务执行中，已记录 ${steps.value.length} 条日志。`)
-    await new Promise(resolve => {
-      pollTimer.value = window.setTimeout(resolve, 900)
-    })
+    if (!await idealPolling.wait(900, pollToken)) return
   }
 }
 
 async function generate() {
+  if (busy.value) return
   const accessToken = readAccessTokenInput()
   if (!accessToken) {
     setStatus('Access Token 不能为空。', true)
     return
   }
+  const clientRequestId = createIdealClientRequestId()
+  idealPolling.cancel()
+  const pollToken = idealPolling.start()
+  if (!canCommitIdealTask(pollToken)) return
+  currentJobId.value = ''
+  currentClientRequestId.value = clientRequestId
+  currentJobKind.value = 'long-link'
+  currentJobStatus.value = 'submitting'
+  activeJobEmails.value = new Set()
   busy.value = true
   result.value = null
   if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
@@ -688,17 +1061,36 @@ async function generate() {
   resultBadge.value = { text: '等待结果', kind: 'neutral' }
   steps.value = [{ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), status: 'info', name: '任务已提交', detail: '后端正在创建支付链路。' }]
   setStatus('任务已提交，正在提取 iDEAL 链。')
+  let submissionStarted = false
   try {
     persistForm()
-    const data = await api.startIdealLongLink(requestPayload())
+    if (!persistIdealJob({ jobId: '', clientRequestId, kind: 'long-link', status: 'submitting', accountEmails: [] })) {
+      throw new Error('无法持久化 iDEAL 幂等检查点，未提交远端任务')
+    }
+    submissionStarted = true
+    const data = await api.startIdealLongLink({ ...requestPayload(), clientRequestId })
+    if (!canCommitIdealTask(pollToken)) return
     if (!data.job_id) throw new Error('后端没有返回任务 ID')
-    await pollJob(data.job_id)
+    persistIdealJob({ jobId: data.job_id, clientRequestId, kind: 'long-link', status: 'queued', accountEmails: [] })
+    await pollJob(data.job_id, pollToken)
+    if (!canCommitIdealTask(pollToken)) return
   } catch (error) {
-    setStatus(cleanText(error.message || error), true)
-    runtimeBadge.value = { text: '执行失败', kind: 'error' }
-    resultBadge.value = { text: '未生成', kind: 'error' }
+    if (!canCommitIdealTask(pollToken)) return
+    const ambiguousSubmission = submissionStarted && !currentJobId.value && isAmbiguousPaymentFailure(error)
+    const acknowledgedJobUnknown = Boolean(currentJobId.value) && isBlockingIdealJob()
+    if (ambiguousSubmission || acknowledgedJobUnknown) {
+      quarantineCurrentIdealJob(error)
+    } else {
+      clearPersistedIdealJob(currentJobId.value, clientRequestId)
+      currentJobId.value = ''
+      currentClientRequestId.value = ''
+      currentJobStatus.value = 'error'
+      setStatus(cleanText(error.message || error), true)
+      runtimeBadge.value = { text: '执行失败', kind: 'error' }
+      resultBadge.value = { text: '未生成', kind: 'error' }
+    }
   } finally {
-    busy.value = false
+    if (canCommitIdealTask(pollToken)) busy.value = isBlockingIdealJob()
   }
 }
 
@@ -739,14 +1131,14 @@ function downloadQr() {
 }
 
 function saveProxy() {
-  localStorage.setItem(SAVED_PROXY_KEY, form.value.proxy || '')
+  storageFacade.setItem(SAVED_PROXY_KEY, form.value.proxy || '')
   persistForm()
   setStatus('代理配置已保存。')
 }
 
 function clearProxy() {
   form.value.proxy = ''
-  localStorage.removeItem(SAVED_PROXY_KEY)
+  storageFacade.removeItem(SAVED_PROXY_KEY)
   persistForm()
   setStatus('已清除保存代理。')
 }
@@ -759,12 +1151,12 @@ function persistForm() {
     providerProxyRegion,
     ...safeForm
   } = form.value
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(safeForm))
+  storageFacade.setItem(STORAGE_KEY, JSON.stringify(safeForm))
 }
 
 function loadForm() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+    const saved = JSON.parse(storageFacade.getItem(STORAGE_KEY) || '{}')
     const {
       proxyChainPreset,
       checkoutProxyRegion,
@@ -776,7 +1168,7 @@ function loadForm() {
     form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
     form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   } catch {}
-  const savedProxy = localStorage.getItem(SAVED_PROXY_KEY)
+  const savedProxy = storageFacade.getItem(SAVED_PROXY_KEY)
   if (savedProxy) form.value.proxy = savedProxy
   form.value.proxyChainPreset = 'JP_NL'
   applyDefaultProxyChain()
@@ -784,14 +1176,23 @@ function loadForm() {
 
 watch(() => form.value.proxyChainPreset, applyDefaultProxyChain)
 watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
+watch(links, () => { linkVisibleCount.value = 100 })
 
 onMounted(() => {
+  componentUnmounted = false
   loadForm()
-  reloadAll().catch(error => setStatus(cleanText(error.message || error), true))
+  const restored = restoreIdealJob()
+  if (restored) {
+    void pollRestoredIdealJob(restored)
+    Promise.all([refreshAccounts(), refreshLinks()]).catch(error => setStatus(cleanText(error.message || error), true))
+  } else {
+    reloadAll().catch(error => setStatus(cleanText(error.message || error), true))
+  }
 })
 
 onBeforeUnmount(() => {
-  if (pollTimer.value) window.clearTimeout(pollTimer.value)
+  componentUnmounted = true
+  idealPolling.dispose()
   if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
 })
 </script>

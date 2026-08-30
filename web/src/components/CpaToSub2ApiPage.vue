@@ -92,7 +92,7 @@
           <div class="summary-row">
             <span class="summary-label">输出目录</span>
             <span class="summary-value" :title="settings.output_dir">{{ settings.output_dir }}</span>
-            <button class="btn btn-compact" :disabled="busy" @click="chooseOutputDir('settings')">选择目录</button>
+            <button class="btn btn-compact" :disabled="busy || directoryChooserBusy" @click="chooseOutputDir('settings')">选择目录</button>
           </div>
           <div class="summary-row">
             <span class="summary-label">输出文件</span>
@@ -151,7 +151,7 @@
                 <span>输出目录</span>
                 <div class="flex gap-2">
                   <input v-model.trim="draftSettings.output_dir" type="text" class="input" />
-                  <button class="btn shrink-0" @click="chooseOutputDir('draft')">选择目录</button>
+                  <button class="btn shrink-0" :disabled="directoryChooserBusy" @click="chooseOutputDir('draft')">选择目录</button>
                 </div>
               </label>
               <label class="field">
@@ -246,12 +246,14 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api.js'
+import { validateCpaFileSelection } from '../cpaFileLimits.js'
 
 const fileInput = ref(null)
 const folderInput = ref(null)
 const sourceFiles = ref([])
 const sources = ref([])
 const busy = ref(false)
+const directoryChooserBusy = ref(false)
 const settingsDialogOpen = ref(false)
 const resultPath = ref('')
 const resultLines = ref([])
@@ -335,15 +337,24 @@ async function handleFiles(event) {
     appendResult('选择的文件中没有找到 JSON 文件。', 'error')
     return
   }
+  const selection = validateCpaFileSelection(sourceFiles.value, files)
+  if (!selection.ok) {
+    appendResult(selection.message, 'error')
+    return
+  }
   busy.value = true
   try {
-    const loaded = await Promise.all(
-      files.map(async (file, index) => ({
+    const loaded = []
+    const loadedAt = Date.now()
+    for (const [index, file] of selection.incomingFiles.entries()) {
+      loaded.push({
         key: `${Date.now()}-${index}-${file.webkitRelativePath || file.name}`,
         filename: file.webkitRelativePath || file.name,
         content: await file.text(),
-      })),
-    )
+        byteSize: Number(file.size || 0),
+        loadedAt,
+      })
+    }
     sourceFiles.value = mergeFiles(sourceFiles.value, loaded)
     await inspectFiles()
     appendResult(`已载入 ${loaded.length} 个文件，当前总数 ${sourceFiles.value.length}。`)
@@ -457,6 +468,8 @@ async function openOutputDir() {
 }
 
 async function chooseOutputDir(target) {
+  if (directoryChooserBusy.value) return
+  directoryChooserBusy.value = true
   try {
     const currentDir = target === 'draft' ? draftSettings.output_dir : settings.output_dir
     const result = await api.selectCpaToSub2ApiOutputDir(currentDir)
@@ -468,6 +481,8 @@ async function chooseOutputDir(target) {
     }
   } catch (error) {
     appendResult(error.message || '选择输出目录失败', 'error')
+  } finally {
+    directoryChooserBusy.value = false
   }
 }
 

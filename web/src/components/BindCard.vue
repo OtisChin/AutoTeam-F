@@ -1862,6 +1862,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { computeGoPayBoardView } from '../gopayBoard.js'
+import { createPollingLifecycle } from '../pollingLifecycle.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
 import {
   bindCountryOptions,
   bindPlanLabel,
@@ -1870,6 +1872,8 @@ import {
   countryCurrencyMap,
   resolveCheckoutLink,
 } from '../bindLinkPayload.js'
+
+const sessionStorage = createSessionStorageFacade()
 
 const props = defineProps({
   initialTab: {
@@ -2054,6 +2058,8 @@ const whatsappAdbPortOptions = [
 let bindTaskPollTimer = 0
 let gopayTaskPollTimer = 0
 let gopaySuccessNoticeTimer = 0
+const bindTaskPolling = createPollingLifecycle()
+const goPayTaskPolling = createPollingLifecycle()
 
 const bindForm = ref({
   accessToken: '',
@@ -3272,7 +3278,7 @@ function showGoPaySuccessNotice(email = '') {
 
 function loadHistory() {
   try {
-    const raw = localStorage.getItem(BIND_HISTORY_KEY)
+    const raw = sessionStorage.getItem(BIND_HISTORY_KEY)
     if (raw) {
       history.value = JSON.parse(raw)
     }
@@ -3537,7 +3543,7 @@ function getRememberedChatGPTBindForm() {
 function loadChatGPTBindFormState() {
   try {
     if (props.standalone) return false
-    const raw = localStorage.getItem(CHATGPT_BIND_FORM_STATE_KEY)
+    const raw = sessionStorage.getItem(CHATGPT_BIND_FORM_STATE_KEY)
     if (!raw) return false
     const saved = JSON.parse(raw)
     if (!saved || typeof saved !== 'object') return false
@@ -3579,7 +3585,7 @@ function loadChatGPTBindFormState() {
 function saveChatGPTBindFormState() {
   try {
     if (props.standalone || !['bind', 'generate'].includes(activeTab.value)) return
-    localStorage.setItem(CHATGPT_BIND_FORM_STATE_KEY, JSON.stringify(getRememberedChatGPTBindForm()))
+    sessionStorage.setItem(CHATGPT_BIND_FORM_STATE_KEY, JSON.stringify(getRememberedChatGPTBindForm()))
   } catch (e) {
     console.error('saveChatGPTBindFormState', e)
   }
@@ -3638,7 +3644,7 @@ function getRememberedGoPayForm() {
 
 function loadGoPayFormState() {
   try {
-    const raw = localStorage.getItem(GOPAY_FORM_STATE_KEY)
+    const raw = sessionStorage.getItem(GOPAY_FORM_STATE_KEY)
     if (!raw) return false
     const saved = JSON.parse(raw)
     if (!saved || typeof saved !== 'object') return false
@@ -3725,16 +3731,18 @@ function loadGoPayFormState() {
 
 function saveGoPayFormState() {
   try {
-    localStorage.setItem(GOPAY_FORM_STATE_KEY, JSON.stringify(getRememberedGoPayForm()))
+    sessionStorage.setItem(GOPAY_FORM_STATE_KEY, JSON.stringify(getRememberedGoPayForm()))
   } catch (e) {
     console.error('saveGoPayFormState', e)
   }
 }
 
-async function loadAccounts() {
+async function loadAccounts(shouldCommit = () => true) {
+  if (!shouldCommit()) return
   loadingAccounts.value = true
   try {
     const accounts = await api.getAccounts({ includeSessionStubs: true })
+    if (!shouldCommit()) return
     accountOptions.value = (accounts || [])
       .filter(isBindableFreeAccount)
       .sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0))
@@ -3750,9 +3758,10 @@ async function loadAccounts() {
     gopayRuntimeAppendEmails.value = normalizeEmailList(gopayRuntimeAppendEmails.value)
       .filter(email => selectableEmails.has(email))
   } catch (e) {
+    if (!shouldCommit()) return
     setMessage(`加载号池账号失败: ${e.message}`, false)
   } finally {
-    loadingAccounts.value = false
+    if (shouldCommit()) loadingAccounts.value = false
   }
 }
 
@@ -3778,24 +3787,27 @@ function hasBindableCodexAuth(account) {
   return Boolean(account?.codex_auth_file || account?.auth_file)
 }
 
-async function loadCards() {
+async function loadCards(shouldCommit = () => true) {
+  if (!shouldCommit()) return
   loadingCards.value = true
   try {
     const result = await api.getCardPool('card')
+    if (!shouldCommit()) return
     cardOptions.value = result.items || []
     if (!availableCards.value.some(card => card.id === bindTaskForm.value.cardItemId)) {
       bindTaskForm.value.cardItemId = ''
     }
   } catch (e) {
+    if (!shouldCommit()) return
     setMessage(`加载卡池失败: ${e.message}`, false)
   } finally {
-    loadingCards.value = false
+    if (shouldCommit()) loadingCards.value = false
   }
 }
 
 function saveHistory() {
   try {
-    localStorage.setItem(BIND_HISTORY_KEY, JSON.stringify(history.value.slice(0, 50)))
+    sessionStorage.setItem(BIND_HISTORY_KEY, JSON.stringify(history.value.slice(0, 50)))
   } catch (e) {
     console.error('saveHistory', e)
   }
@@ -3865,7 +3877,7 @@ function rememberGoPayTaskId(taskId) {
   const id = String(taskId || '').trim()
   if (!id) return
   try {
-    localStorage.setItem(GOPAY_RECENT_TASK_KEY, id)
+    sessionStorage.setItem(GOPAY_RECENT_TASK_KEY, id)
   } catch (e) {
     console.error('rememberGoPayTaskId', e)
   }
@@ -4006,18 +4018,28 @@ function resolveGeneratedLink(result) {
   return resolveCheckoutLink(result)
 }
 
-function stopBindTaskPolling() {
+function clearBindTaskPollTimer() {
   if (bindTaskPollTimer) {
     window.clearTimeout(bindTaskPollTimer)
     bindTaskPollTimer = 0
   }
 }
 
-function stopGoPayTaskPolling() {
+function stopBindTaskPolling() {
+  clearBindTaskPollTimer()
+  bindTaskPolling.dispose()
+}
+
+function clearGoPayTaskPollTimer() {
   if (gopayTaskPollTimer) {
     window.clearTimeout(gopayTaskPollTimer)
     gopayTaskPollTimer = 0
   }
+}
+
+function stopGoPayTaskPolling() {
+  clearGoPayTaskPollTimer()
+  goPayTaskPolling.dispose()
 }
 
 function stopGoPaySuccessNoticeTimer() {
@@ -4027,11 +4049,33 @@ function stopGoPaySuccessNoticeTimer() {
   }
 }
 
-async function pollBindTask(taskId) {
-  stopBindTaskPolling()
+function scheduleBindTaskPoll(taskId, pollToken) {
+  clearBindTaskPollTimer()
+  if (!bindTaskPolling.isActive(pollToken)) return
+  bindTaskPollTimer = window.setTimeout(() => {
+    bindTaskPollTimer = 0
+    if (bindTaskPolling.isActive(pollToken)) void pollBindTask(taskId, pollToken)
+  }, 3000)
+}
+
+function scheduleGoPayTaskPoll(taskId, pollToken) {
+  clearGoPayTaskPollTimer()
+  if (!goPayTaskPolling.isActive(pollToken)) return
+  gopayTaskPollTimer = window.setTimeout(() => {
+    gopayTaskPollTimer = 0
+    if (goPayTaskPolling.isActive(pollToken)) void pollGoPayTask(taskId, pollToken)
+  }, 3000)
+}
+
+async function pollBindTask(taskId, pollToken = bindTaskPolling.start()) {
+  clearBindTaskPollTimer()
+  if (!bindTaskPolling.isActive(pollToken)) return
+  if (!await bindTaskPolling.waitUntilAvailable(pollToken)) return
+  if (!bindTaskPolling.isActive(pollToken)) return
   try {
     const previous = bindTask.value
     const task = await api.getTask(taskId)
+    if (!bindTaskPolling.isActive(pollToken)) return
     bindTask.value = task
     if (!previous || previous.status !== task.status) {
       pushBindLog(`任务状态更新：${bindTaskStatusLabel.value}`, task.status === 'failed' ? 'error' : task.status === 'completed' ? 'success' : task.status === 'cancelled' ? 'warn' : 'info')
@@ -4042,27 +4086,33 @@ async function pollBindTask(taskId) {
       pushBindLog(`执行阶段：${gopayStageLabelMap[nextStage] || nextStage}`, 'info')
     }
     if (['pending', 'running'].includes(task.status)) {
-      bindTaskPollTimer = window.setTimeout(() => {
-        pollBindTask(taskId)
-      }, 3000)
+      scheduleBindTaskPoll(taskId, pollToken)
       return
     }
     bindCancelling.value = false
     if (task.result?.message) {
       pushBindLog(task.result.message, task.result?.status === 'success' ? 'success' : task.status === 'cancelled' ? 'warn' : 'error')
     }
-    await loadCards()
+    if (!bindTaskPolling.isActive(pollToken)) return
+    await loadCards(() => bindTaskPolling.isActive(pollToken))
+    if (!bindTaskPolling.isActive(pollToken)) return
   } catch (e) {
+    if (!bindTaskPolling.isActive(pollToken)) return
     pushBindLog(`查询绑卡任务失败: ${e.message}`, 'error')
     setMessage(`查询绑卡任务失败: ${e.message}`, false)
+    scheduleBindTaskPoll(taskId, pollToken)
   }
 }
 
-async function pollGoPayTask(taskId) {
-  stopGoPayTaskPolling()
+async function pollGoPayTask(taskId, pollToken = goPayTaskPolling.start()) {
+  clearGoPayTaskPollTimer()
+  if (!goPayTaskPolling.isActive(pollToken)) return
+  if (!await goPayTaskPolling.waitUntilAvailable(pollToken)) return
+  if (!goPayTaskPolling.isActive(pollToken)) return
   try {
     const previous = gopayTask.value
     const task = await api.getTask(taskId)
+    if (!goPayTaskPolling.isActive(pollToken)) return
     gopayTask.value = task
     rememberGoPayTaskId(task.task_id || taskId)
     const statusLabel = task.status === 'pending'
@@ -4091,9 +4141,7 @@ async function pollGoPayTask(taskId) {
       if (!shouldHideGoPayProgressEvent(task.progress) && !printedProgressEvents && nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
         pushGoPayLog(nextProgressMessage, nextStage === 'checkout_not_approved_rotate' ? 'warn' : 'info')
       }
-      gopayTaskPollTimer = window.setTimeout(() => {
-        pollGoPayTask(taskId)
-      }, 3000)
+      scheduleGoPayTaskPoll(taskId, pollToken)
       return
     }
     gopayCancelling.value = false
@@ -4108,10 +4156,14 @@ async function pollGoPayTask(taskId) {
     if (resultMessage && !(removedPoolEmails.length && paymentNotApproved)) {
       pushGoPayLog(resultMessage, task.result?.status === 'success' ? 'success' : task.status === 'cancelled' ? 'warn' : 'error')
     }
-    await loadAccounts()
+    if (!goPayTaskPolling.isActive(pollToken)) return
+    await loadAccounts(() => goPayTaskPolling.isActive(pollToken))
+    if (!goPayTaskPolling.isActive(pollToken)) return
   } catch (e) {
+    if (!goPayTaskPolling.isActive(pollToken)) return
     pushGoPayLog(`查询 GoPay 任务失败: ${e.message}`, 'error')
     setMessage(`查询 GoPay 任务失败: ${e.message}`, false)
+    scheduleGoPayTaskPoll(taskId, pollToken)
   }
 }
 
@@ -4137,7 +4189,7 @@ async function restoreActiveBindTasks() {
       let restored = recentGoPay
       if (!restored) {
         try {
-          const savedGoPayTaskId = localStorage.getItem(GOPAY_RECENT_TASK_KEY)
+          const savedGoPayTaskId = sessionStorage.getItem(GOPAY_RECENT_TASK_KEY)
           if (savedGoPayTaskId) {
             const saved = await api.getTask(savedGoPayTaskId)
             if (saved?.command === 'gopay-bind' && isTaskActive(saved)) restored = saved

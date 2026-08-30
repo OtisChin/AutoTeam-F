@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const web = path.resolve(here, '..')
+const src = path.join(web, 'src')
+const app = readFileSync(path.join(src, 'App.vue'), 'utf8')
+const sidebar = readFileSync(path.join(src, 'components/Sidebar.vue'), 'utf8')
+const setupPage = readFileSync(path.join(src, 'components/SetupPage.vue'), 'utf8')
+const pageLoadError = readFileSync(path.join(src, 'components/PageLoadError.vue'), 'utf8')
+const css = readFileSync(path.join(src, 'style.css'), 'utf8')
+const html = readFileSync(path.join(web, 'index.html'), 'utf8')
+
+assert.match(app, /workspace-toolbar/, 'the workspace should expose an Apple-style title bar')
+assert.match(app, /aria-live="polite"/, 'loading and task progress should be announced accessibly')
+assert.match(sidebar, /aria-current/, 'navigation should expose the active destination')
+assert.match(sidebar, /mobile-nav-sheet/, 'mobile navigation should use a compact dock and sheet')
+assert.match(sidebar, /@keydown\.tab="trapMobileMenuFocus"/, 'the modal navigation sheet should keep keyboard focus inside itself')
+assert.match(sidebar, /function trapMobileMenuFocus\(event\)/, 'the mobile navigation sheet should implement a focus loop')
+assert.match(sidebar, /<Teleport to="body">[\s\S]*mobile-nav-layer[\s\S]*<\/Teleport>/, 'the mobile navigation sheet should escape the app inert boundary')
+assert.match(sidebar, /setMobileMenuBackgroundInert\(sheetLayerRef\.value\)/, 'opening the mobile navigation sheet should make the background inert')
+assert.match(sidebar, /restoreMobileMenuBackgroundInert\(\)/, 'closing or unmounting the mobile navigation sheet should restore the background')
+assert.match(sidebar, /window\.matchMedia\('\(min-width: 768px\)'\)/, 'the mobile sheet should observe the desktop breakpoint')
+assert.match(sidebar, /function handleDesktopBreakpointChange[\s\S]*closeMobileMenu\(false\)[\s\S]*\.nav-item\[aria-current="page"\]/, 'crossing to desktop should close the hidden sheet, restore the page, and move focus to visible navigation')
+assert.match(sidebar, /desktopMediaQuery\.addEventListener\('change', handleDesktopBreakpointChange\)/, 'the desktop breakpoint listener should be installed')
+assert.match(sidebar, /desktopMediaQuery\?*\.removeEventListener\('change', handleDesktopBreakpointChange\)/, 'the desktop breakpoint listener should be removed on unmount')
+assert.match(sidebar, /if \(mobileMenuOpen\.value\) void closeMobileMenu\(\)/, 'choosing a sheet destination should restore focus instead of dropping it on body')
+assert.match(pageLoadError, /@click="emit\('retry'\)"/, 'a failed async page should expose an in-place retry action')
+assert.match(pageLoadError, /重新加载/, 'the async-page retry action should have a clear label')
+assert.match(app, /function retryPageLoad\(key\)/, 'the app shell should be able to recreate a failed async page')
+assert.match(app, /onRetry:\s*\(\)\s*=>\s*retryPageLoad\(key\)/, 'the async-page error view should retry the failed page in place')
+assert.match(app, /if \(!PAGE_KEYS\.has\(page\) \|\| !navigator\.onLine\) return[\s\S]*pageLoaders\[page\]\(\)\.catch\(/, 'offline and rejected page prefetches should be ignored without an unhandled rejection')
+assert.match(css, /--accent:\s*#0a84ff/i, 'the design system should use the Apple blue accent')
+assert.match(css, /prefers-reduced-motion:\s*reduce/, 'motion must honor reduced-motion preferences')
+assert.doesNotMatch(css, /\.workspace-shell\s*\{[^}]*width:\s*min\(360px/is, 'mobile workspaces should fill the viewport')
+assert.doesNotMatch(css, /\.workspace-chrome\s*\{[^}]*backdrop-filter/is, 'the full workspace must avoid live backdrop filtering')
+assert.doesNotMatch(css, /\.workspace-main\s*\{[^}]*(?:contain:\s*[^;}]*\b(?:layout|paint)\b)/is, 'workspace containment must not clip or re-anchor fixed page dialogs')
+assert.match(css, /\.task-progress-fill\s*\{[^}]*transform:\s*scaleX/is, 'task progress should animate on the compositor')
+assert.match(setupPage, /class="setup-shell"/, 'the long first-run configuration form should use its dedicated scroll container')
+assert.match(css, /\.setup-shell\s*\{[^}]*overflow-y:\s*auto/is, 'the first-run configuration form must remain vertically scrollable in short viewports')
+const setupShellCss = css.match(/\.setup-shell\s*\{([^}]*)\}/is)?.[1] || ''
+assert.match(setupShellCss, /(?:^|;)\s*height:\s*100dvh\b/i, 'the setup scroll container must be viewport-constrained instead of growing with its card')
+assert.doesNotMatch(css, /(?:^|\n)\s*body\s*\{[^}]*overflow:\s*hidden/is, 'global body scroll must stay available to setup and authentication pages')
+assert.match(html, /<title>AutoToken<\/title>/, 'browser title should match the AutoToken product name')
+
+console.log('frontend shell design tests passed')

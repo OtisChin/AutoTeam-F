@@ -104,6 +104,7 @@ const pendingAction = ref(null)
 
 const cancelling = ref(false)
 const cancelRequested = ref(false)
+const executingAction = ref('')
 
 // 监听 task_id 变化,而非 runningTask 对象本身:
 // - null → null    : 无变化,忽略
@@ -205,6 +206,7 @@ const adminHint = computed(() => {
 const showAdminHint = computed(() => !adminReady.value && (props.mode === 'pool' || props.mode === 'sync'))
 
 function isDisabled(action) {
+  if (executingAction.value) return true
   if (props.runningTask) return true
   if (!adminReady.value && !action.allowWithoutAdmin) return true
   return false
@@ -239,6 +241,8 @@ async function confirmAction() {
 }
 
 async function doExecute(action, param) {
+  if (executingAction.value) return
+  executingAction.value = action.key
   try {
     if (action.sync) {
       const result = await api[action.method]()
@@ -254,6 +258,8 @@ async function doExecute(action, param) {
   } catch (e) {
     message.value = e.message
     messageClass.value = 'bg-red-500/10 text-red-400 border border-red-500/20'
+  } finally {
+    executingAction.value = ''
   }
   setTimeout(() => { message.value = '' }, 8000)
 }

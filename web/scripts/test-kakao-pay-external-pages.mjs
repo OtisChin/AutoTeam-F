@@ -33,14 +33,18 @@ assert.match(page, /api\.startKakaoPayTempBatch/, 'Kakao temp page starts accoun
 assert.match(page, /channel: tempForm\.value\.channel/, 'Kakao temp batch submits selected channel to backend')
 assert.match(page, /const KAKAO_LINK_TTL_MS = 15 \* 60 \* 1000/, 'Kakao extracted links use a 15 minute frontend TTL')
 assert.match(page, /jobRunning \? '追加' : '开始'/, 'Kakao extraction page supports appending while a job is running')
-assert.match(page, /state\.currentJob = \{[\s\S]*?\}\s+selectedAccounts\.value = new Set\(\)\s+saveActiveJobSnapshot\(state\.currentJob, mode\)/, 'Kakao extraction clears selected accounts after a task starts')
+assert.match(
+  page.slice(page.indexOf('async function startWithEmails'), page.indexOf('async function start()')),
+  /commitStartAckSnapshot\(startReservation,[\s\S]*?state\.currentJob = \{[\s\S]*?\}\s+selectedAccounts\.value = new Set\(\)/,
+  'Kakao extraction persists the accepted start ACK and then clears selected accounts',
+)
 assert.match(page, /jobIds: ids/, 'Kakao extraction active job snapshot stores multiple job ids')
 assert.match(page, /activeJobIds/, 'Kakao extraction polls multiple active jobs')
 assert.doesNotMatch(page, /activeKakaoTab\.value = saved\.mode/, 'Restoring extraction jobs does not force-switch away from the current tab')
 assert.match(page, /const TEMP_JOB_STORAGE_KEY = 'autotoken_kakao_pay_temp_job'/, 'Kakao temp extraction uses a separate persisted job snapshot')
 assert.match(page, /const extractTaskState = ref\(makeExtractTaskState/, 'Kakao normal extraction owns separate task/log state')
 assert.match(page, /const tempExtractTaskState = ref\(makeExtractTaskState/, 'Kakao temp extraction owns separate task/log state')
-assert.match(page, /const pollTimers = \{ extract: null, tempExtract: null \}/, 'Kakao normal and temp extraction pollers are independent')
+assert.match(page, /const pollingLifecycles = \{\s*extract: createPollingLifecycle\(\),\s*tempExtract: createPollingLifecycle\(\),\s*\}/, 'Kakao normal and temp extraction pollers own independent cancellable lifecycles')
 assert.match(page, /function saveActiveJobSnapshot\(job = currentJob\.value, mode = isTempExtract\.value \? 'tempExtract' : 'extract'\)/, 'Active job snapshot stores into the selected extraction mode')
 assert.match(page, /logs: Array\.isArray\(state\.logs\) \? state\.logs\.slice\(-500\) : \[\]/, 'Kakao extraction snapshots persist execution logs across refresh')
 assert.match(page, /result: state\.currentResult \|\| null/, 'Kakao extraction snapshots persist latest task result across refresh')
@@ -52,7 +56,7 @@ assert.match(page, /function downloadTextFile\(filename, content, type = 'text\/
 assert.match(page, /completed: Number\(job\?\.completed \|\| 0\)/, 'Kakao extraction snapshots persist completed count')
 assert.match(page, /state\.activeJobIds = \[\]\s+state\.activeJobId = ids\[0\] \|\| ''.*saveActiveJobSnapshot\(state\.currentJob, mode\)/s, 'Kakao extraction keeps terminal task snapshots instead of deleting them')
 assert.match(page, /const terminal = TERMINAL_STATUSES\.has\(restoredStatus\)/, 'Kakao extraction restore detects terminal snapshots')
-assert.match(page, /if \(terminal\) return\s+await pollJob\(mode\)/, 'Kakao extraction terminal snapshots restore without requiring backend polling')
+assert.match(page, /if \(terminal\) return\s+if \(!componentUnmounted\) startPolling\(mode\)/, 'Kakao extraction terminal snapshots restore without requiring backend polling')
 assert.match(page, /await Promise\.all\(\[restoreActiveJob\('extract'\), restoreActiveJob\('tempExtract'\), restoreRunningKkPaymentOrders\(\)\]\)/, 'Kakao page restores extraction tasks and running payment orders separately')
 assert.doesNotMatch(page, /api\.createKakaoPayTempOrder/, 'Kakao temp page no longer submits standalone AT orders')
 assert.match(page, /Masa Plus 支付 API/, 'Kakao payment page labels the new Masa Plus payment API')

@@ -92,6 +92,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../api.js'
+import { createSessionStorageFacade } from '../sessionStorageScope.js'
+
+const sessionStorage = createSessionStorageFacade()
 
 const data = ref(null)
 const loading = ref(false)
@@ -102,7 +105,7 @@ const CACHE_KEY = 'autotoken_team_members'
 
 function loadCache() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY)
+    const raw = sessionStorage.getItem(CACHE_KEY)
     if (raw) {
       const cached = JSON.parse(raw)
       // 缓存 10 分钟有效
@@ -116,7 +119,7 @@ function loadCache() {
 
 function saveCache(d) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ data: d, time: Date.now() }))
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify({ data: d, time: Date.now() }))
   } catch {}
 }
 
@@ -151,7 +154,7 @@ async function removeMember(member) {
       type: member.type,
     })
     try {
-      localStorage.removeItem(CACHE_KEY)
+      sessionStorage.removeItem(CACHE_KEY)
     } catch {}
     await fetchMembers()
   } catch (e) {
