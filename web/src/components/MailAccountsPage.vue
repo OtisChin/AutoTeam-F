@@ -1,438 +1,108 @@
 <template>
-  <div class="space-y-5">
-    <section class="rounded-xl border border-gray-800 bg-gray-900/90 p-4 shadow-2xl">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 class="text-xl font-semibold text-white">mail邮箱管理</h2>
-        </div>
-        <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
-          <div class="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
-            <div class="text-gray-500">总数</div>
-            <div class="mt-1 text-lg font-bold text-white">{{ summary.total }}</div>
-          </div>
-          <div class="rounded-lg border border-green-500/20 bg-green-500/10 px-3 py-2">
-            <div class="text-gray-500">启用</div>
-            <div class="mt-1 text-lg font-bold text-green-300">{{ summary.enabled_count }}</div>
-          </div>
-          <div class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2">
-            <div class="text-gray-500">有效</div>
-            <div class="mt-1 text-lg font-bold text-blue-300">{{ summary.valid_count }}</div>
-          </div>
-          <div class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2">
-            <div class="text-gray-500">失效</div>
-            <div class="mt-1 text-lg font-bold text-red-300">{{ summary.invalid_count }}</div>
-          </div>
-          <div class="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
-            <div class="text-gray-500">选中</div>
-            <div class="mt-1 text-lg font-bold text-white">{{ selectedEmails.length }}</div>
-          </div>
-        </div>
-      </div>
-    </section>
+  <div class="mail-workspace">
+    <UiPageHeader title="邮箱管理" eyebrow="账号 / Mail" description="集中管理 mail.com 账号、检测状态与收件结果">
+      <template #actions>
+        <UiButton variant="primary" @click="openImportDialog">导入邮箱</UiButton>
+        <UiButton variant="secondary" @click="openEditDialog(null)">新增</UiButton>
+      </template>
+    </UiPageHeader>
 
-    <section class="dashboard-table-shell">
-      <div class="dashboard-filter-bar">
-        <div class="dashboard-filters">
-          <select v-model="checkFilter" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
-            <option value="">检测: 全部</option>
-            <option value="valid">检测: 有效</option>
-            <option value="invalid">检测: 失效</option>
-            <option value="unchecked">检测: 未检测</option>
-          </select>
-          <select v-model="statusFilter" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
-            <option value="">状态: 全部</option>
-            <option value="enabled">状态: 启用</option>
-            <option value="disabled">状态: 禁用</option>
-          </select>
-          <input
-            v-model.trim="emailQuery"
-            type="search"
-            placeholder="搜索邮箱..."
-            class="min-w-52 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600"
-          />
-          <input
-            v-model.trim="noteQuery"
-            type="search"
-            placeholder="搜索备注..."
-            class="min-w-52 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600"
-          />
-        </div>
-        <div class="dashboard-actions">
-          <button @click="openImportDialog" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500">
-            导入
-          </button>
-          <button @click="openEditDialog(null)" class="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600">
-            新增
-          </button>
-          <button @click="checkRows(filteredEmails)" :disabled="busy || !filteredRows.length" class="rounded-lg bg-green-700 px-3 py-2 text-sm font-semibold text-white hover:bg-green-600 disabled:opacity-50">
-            全部检测
-          </button>
-          <button @click="openStatusDialog" :disabled="!selectedEmails.length" class="rounded-lg bg-purple-700 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-600 disabled:opacity-50">
-            批量状态
-          </button>
-          <button @click="openNoteDialog" :disabled="!selectedEmails.length" class="rounded-lg bg-cyan-700 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-600 disabled:opacity-50">
-            批量备注
-          </button>
-          <button @click="openPasswordDialog(selectedEmails)" :disabled="!selectedEmails.length" class="rounded-lg bg-yellow-700 px-3 py-2 text-sm font-semibold text-white hover:bg-yellow-600 disabled:opacity-50">
-            批量改密
-          </button>
-          <button @click="exportRows" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800">
-            导出
-          </button>
-          <button @click="clearRows" :disabled="busy || !rows.length" class="rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:opacity-50">
-            清空全部
-          </button>
-        </div>
-      </div>
+    <UiMetricSummary :items="metricItems" label="邮箱指标" />
 
-      <div v-if="message" class="border-b border-gray-800 px-4 py-3 text-sm" :class="messageClass">
-        {{ message }}
-      </div>
-      <div v-if="batchSelectionLimitError" class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-        {{ batchSelectionLimitError }}
-      </div>
+    <UiDataToolbar
+      :result-label="`${filteredRows.length} / ${rows.length} 条记录`"
+      :active-filter-count="activeFilterCount"
+      clearable
+      @clear-filters="clearFilters"
+    >
+      <template #primary>
+        <UiButton variant="secondary" size="sm" :disabled="busy || !filteredRows.length" :loading="busy" @click="checkRows(filteredEmails)">全部检测</UiButton>
+      </template>
+      <template #filters>
+        <label class="ui-inline-field"><span>检测状态</span><select v-model="checkFilter"><option value="">全部</option><option value="valid">有效</option><option value="invalid">失效</option><option value="unchecked">未检测</option></select></label>
+        <label class="ui-inline-field"><span>账号状态</span><select v-model="statusFilter"><option value="">全部</option><option value="enabled">启用</option><option value="disabled">禁用</option></select></label>
+        <label class="ui-inline-field"><span>邮箱</span><input v-model.trim="emailQuery" type="search" placeholder="搜索邮箱" /></label>
+        <label class="ui-inline-field"><span>备注</span><input v-model.trim="noteQuery" type="search" placeholder="搜索备注" /></label>
+      </template>
+      <template #actions>
+        <UiButton variant="quiet" size="sm" @click="exportRows">导出</UiButton>
+        <UiButton variant="danger" size="sm" :disabled="busy || !rows.length" @click="requestClearRows">清空全部</UiButton>
+      </template>
+    </UiDataToolbar>
 
-      <div class="overflow-x-auto">
-        <table class="min-w-[1180px] w-full text-left text-sm">
-          <thead class="border-b border-gray-800 bg-gray-950/70 text-xs uppercase tracking-wide text-gray-500">
-            <tr>
-              <th class="w-12 px-4 py-3">
-                <input type="checkbox" :checked="allFilteredSelected" @change="toggleAllFiltered" />
-              </th>
-              <th class="w-14 px-3 py-3">#</th>
-              <th class="px-3 py-3">邮箱</th>
-              <th class="px-3 py-3">邮箱密码</th>
-              <th class="px-3 py-3">GPT密码</th>
-              <th class="px-3 py-3">状态</th>
-              <th class="px-3 py-3">检测</th>
-              <th class="px-3 py-3">备注</th>
-              <th class="px-3 py-3">操作</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-800">
-            <tr v-for="(row, index) in pagedRows" :key="row.email" class="bg-gray-950/30 hover:bg-gray-900/70">
-              <td class="px-4 py-3">
-                <input type="checkbox" :checked="selected.has(row.email)" @change="toggleSelected(row.email)" />
-              </td>
-              <td class="px-3 py-3 text-gray-500">{{ accountPageOffset + index + 1 }}</td>
-              <td class="px-3 py-3">
-                <div class="font-semibold text-gray-100">{{ row.email }}</div>
-                <div class="mt-1 max-w-[280px] truncate font-mono text-xs text-gray-600" :title="row.refresh_token">
-                  OpenAI RT {{ row.refresh_token_masked || '-' }}
-                </div>
-              </td>
-              <td class="px-3 py-3">
-                <button
-                  type="button"
-                  class="max-w-[180px] truncate rounded border border-gray-800 bg-gray-950 px-2 py-1 font-mono text-xs text-gray-300 hover:border-blue-500/50 hover:text-white"
-                  :title="passwordVisible(row.email, 'mail') ? '点击隐藏邮箱密码' : '点击显示邮箱密码'"
-                  @click="togglePasswordVisible(row.email, 'mail')"
-                >
-                  {{ displayPassword(row.mail_password, row.email, 'mail') }}
-                </button>
-              </td>
-              <td class="px-3 py-3">
-                <button
-                  type="button"
-                  class="max-w-[180px] truncate rounded border border-gray-800 bg-gray-950 px-2 py-1 font-mono text-xs text-gray-300 hover:border-blue-500/50 hover:text-white"
-                  :title="passwordVisible(row.email, 'gpt') ? '点击隐藏 GPT 密码' : '点击显示 GPT 密码'"
-                  @click="togglePasswordVisible(row.email, 'gpt')"
-                >
-                  {{ displayPassword(row.gpt_password, row.email, 'gpt') }}
-                </button>
-              </td>
-              <td class="px-3 py-3">
-                <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="statusClass(row.status)">
-                  {{ statusLabel(row.status) }}
-                </span>
-              </td>
-              <td class="px-3 py-3">
-                <div class="flex flex-col gap-1">
-                  <span class="w-fit rounded-full px-2.5 py-1 text-xs font-semibold" :class="checkClass(row.check_status)">
-                    {{ checkLabel(row.check_status) }}
-                  </span>
-                  <span v-if="row.last_error" class="max-w-[180px] truncate text-xs text-red-300" :title="row.last_error">
-                    {{ row.last_error }}
-                  </span>
-                </div>
-              </td>
-              <td class="max-w-[220px] px-3 py-3 text-gray-400">
-                <span class="line-clamp-2">{{ row.note || '-' }}</span>
-              </td>
-              <td class="px-3 py-3">
-                <div class="flex flex-wrap gap-2">
-                  <button @click="checkRows([row.email])" :disabled="busy" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">检测</button>
-                  <button @click="fetchRows([row.email])" :disabled="busy" class="rounded-lg bg-cyan-700 px-3 py-1.5 font-semibold text-white hover:bg-cyan-600 disabled:opacity-50">取件</button>
-                  <button @click="openPasswordDialog([row.email])" class="rounded-lg bg-yellow-700 px-3 py-1.5 font-semibold text-white hover:bg-yellow-600">改密</button>
-                  <button @click="openEditDialog(row)" class="rounded-lg bg-blue-700 px-3 py-1.5 font-semibold text-white hover:bg-blue-600">编辑</button>
-                  <button @click="deleteRows([row.email])" class="rounded-lg bg-red-700 px-3 py-1.5 font-semibold text-white hover:bg-red-600">删除</button>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="!filteredRows.length">
-              <td colspan="9" class="px-4 py-12 text-center text-gray-500">
-                暂无 mail.com 邮箱账号，点击“导入”粘贴 邮箱----邮箱密码----chatgpt密码
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-if="filteredRows.length" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 px-4 py-3 text-sm text-gray-400">
-        <div>
-          显示 {{ accountPageOffset + 1 }}-{{ accountPageOffset + pagedRows.length }} 条，共 {{ filteredRows.length }} 条
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <label class="flex items-center gap-2">
-            <span>每页</span>
-            <select v-model.number="accountPageSize" class="rounded-lg border border-gray-800 bg-gray-950 px-2 py-1.5 text-gray-200">
-              <option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            :disabled="accountPage <= 1"
-            class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-            @click="accountPage = clampPage(accountPage - 1, accountTotalPages)"
-          >
-            上一页
-          </button>
-          <span class="min-w-24 text-center">第 {{ accountPage }} / {{ accountTotalPages }} 页</span>
-          <button
-            type="button"
-            :disabled="accountPage >= accountTotalPages"
-            class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-            @click="accountPage = clampPage(accountPage + 1, accountTotalPages)"
-          >
-            下一页
-          </button>
-        </div>
-      </div>
-    </section>
+    <UiBatchBar :count="selectedEmails.length" :busy="busy" @clear="clearSelection">
+      <UiButton variant="secondary" size="sm" :disabled="!selectedEmails.length || busy" @click="openStatusDialog">批量状态</UiButton>
+      <UiButton variant="secondary" size="sm" :disabled="!selectedEmails.length || busy" @click="openNoteDialog">批量备注</UiButton>
+      <UiButton variant="secondary" size="sm" :disabled="!selectedEmails.length || busy" @click="openPasswordDialog(selectedEmails)">批量改密</UiButton>
+    </UiBatchBar>
 
-    <div v-if="dialog" class="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4">
-      <section class="w-full max-w-2xl rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
-        <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
-          <h3 class="text-lg font-semibold text-white">{{ dialogTitle }}</h3>
-          <button @click="closeDialog" class="text-2xl leading-none text-gray-400 hover:text-white">×</button>
-        </div>
+    <div v-if="message" class="ui-inline-message" :class="`ui-inline-message-${messageType}`" role="status">{{ message }}</div>
+    <UiStatePanel v-if="!hasLoaded && busy" state="loading" title="正在加载邮箱" message="读取账号列表…" />
+    <UiStatePanel v-else-if="loadError && !rows.length" state="error" title="邮箱列表加载失败" :message="loadError" action-label="重试" @action="loadRows" />
+    <UiStatePanel v-else-if="!filteredRows.length" state="empty" title="暂无匹配账号" message="调整筛选条件或导入新的 mail.com 账号。" />
+    <UiStatePanel v-else-if="loadError" state="partial" title="显示上次成功数据" :message="loadError" />
 
-        <div class="space-y-4 px-5 py-4">
-          <template v-if="dialog === 'import'">
-            <p class="text-sm text-gray-400">每行格式：邮箱----邮箱密码----chatgpt密码；也兼容旧格式：邮箱----GPT密码----邮箱密码----OpenAI refreshToken</p>
-            <textarea v-model="importText" rows="9" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-white placeholder:text-gray-600" placeholder="udvmfgzbdgvww@mail.com----mail-pass----gpt-pass"></textarea>
+    <UiTableFrame label="邮箱账号" :busy="busy" :empty="!filteredRows.length" min-width="1180px">
+      <template #header><span class="ui-table-frame-meta">窗口 {{ pagedRows.length }} 条 / 总计 {{ filteredRows.length }} 条</span></template>
+      <table class="ui-data-table">
+        <thead><tr><th><input type="checkbox" :checked="allFilteredSelected" aria-label="选择全部筛选结果" @change="toggleAllFiltered" /></th><th>#</th><th>邮箱</th><th>邮箱密码</th><th>GPT 密码</th><th>状态</th><th>检测</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr v-for="(row, index) in pagedRows" :key="row.email">
+            <td><input type="checkbox" :checked="selected.has(row.email)" :aria-label="`选择 ${row.email}`" @change="toggleSelected(row.email)" /></td>
+            <td class="ui-table-index">{{ accountPageOffset + index + 1 }}</td>
+            <td><strong>{{ row.email }}</strong><small class="ui-table-subtext" :title="row.refresh_token">RT {{ row.refresh_token_masked || '-' }}</small></td>
+            <td><button type="button" class="ui-reveal-button" :title="passwordVisible(row.email, 'mail') ? '隐藏邮箱密码' : '显示邮箱密码'" @click="togglePasswordVisible(row.email, 'mail')">{{ displayPassword(row.mail_password, row.email, 'mail') }}</button></td>
+            <td><button type="button" class="ui-reveal-button" :title="passwordVisible(row.email, 'gpt') ? '隐藏 GPT 密码' : '显示 GPT 密码'" @click="togglePasswordVisible(row.email, 'gpt')">{{ displayPassword(row.gpt_password, row.email, 'gpt') }}</button></td>
+            <td><UiStatusBadge :label="statusPresentation(row.status).label" :tone="statusPresentation(row.status).tone" /></td>
+            <td><UiStatusBadge :label="checkPresentation(row.check_status).label" :tone="checkPresentation(row.check_status).tone" /><small v-if="row.last_error" class="ui-table-error" :title="row.last_error">{{ row.last_error }}</small></td>
+            <td class="ui-table-note">{{ row.note || '-' }}</td>
+            <td><UiButton variant="quiet" size="sm" :disabled="busy" @click="openRowActions(row)">操作</UiButton></td>
+          </tr>
+        </tbody>
+      </table>
+      <template #footer><UiPagination v-model:page="accountPage" v-model:page-size="accountPageSize" :page-sizes="MAIL_PAGE_SIZE_OPTIONS" :total-items="filteredRows.length" item-label="条邮箱" /></template>
+    </UiTableFrame>
+
+    <AccessibleModal v-if="dialog" :label="dialogTitle" @close="closeDialog">
+      <section class="ui-modal-card">
+        <header class="ui-modal-header"><h2>{{ dialogTitle }}</h2><UiButton variant="quiet" size="sm" aria-label="关闭" @click="closeDialog">关闭</UiButton></header>
+        <div class="ui-modal-body">
+          <template v-if="dialog === 'rowActions'">
+            <p class="ui-muted">为 {{ rowActionEmails[0] }} 选择操作。</p>
+            <div class="ui-action-grid"><UiButton variant="secondary" :disabled="busy" @click="runRowAction('check')">检测</UiButton><UiButton variant="secondary" :disabled="busy" @click="runRowAction('fetch')">取件</UiButton><UiButton variant="secondary" @click="runRowAction('edit')">编辑</UiButton><UiButton variant="danger" @click="runRowAction('delete')">删除</UiButton></div>
           </template>
-
-          <template v-else-if="dialog === 'edit'">
-            <div class="grid gap-3 sm:grid-cols-2">
-              <label class="block">
-                <span class="mb-1 block text-xs text-gray-500">邮箱</span>
-                <input v-model.trim="form.email" type="email" :disabled="!!editingEmail" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white disabled:opacity-60" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-xs text-gray-500">状态</span>
-                <select v-model="form.status" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white">
-                  <option value="enabled">启用</option>
-                  <option value="disabled">禁用</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-xs text-gray-500">GPT密码</span>
-                <input v-model="form.gptPassword" type="text" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-xs text-gray-500">邮箱密码</span>
-                <input v-model="form.mailPassword" type="text" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white" />
-              </label>
-            </div>
-            <label class="block">
-              <span class="mb-1 block text-xs text-gray-500">OpenAI refreshToken</span>
-              <textarea v-model.trim="form.refreshToken" rows="4" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-white"></textarea>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-gray-500">备注</span>
-              <input v-model="form.note" type="text" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white" />
-            </label>
-          </template>
-
-          <template v-else-if="dialog === 'password'">
-            <p class="text-sm text-gray-400">
-              将通过协议登录 mail.com 官网修改密码；成功后才更新本地 SQLite 保存的邮箱密码。
-            </p>
-            <input v-model="newPassword" type="text" placeholder="输入新密码" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600" />
-            <p class="text-xs text-gray-500">建议使用 12 位以上，包含大小写字母、数字和符号；如果官网拒绝会在结果中显示具体错误。</p>
-          </template>
-
-          <template v-else-if="dialog === 'passwordResult'">
-            <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-3 text-sm text-gray-300">
-              改密结果：成功 {{ passwordSummary.updated || 0 }} 个，失败 {{ passwordSummary.failed || 0 }} 个
-            </div>
-            <div class="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
-              <article
-                v-for="item in pagedPasswordResults"
-                :key="item.email"
-                class="rounded-lg border px-3 py-3 text-sm"
-                :class="item.status === 'success' ? 'border-green-500/20 bg-green-500/10 text-green-200' : 'border-red-500/20 bg-red-500/10 text-red-200'"
-              >
-                <div class="font-mono">{{ item.email }}</div>
-                <div class="mt-1 text-xs">
-                  {{ item.status === 'success' ? '官网改密成功，已更新本地 SQLite' : (item.error || '官网改密失败') }}
-                </div>
-              </article>
-            </div>
-            <div v-if="passwordResults.length" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-3 text-sm text-gray-400">
-              <span>本页 {{ pagedPasswordResults.length }} 条，共 {{ passwordResults.length }} 条</span>
-              <div class="flex flex-wrap items-center gap-2">
-                <label class="flex items-center gap-2">
-                  <span>每页</span>
-                  <select v-model.number="passwordPageSize" class="rounded-lg border border-gray-800 bg-gray-950 px-2 py-1.5 text-gray-200">
-                    <option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  :disabled="passwordPage <= 1"
-                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                  @click="passwordPage = clampPage(passwordPage - 1, passwordTotalPages)"
-                >
-                  上一页
-                </button>
-                <span class="min-w-24 text-center">第 {{ passwordPage }} / {{ passwordTotalPages }} 页</span>
-                <button
-                  type="button"
-                  :disabled="passwordPage >= passwordTotalPages"
-                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                  @click="passwordPage = clampPage(passwordPage + 1, passwordTotalPages)"
-                >
-                  下一页
-                </button>
-              </div>
-            </div>
-          </template>
-
-          <template v-else-if="dialog === 'status'">
-            <p class="text-sm text-gray-400">将为选中的 {{ selectedEmails.length }} 个账号修改状态。</p>
-            <select v-model="newStatus" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white">
-              <option value="enabled">启用</option>
-              <option value="disabled">禁用</option>
-            </select>
-          </template>
-
-          <template v-else-if="dialog === 'note'">
-            <p class="text-sm text-gray-400">将为选中的 {{ selectedEmails.length }} 个账号设置相同备注。</p>
-            <input v-model="newNote" type="text" placeholder="输入备注" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600" />
-          </template>
-
-          <template v-else-if="dialog === 'fetched'">
-            <div v-if="!fetchedResults.length" class="rounded-lg border border-gray-800 bg-gray-950 px-4 py-8 text-center text-sm text-gray-500">
-              没有返回邮件
-            </div>
-            <div v-if="activeFetchedMessage" class="mb-4 rounded-xl border border-blue-500/30 bg-blue-500/10 p-4">
-              <div class="flex flex-wrap items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="text-xs font-semibold text-blue-300">邮件详情</div>
-                  <h4 class="mt-1 break-words text-base font-semibold text-white">{{ activeFetchedMessage.message.subject || '(无主题)' }}</h4>
-                  <p class="mt-1 text-xs text-gray-400">
-                    {{ activeFetchedMessage.email }} · {{ activeFetchedMessage.message.sendEmail || '-' }}
-                    <span v-if="formatTime(activeFetchedMessage.message.createTime || activeFetchedMessage.message.createdAt)">
-                      · {{ formatTime(activeFetchedMessage.message.createTime || activeFetchedMessage.message.createdAt) }}
-                    </span>
-                  </p>
-                </div>
-                <button @click="closeFetchedDetail" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-semibold text-blue-200 hover:bg-blue-500/20">
-                  收起
-                </button>
-              </div>
-              <iframe
-                v-if="activeFetchedMessage.message.html || activeFetchedMessage.message.content"
-                :srcdoc="mailDetailSrcdoc(activeFetchedMessage.message)"
-                sandbox=""
-                class="mt-4 h-[42vh] w-full rounded-lg border border-gray-800 bg-white"
-              ></iframe>
-              <pre v-else class="mt-4 max-h-[42vh] overflow-auto whitespace-pre-wrap rounded-lg border border-gray-800 bg-gray-950 p-4 text-xs leading-5 text-gray-200">{{ activeFetchedMessage.message.text || '无正文' }}</pre>
-            </div>
-            <div v-if="pagedFetchedRows.length" class="max-h-[52vh] space-y-3 overflow-y-auto pr-1">
-              <div
-                v-for="entry in pagedFetchedRows"
-                :key="`${entry.result.email || 'mail'}-${entry.message?.id || entry.messageIndex}`"
-                class="space-y-3 rounded-xl border border-gray-800 bg-gray-950/40 p-3"
-              >
-                <div class="flex items-center justify-between gap-3">
-                  <div class="font-mono text-sm text-gray-200">{{ entry.result.email }}</div>
-                  <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="entry.result.status === 'ok' ? 'bg-green-500/10 text-green-300' : 'bg-red-500/10 text-red-300'">
-                    {{ entry.result.status === 'ok' ? `返回 ${(entry.result.messages || []).length} 封` : '取件失败' }}
-                  </span>
-                </div>
-                <div v-if="entry.result.error" class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                  {{ entry.result.error }}
-                </div>
-                <div v-else-if="!entry.message" class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-sm text-gray-500">
-                  收件箱暂无邮件
-                </div>
-                <article v-else class="rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-3">
-                  <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div class="min-w-0">
-                      <h4 class="truncate text-sm font-semibold text-white">{{ entry.message.subject || '(无主题)' }}</h4>
-                      <p class="mt-1 text-xs text-gray-500">{{ entry.message.sendEmail || '-' }}</p>
-                    </div>
-                    <div class="text-xs text-gray-500">{{ formatTime(entry.message.createTime || entry.message.createdAt) }}</div>
-                  </div>
-                  <p v-if="entry.message.text" class="mt-2 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-gray-300">
-                    {{ entry.message.text }}
-                  </p>
-                  <button
-                    @click="openFetchedDetail(entry.result.email, entry.message)"
-                    class="mt-2 inline-flex text-xs font-semibold text-blue-300 hover:text-blue-200"
-                  >
-                    查看详情
-                  </button>
-                </article>
-              </div>
-            </div>
-            <div v-if="fetchedRowCount" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-3 text-sm text-gray-400">
-              <span>本页 {{ pagedFetchedRows.length }} 条，共 {{ fetchedRowCount }} 条</span>
-              <div class="flex flex-wrap items-center gap-2">
-                <label class="flex items-center gap-2">
-                  <span>每页</span>
-                  <select v-model.number="fetchedPageSize" class="rounded-lg border border-gray-800 bg-gray-950 px-2 py-1.5 text-gray-200">
-                    <option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  :disabled="fetchedPage <= 1"
-                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                  @click="fetchedPage = clampPage(fetchedPage - 1, fetchedTotalPages)"
-                >
-                  上一页
-                </button>
-                <span class="min-w-24 text-center">第 {{ fetchedPage }} / {{ fetchedTotalPages }} 页</span>
-                <button
-                  type="button"
-                  :disabled="fetchedPage >= fetchedTotalPages"
-                  class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                  @click="fetchedPage = clampPage(fetchedPage + 1, fetchedTotalPages)"
-                >
-                  下一页
-                </button>
-              </div>
-            </div>
-          </template>
+          <template v-else-if="dialog === 'import'"><p class="ui-muted">每行格式：邮箱----邮箱密码----chatgpt密码，也兼容旧格式。</p><textarea v-model="importText" rows="9" class="ui-input ui-input-mono" placeholder="name@mail.com----mail-pass----gpt-pass" /></template>
+          <template v-else-if="dialog === 'edit'"><div class="ui-form-grid"><UiFormField id="mail-email" label="邮箱" required><template #default="{ inputId, disabled }"><input :id="inputId" v-model.trim="form.email" type="email" class="ui-input" :disabled="disabled || !!editingEmail" /></template></UiFormField><UiFormField id="mail-status" label="状态"><template #default="{ inputId }"><select :id="inputId" v-model="form.status" class="ui-input"><option value="enabled">启用</option><option value="disabled">禁用</option></select></template></UiFormField><UiFormField id="mail-gpt-password" label="GPT 密码"><template #default="{ inputId }"><input :id="inputId" v-model="form.gptPassword" class="ui-input" /></template></UiFormField><UiFormField id="mail-password" label="邮箱密码"><template #default="{ inputId }"><input :id="inputId" v-model="form.mailPassword" class="ui-input" /></template></UiFormField></div><UiFormField id="mail-refresh-token" label="OpenAI refreshToken"><template #default="{ inputId }"><textarea :id="inputId" v-model.trim="form.refreshToken" rows="3" class="ui-input ui-input-mono" /></template></UiFormField><UiFormField id="mail-note" label="备注"><template #default="{ inputId }"><input :id="inputId" v-model="form.note" class="ui-input" /></template></UiFormField></template>
+          <template v-else-if="dialog === 'password'"><p class="ui-muted">将通过协议登录 mail.com 官网修改密码。</p><UiFormField id="mail-new-password" label="新密码" required><template #default="{ inputId }"><input :id="inputId" v-model="newPassword" class="ui-input" /></template></UiFormField></template>
+          <template v-else-if="dialog === 'passwordResult'"><div class="ui-result-summary">成功 {{ passwordSummary.updated || 0 }} 个，失败 {{ passwordSummary.failed || 0 }} 个</div><div class="ui-result-list"><article v-for="item in pagedPasswordResults" :key="item.email" class="ui-result-row"><strong>{{ item.email }}</strong><UiStatusBadge :label="item.status === 'success' ? '成功' : '失败'" :tone="item.status === 'success' ? 'success' : 'danger'" /><p>{{ item.status === 'success' ? '官网改密成功，已更新本地 SQLite' : (item.error || '官网改密失败') }}</p></article></div><UiPagination v-if="passwordResults.length" v-model:page="passwordPage" v-model:page-size="passwordPageSize" :page-sizes="MAIL_PAGE_SIZE_OPTIONS" :total-items="passwordResults.length" item-label="条结果" /></template>
+          <template v-else-if="dialog === 'status'"><p class="ui-muted">将为选中的 {{ selectedEmails.length }} 个账号修改状态。</p><select v-model="newStatus" class="ui-input"><option value="enabled">启用</option><option value="disabled">禁用</option></select></template>
+          <template v-else-if="dialog === 'note'"><p class="ui-muted">将为选中的 {{ selectedEmails.length }} 个账号设置备注。</p><input v-model="newNote" class="ui-input" placeholder="输入备注" /></template>
+          <template v-else-if="dialog === 'fetched'"><div v-if="!fetchedResults.length" class="ui-empty">没有返回邮件</div><div v-if="activeFetchedMessage" class="ui-mail-detail"><h3>{{ activeFetchedMessage.message.subject || '(无主题)' }}</h3><p>{{ activeFetchedMessage.email }}</p><iframe v-if="activeFetchedMessage.message.html || activeFetchedMessage.message.content" :srcdoc="mailDetailSrcdoc(activeFetchedMessage.message)" sandbox="" class="ui-mail-frame" /><pre v-else>{{ activeFetchedMessage.message.text || '无正文' }}</pre></div><div class="ui-result-list"><article v-for="entry in pagedFetchedRows" :key="`${entry.result.email || 'mail'}-${entry.message?.id || entry.messageIndex}`" class="ui-result-row"><strong>{{ entry.result.email }}</strong><UiStatusBadge :label="entry.result.status === 'ok' ? `返回 ${(entry.result.messages || []).length} 封` : '取件失败'" :tone="entry.result.status === 'ok' ? 'success' : 'danger'" /><p v-if="entry.result.error">{{ entry.result.error }}</p><p v-else-if="entry.message">{{ entry.message.subject || '(无主题)' }}</p><UiButton v-if="entry.message" variant="quiet" size="sm" @click="openFetchedDetail(entry.result.email, entry.message)">查看详情</UiButton></article></div><UiPagination v-if="fetchedRowCount" v-model:page="fetchedPage" v-model:page-size="fetchedPageSize" :page-sizes="MAIL_PAGE_SIZE_OPTIONS" :total-items="fetchedRowCount" item-label="条邮件" /></template>
+          <template v-else-if="dialog === 'confirm-delete'"><p>确认删除 {{ rowActionEmails.length }} 个 mail 邮箱账号？</p></template>
+          <template v-else-if="dialog === 'confirm-clear'"><p>确认清空全部 mail 邮箱账号？此操作不可撤销。</p></template>
         </div>
-
-        <div class="flex justify-end gap-3 border-t border-gray-800 px-5 py-4">
-          <button @click="closeDialog" class="rounded-lg border border-gray-800 bg-gray-950 px-4 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800">取消</button>
-          <button v-if="!['fetched', 'passwordResult'].includes(dialog)" @click="submitDialog" :disabled="busy" class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50">
-            {{ busy ? '处理中...' : '确认' }}
-          </button>
-        </div>
+        <footer class="ui-modal-footer"><UiButton variant="quiet" @click="closeDialog">取消</UiButton><UiButton v-if="['confirm-delete','confirm-clear'].includes(dialog)" variant="danger" :loading="busy" @click="confirmDestructiveAction">确认删除</UiButton><UiButton v-else-if="!['rowActions','fetched','passwordResult'].includes(dialog)" variant="primary" :loading="busy" @click="submitDialog">确认</UiButton></footer>
       </section>
-    </div>
+    </AccessibleModal>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { createMessageClearScheduler } from '../messageLifecycle.js'
+import { accountHubSyncPresentation, mailAccountStatusPresentation, mailCheckStatusPresentation } from '../operationsPresentation.js'
+import AccessibleModal from './AccessibleModal.vue'
+import UiBatchBar from './ui/UiBatchBar.vue'
+import UiButton from './ui/UiButton.vue'
+import UiDataToolbar from './ui/UiDataToolbar.vue'
+import UiFormField from './ui/UiFormField.vue'
+import UiMetricSummary from './ui/UiMetricSummary.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
+import UiPagination from './ui/UiPagination.vue'
+import UiStatePanel from './ui/UiStatePanel.vue'
+import UiStatusBadge from './ui/UiStatusBadge.vue'
+import UiTableFrame from './ui/UiTableFrame.vue'
 
 const DEFAULT_MAIL_PAGE_SIZE = 100
 const MAIL_PAGE_SIZE_OPTIONS = Object.freeze([50, 100, 200, 500])
@@ -447,6 +117,9 @@ const selected = ref(new Set())
 const busy = ref(false)
 const message = ref('')
 const messageType = ref('success')
+const hasLoaded = ref(false)
+const loadError = ref('')
+const messageClearScheduler = createMessageClearScheduler()
 const checkFilter = ref('')
 const statusFilter = ref('')
 const emailQuery = ref('')
@@ -470,8 +143,17 @@ const passwordSummary = ref({ updated: 0, failed: 0 })
 const passwordPage = ref(1)
 const passwordPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const visiblePasswords = ref(new Set())
+const rowActionEmails = ref([])
 
 const selectedEmails = computed(() => Array.from(selected.value))
+const activeFilterCount = computed(() => [checkFilter.value, statusFilter.value, emailQuery.value, noteQuery.value].filter(Boolean).length)
+const metricItems = computed(() => [
+  { key: 'total', label: '总数', value: summary.value.total, tone: 'neutral' },
+  { key: 'enabled', label: '启用', value: summary.value.enabled_count, tone: 'success' },
+  { key: 'valid', label: '有效', value: summary.value.valid_count, tone: 'info' },
+  { key: 'invalid', label: '失效', value: summary.value.invalid_count, tone: 'danger' },
+  { key: 'selected', label: '选中', value: selectedEmails.value.length, tone: 'warning' },
+])
 const batchSelectionLimitError = computed(() => mailAccountBatchLimitError(selectedEmails.value))
 const filteredRows = computed(() => {
   const emailNeedle = emailQuery.value.toLowerCase()
@@ -510,6 +192,9 @@ const dialogTitle = computed(() => ({
   status: `批量修改状态（${selectedEmails.value.length} 个）`,
   note: `批量备注（${selectedEmails.value.length} 个）`,
   fetched: '取件结果',
+  rowActions: '账号操作',
+  'confirm-delete': '确认删除',
+  'confirm-clear': '确认清空',
 })[dialog.value] || '')
 
 watch([checkFilter, statusFilter, emailQuery, noteQuery, accountPageSize], () => {
@@ -652,8 +337,7 @@ function blankForm() {
 function setMessage(text, type = 'success') {
   message.value = text
   messageType.value = type
-  window.clearTimeout(setMessage._timer)
-  setMessage._timer = window.setTimeout(() => { message.value = '' }, 8000)
+  messageClearScheduler.schedule(8000, { read: () => message.value, clear: () => { message.value = '' } })
 }
 
 function maskPassword(value) {
@@ -686,24 +370,23 @@ function displayPassword(value, email, type) {
 }
 
 function statusLabel(status) {
-  return status === 'disabled' ? '禁用' : '启用'
+  return mailAccountStatusPresentation(status).label
 }
 
 function statusClass(status) {
-  return status === 'disabled'
-    ? 'bg-gray-700/80 text-gray-300'
-    : 'bg-green-500/10 text-green-300'
+  return mailAccountStatusPresentation(status).tone
 }
 
 function checkLabel(status) {
-  return { valid: '有效', invalid: '失效', error: '错误', unchecked: '未检测' }[status] || '未检测'
+  return mailCheckStatusPresentation(status).label
 }
 
 function checkClass(status) {
-  if (status === 'valid') return 'bg-green-500/10 text-green-300'
-  if (status === 'invalid' || status === 'error') return 'bg-red-500/10 text-red-300'
-  return 'bg-gray-700/70 text-gray-300'
+  return mailCheckStatusPresentation(status).tone
 }
+
+function statusPresentation(status) { return mailAccountStatusPresentation(status) }
+function checkPresentation(status) { return mailCheckStatusPresentation(status) }
 
 function syncRows(data) {
   rows.value = data.items || []
@@ -726,11 +409,35 @@ async function loadRows() {
   busy.value = true
   try {
     syncRows(await api.getMailAccounts())
+    loadError.value = ''
+    hasLoaded.value = true
   } catch (e) {
-    setMessage(e.message, 'error')
+    loadError.value = e?.message || '读取邮箱列表失败'
+    hasLoaded.value = true
+    setMessage(loadError.value, 'error')
   } finally {
     busy.value = false
   }
+}
+
+function clearSelection() { selected.value = new Set() }
+function clearFilters() { checkFilter.value = ''; statusFilter.value = ''; emailQuery.value = ''; noteQuery.value = '' }
+function openRowActions(row) { rowActionEmails.value = row?.email ? [row.email] : []; dialog.value = 'rowActions' }
+async function runRowAction(action) {
+  const emails = rowActionEmails.value.slice()
+  closeDialog()
+  if (action === 'check') return checkRows(emails)
+  if (action === 'fetch') return fetchRows(emails)
+  if (action === 'edit') return openEditDialog(rows.value.find(row => row.email === emails[0]))
+  if (action === 'delete') { rowActionEmails.value = emails; dialog.value = 'confirm-delete' }
+}
+function requestClearRows() { dialog.value = 'confirm-clear' }
+async function confirmDestructiveAction() {
+  const action = dialog.value
+  const emails = rowActionEmails.value.slice()
+  closeDialog()
+  if (action === 'confirm-clear') return clearRows(true)
+  if (action === 'confirm-delete') return deleteRows(emails, true)
 }
 
 function toggleSelected(email) {
@@ -932,9 +639,9 @@ async function fetchRows(emails) {
   }
 }
 
-async function deleteRows(emails) {
+async function deleteRows(emails, confirmed = false) {
   if (!emails.length || !ensureMailAccountBatchWithinLimit(emails)) return
-  if (!window.confirm(`确认删除 ${emails.length} 个 mail 邮箱账号？`)) return
+  if (!confirmed) { rowActionEmails.value = emails.slice(); dialog.value = 'confirm-delete'; return }
   busy.value = true
   try {
     const result = await api.deleteMailAccounts(emails)
@@ -947,8 +654,8 @@ async function deleteRows(emails) {
   }
 }
 
-async function clearRows() {
-  if (!window.confirm('确认清空全部 mail 邮箱账号？')) return
+async function clearRows(confirmed = false) {
+  if (!confirmed) { dialog.value = 'confirm-clear'; return }
   busy.value = true
   try {
     const result = await api.clearMailAccounts()
@@ -980,4 +687,5 @@ async function exportRows() {
 }
 
 onMounted(loadRows)
+onBeforeUnmount(() => { messageClearScheduler.dispose() })
 </script>

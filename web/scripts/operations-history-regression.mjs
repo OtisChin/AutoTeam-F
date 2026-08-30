@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
+const dataUrl = new URL('../src/taskHistoryData.js', import.meta.url)
+assert.ok(existsSync(dataUrl), 'taskHistoryData.js should exist')
+const data = await import(dataUrl)
+const tasks = Array.from({ length: 125 }, (_, index) => ({ task_id: `task-${index}`, command: index % 2 ? 'register' : 'refresh-quota', status: index % 3 ? 'completed' : 'failed', params: { index } }))
+assert.equal(data.TASK_HISTORY_PAGE_SIZE, 50)
+assert.equal(data.pageTaskHistory(tasks, 1).rows.length, 50)
+assert.equal(data.pageTaskHistory(tasks, 99).page, 3)
+assert.equal(data.filterTaskHistory(tasks, { query: 'task-124' }).length, 1)
+assert.equal(data.filterTaskHistory(tasks, { command: 'register' }).length, 62)
+const history = readFileSync(new URL('../src/components/TaskHistory.vue', import.meta.url), 'utf8')
+const page = readFileSync(new URL('../src/components/TaskHistoryPage.vue', import.meta.url), 'utf8')
+const logs = readFileSync(new URL('../src/components/LogViewer.vue', import.meta.url), 'utf8')
+for (const tag of ['UiMetricSummary', 'UiDataToolbar', 'UiTableFrame', 'UiPagination', 'UiStatusBadge', 'AccessibleModal']) assert.match(history, new RegExp(`<${tag}\\b`), `TaskHistory should use ${tag}`)
+assert.match(page, /<UiPageHeader\b/)
+assert.match(history, /v-for="task in pagedTasks"/)
+assert.match(logs, /<UiPageHeader\b/)
+assert.match(logs, /<UiSurface\b/)
+assert.match(logs, /const LOG_KEEP_LIMIT = 1000\b/)
+assert.doesNotMatch(logs, /setInterval\s*\(/)
+console.log('operations task/history UI contracts passed')
+
