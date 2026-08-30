@@ -25,6 +25,11 @@ type SentinelResult struct {
 
 type UnavailableSentinelProvider struct{}
 
-func (UnavailableSentinelProvider) Token(context.Context, *http.Client, fingerprint.Profile, string, string) (SentinelResult, error) {
+func (UnavailableSentinelProvider) Token(ctx context.Context, _ *http.Client, _ fingerprint.Profile, _, _ string) (SentinelResult, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return SentinelResult{}, errors.Join(ErrSentinelUnavailable, err)
+		}
+	}
 	return SentinelResult{}, ErrSentinelUnavailable
 }
