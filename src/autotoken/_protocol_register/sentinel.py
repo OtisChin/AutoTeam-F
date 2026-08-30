@@ -50,6 +50,19 @@ DEFAULT_SEC_CH_UA = (
 )
 
 
+class SentinelUnavailable(RuntimeError):
+    """Raised when the supported Sentinel runtime cannot produce a token."""
+
+
+def _allow_synthetic_fallback() -> bool:
+    return str(os.getenv("OPENAI_SENTINEL_ALLOW_SYNTHETIC_FALLBACK", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 class SentinelTokenGenerator:
     """Sentinel Token 纯 Python 生成器。
 
@@ -262,19 +275,12 @@ def get_sentinel_token(
     flow: str = "authorize_continue",
     user_agent: str = DEFAULT_UA,
 ) -> str:
-    """auth_flow.py 复用的入口；返回 JSON 字符串，永远不抛异常。
+    """Return a Sentinel token or fail closed when SDK execution is unavailable.
 
-    优先级:
-      1. QuickJS 路径 (`sentinel_quickjs.get_sentinel_token_via_quickjs`)
-         在 Node 子进程里跑 OpenAI 真实 sdk.js，返回服务端可深层校验的 token。
-         这是 OTP 邮件能下发的关键。
-      2. 纯 Python 路径 (`build_sentinel_token`) — 只做表层 PoW，能通过
-         200 OK 但 OpenAI 服务端 OTP 派发会 silent-drop。仅作为 Node 不可用
-         或 sdk.js 下载失败时的兜底。
-      3. 无 challenge 模式 — 最后兜底，保证返回可解析字符串避免阻塞。
-
-    禁用 QuickJS：`export OPENAI_SENTINEL_DISABLE_QUICKJS=1`。
+    The legacy synthetic implementation is available only through the explicit
+    ``OPENAI_SENTINEL_ALLOW_SYNTHETIC_FALLBACK`` compatibility flag.
     """
+    quickjs_error = "Sentinel QuickJS 已禁用"
     if not os.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
         try:
             try:
@@ -290,9 +296,14 @@ def get_sentinel_token(
             if qtoken:
                 logger.info(f"Sentinel Token 组装完成 (QuickJS 长度: {len(qtoken)})")
                 return qtoken
-            logger.warning("Sentinel QuickJS 失败，回退到纯 Python")
+            quickjs_error = "Sentinel QuickJS 未返回 token"
         except Exception as e:
-            logger.warning(f"Sentinel QuickJS 加载/调用异常，回退到纯 Python: {e}")
+            quickjs_error = f"Sentinel QuickJS 加载/调用异常: {e}"
+
+    if not _allow_synthetic_fallback():
+        raise SentinelUnavailable(quickjs_error)
+
+    logger.warning("%s；显式兼容开关已启用，使用 synthetic fallback", quickjs_error)
 
     token = build_sentinel_token(
         session,

@@ -21,9 +21,6 @@ from autotoken.services import chatgpt_session as chatgpt_session_service
 
 logger = logging.getLogger(__name__)
 
-GO_PROTOCOL_IMPERSONATE_DEFAULT = "chrome143,chrome144,chrome145,chrome146,chrome147,chrome148,chrome149,chrome150,chrome151,chrome152"
-
-
 def _phone_pool_failure_action(reason: str) -> str:
     text = str(reason or "").strip().lower()
     if not text:
@@ -998,67 +995,6 @@ def check_email_registered(email: str, *, proxy: str | None = None) -> dict:
     }
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _go_protocol_enabled() -> bool:
-    return str(os.environ.get("PROTOCOL_REGISTER_ENGINE", "python") or "python").strip().lower() == "go"
-
-
-def _go_protocol_mail_payload(mail_client, *, email: str, account_id: str | int | None = None) -> dict[str, Any]:
-    provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
-    payload = {
-        "provider": provider,
-        "account_id": str(account_id or email),
-        "receive_code_url": "",
-        "issued_after_unix": int(time.time()),
-    }
-    for account in getattr(mail_client, "accounts", []) or []:
-        if str(getattr(account, "email", "") or "").strip().lower() == str(email or "").strip().lower():
-            payload["receive_code_url"] = str(getattr(account, "receive_code_url", "") or "").strip()
-            break
-    return payload
-
-
-def _register_once_go(mail_client, *, email: str, password: str, account_id=None, proxy: str | None = None, **_kwargs):
-    from autotoken.integrations.go_protocol_register_client import (
-        GoProtocolRegisterClient,
-        go_response_to_protocol_result,
-    )
-
-    timeout_seconds = max(30, int(os.environ.get("OTP_TIMEOUT", "60") or 60))
-    client = GoProtocolRegisterClient(timeout=max(90.0, float(timeout_seconds + 30)))
-    client.health()
-    response = client.register(
-        {
-            "request_id": f"autotoken-{int(time.time() * 1000)}",
-            "email": email,
-            "password": password,
-            "proxy_url": proxy or "",
-            "mail": _go_protocol_mail_payload(mail_client, email=email, account_id=account_id),
-            "options": {
-                "timeout_seconds": timeout_seconds,
-                "trace": _env_flag("GO_PROTOCOL_TRACE", "0"),
-                "impersonate": os.environ.get("GO_PROTOCOL_IMPERSONATE", GO_PROTOCOL_IMPERSONATE_DEFAULT),
-            },
-        }
-    )
-    return go_response_to_protocol_result(response)
-
-
-def _go_protocol_supported_request(
-    *,
-    oauth_phone_sms_provider: str | None = None,
-    oauth_phone_sms_country: str | None = None,
-    oauth_oasis_sms_cdks: str | None = None,
-) -> bool:
-    return not any(
-        str(value or "").strip()
-        for value in (oauth_phone_sms_provider, oauth_phone_sms_country, oauth_oasis_sms_cdks)
-    )
-
-
 def register_once(
     mail_client,
     *,
@@ -1070,18 +1006,6 @@ def register_once(
     oauth_phone_sms_country: str | None = None,
     oauth_oasis_sms_cdks: str | None = None,
 ) -> tuple[bool, dict]:
-    if _go_protocol_enabled() and _go_protocol_supported_request(
-        oauth_phone_sms_provider=oauth_phone_sms_provider,
-        oauth_phone_sms_country=oauth_phone_sms_country,
-        oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
-    ):
-        try:
-            return _register_once_go(mail_client, email=email, password=password, account_id=account_id, proxy=proxy)
-        except Exception as exc:
-            if not _env_flag("GO_PROTOCOL_FALLBACK_PYTHON", "1"):
-                raise
-            logger.warning("Go 协议注册不可用，回退 Python 协议注册: %s", safe_error_summary(exc, limit=180))
-
     AuthFlow, Config = _load_protocol_classes()
     cfg = Config()
     cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None

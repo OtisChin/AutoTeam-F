@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from config import Config
-from http_client import USER_AGENT, create_http_session
+from http_client import create_http_session, user_agent_for_impersonate
 from mail_provider import MailProvider
 
 from autotoken.core.jwt import decode_jwt_payload
@@ -85,6 +85,10 @@ def _is_add_phone_whatsapp_fallback_payload(payload: Any) -> bool:
     )
 
 
+class OtpDeliveryBudgetExceeded(RuntimeError):
+    """Raised when an email OTP mutation would exceed the attempt budget."""
+
+
 class AuthResult:
     """认证结果"""
 
@@ -127,12 +131,12 @@ class AuthFlow:
 
     def __init__(self, config: Config):
         self.config = config
-        self._impersonate_candidates = ["chrome136", "chrome124", "chrome120"]
-        self._impersonate_idx = 0
+        self._impersonate_profile = os.getenv("OPENAI_HTTP_IMPERSONATE", "chrome136").strip() or "chrome136"
         self.session = create_http_session(
             proxy=config.proxy,
-            impersonate=self._impersonate_candidates[self._impersonate_idx],
+            impersonate=self._impersonate_profile,
         )
+        self._user_agent = user_agent_for_impersonate(self._impersonate_profile)
         self.result = AuthResult()
         self._http_trace_enabled = str(os.getenv("AUTH_HTTP_TRACE", "0")).lower() in ("1", "true", "yes", "on")
         self._existing_email_verification_mode = ""
@@ -158,6 +162,9 @@ class AuthFlow:
         )
         self._trace_dump_path = ""
         self._used_email_otp_codes: set[str] = set()
+        self._email_otp_send_attempts = 0
+        self._email_otp_resend_attempts = 0
+        self._last_sentinel_token = ""
         self._last_register_password_error: str = ""
         self._last_codex_oauth_error: str = ""
         if self._trace_dump_enabled:
@@ -206,14 +213,27 @@ class AuthFlow:
             code = mail_provider.wait_for_otp(email, **kwargs)
         code = str(code or "").strip()
         if code:
+            if exclude_used and code in self._used_email_otp_codes:
+                raise RuntimeError("邮箱 OTP 已使用，未返回新的验证码")
             self._used_email_otp_codes.add(code)
         return code
 
     def _email_otp_verify_max_attempts(self) -> int:
         try:
-            return max(1, int(os.getenv("OPENAI_EMAIL_OTP_VERIFY_MAX_ATTEMPTS", "3") or "3"))
+            return max(1, int(os.getenv("OPENAI_EMAIL_OTP_VERIFY_MAX_ATTEMPTS", "2") or "2"))
         except (TypeError, ValueError):
-            return 3
+            return 2
+
+    def _email_otp_max_resends(self) -> int:
+        try:
+            return max(0, int(os.getenv("OPENAI_EMAIL_OTP_MAX_RESENDS", "1") or "1"))
+        except (TypeError, ValueError):
+            return 1
+
+    def _consume_email_otp_initial_delivery(self) -> None:
+        if self._email_otp_send_attempts >= 1:
+            raise OtpDeliveryBudgetExceeded("邮箱 OTP 初次发送额度已用尽")
+        self._email_otp_send_attempts += 1
 
     def _verify_email_otp_with_retries(
         self,
@@ -243,9 +263,7 @@ class AuthFlow:
                 )
                 otp_sent_at = time.time()
                 mode = retry_mode if attempt == 1 else f"{retry_mode}_{attempt}"
-                if not self.kickoff_otp_delivery(mode):
-                    self.send_otp()
-                    otp_sent_at = time.time()
+                self._require_otp_delivery(mode)
                 current_code = self._wait_for_email_otp(
                     mail_provider,
                     email,
@@ -791,7 +809,7 @@ class AuthFlow:
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Referer": "https://chatgpt.com/",
-                    "User-Agent": USER_AGENT,
+                    "User-Agent": self._user_agent,
                 },
                 timeout=30,
                 allow_redirects=False,
@@ -865,7 +883,7 @@ class AuthFlow:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "User-Agent": USER_AGENT,
+            "User-Agent": self._user_agent,
         }
         form = {
             "grant_type": "authorization_code",
@@ -959,8 +977,7 @@ class AuthFlow:
             except Exception:
                 otp_timeout = 60
             otp_sent_at = time.time()
-            if not self.kickoff_otp_delivery("codex_login_need_otp"):
-                self.send_otp()
+            self._require_otp_delivery("codex_login_need_otp")
             otp_code = self._wait_for_email_otp(
                 mail_provider,
                 email,
@@ -1811,14 +1828,9 @@ class AuthFlow:
         return out
 
     def _rotate_impersonate_session(self) -> bool:
-        """仅在 curl_cffi 指纹模式内切换 UA 指纹版本重试。"""
-        if self._impersonate_idx >= len(self._impersonate_candidates) - 1:
-            return False
-        self._impersonate_idx += 1
-        imp = self._impersonate_candidates[self._impersonate_idx]
-        logger.warning(f"TLS 异常，切换指纹重试: impersonate={imp}")
-        self.session = create_http_session(proxy=self.config.proxy, impersonate=imp)
-        return True
+        """Keep the attempt profile and cookie jar stable after a TLS error."""
+        logger.warning("TLS 异常，保持当前会话与客户端 profile，不在本次尝试内轮换")
+        return False
 
     @staticmethod
     def _is_invalid_state_error(exc: object) -> bool:
@@ -1831,7 +1843,7 @@ class AuthFlow:
             logger.info("重置 OAuth HTTP 会话: %s", reason)
         self.session = create_http_session(
             proxy=self.config.proxy,
-            impersonate=self._impersonate_candidates[self._impersonate_idx],
+            impersonate=self._impersonate_profile,
         )
 
     @staticmethod
@@ -1880,7 +1892,7 @@ class AuthFlow:
             "Accept": "application/json",
             "Referer": referer,
             "Origin": origin,
-            "User-Agent": USER_AGENT,
+            "User-Agent": self._user_agent,
         }
 
         # auth.openai.com 侧请求补设备标识（若可得）
@@ -2188,6 +2200,7 @@ class AuthFlow:
                 logger.info("Sentinel Token 获取成功")
             except Exception as e:
                 logger.warning(f"注册前刷新 sentinel 失败: {e}")
+                raise
 
         headers = self._common_headers("https://auth.openai.com/create-account/password")
         headers["Content-Type"] = "application/json"
@@ -2239,6 +2252,7 @@ class AuthFlow:
         if self._last_sentinel_token:
             headers["openai-sentinel-token"] = self._last_sentinel_token
         # zhuce6 用 GET /api/accounts/email-otp/send
+        self._consume_email_otp_initial_delivery()
         resp = self.session.get(
             "https://auth.openai.com/api/accounts/email-otp/send",
             headers=headers,
@@ -2258,6 +2272,7 @@ class AuthFlow:
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
             headers["openai-sentinel-token"] = self._last_sentinel_token
+        self._consume_email_otp_initial_delivery()
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/passwordless/send-otp",
             headers=headers,
@@ -2278,10 +2293,14 @@ class AuthFlow:
         重发 OTP（适用于已有账号 passwordless/login_challenge）。
         返回 True 代表请求成功。
         """
+        if self._email_otp_resend_attempts >= self._email_otp_max_resends():
+            logger.warning("邮箱 OTP 重发额度已用尽")
+            return False
         headers = self._common_headers(referer)
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
             headers["openai-sentinel-token"] = self._last_sentinel_token
+        self._email_otp_resend_attempts += 1
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/email-otp/resend",
             headers=headers,
@@ -2298,12 +2317,7 @@ class AuthFlow:
         return False
 
     def kickoff_otp_delivery(self, mode: str = "") -> bool:
-        """
-        统一发码策略：
-        - 已进入 email-verification 的流程优先 email-otp/resend
-        - 密码注册完成后优先 email-otp/send
-        - passwordless/send-otp 仅作为兼容兜底
-        """
+        """Dispatch exactly one state-specific email OTP endpoint."""
         mode_lc = (mode or "").strip().lower()
         password_registration = mode_lc in {
             "register_password_success",
@@ -2315,20 +2329,20 @@ class AuthFlow:
                 self.send_otp()
                 return True
             except Exception as e:
-                logger.warning(f"send_otp 首选失败(mode={mode_lc}): {e}")
-        elif self.resend_otp("https://auth.openai.com/email-verification"):
-            return True
+                logger.warning(f"初次 OTP 发送失败(mode={mode_lc}): {e}")
+                return False
 
-        if self.send_passwordless_otp("https://auth.openai.com/create-account/password"):
-            return True
-        if password_registration and self.resend_otp("https://auth.openai.com/email-verification"):
-            return True
         try:
-            self.send_otp()
-            return True
+            return self.resend_otp("https://auth.openai.com/email-verification")
         except Exception as e:
-            logger.warning(f"send_otp 兜底失败(mode={mode_lc or 'unknown'}): {e}")
+            logger.warning(f"OTP 重发失败(mode={mode_lc or 'unknown'}): {e}")
             return False
+
+    def _require_otp_delivery(self, mode: str) -> None:
+        if not self.kickoff_otp_delivery(mode):
+            raise OtpDeliveryBudgetExceeded(
+                f"邮箱 OTP 发码失败或额度已用尽: mode={str(mode or 'unknown')}"
+            )
 
     @staticmethod
     def _default_password_from_email(email: str) -> str:
@@ -2392,6 +2406,7 @@ class AuthFlow:
                 logger.info("Sentinel Token 获取成功")
             except Exception as e:
                 logger.warning(f"创建账户前刷新 sentinel 失败: {e}")
+                raise
         headers = self._common_headers("https://auth.openai.com/about-you")
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
@@ -3018,7 +3033,7 @@ class AuthFlow:
         if phone_attempt > 1:
             self.session = create_http_session(
                 proxy=self.config.proxy,
-                impersonate=self._impersonate_candidates[self._impersonate_idx],
+                impersonate=self._impersonate_profile,
             )
             self.result = AuthResult()
             self._last_register_password_error = ""
@@ -3161,7 +3176,7 @@ class AuthFlow:
 
             self.session = create_http_session(
                 proxy=self.config.proxy,
-                impersonate=self._impersonate_candidates[self._impersonate_idx],
+                impersonate=self._impersonate_profile,
             )
             self.result = AuthResult()
             self.result.email = phone_login
@@ -3242,14 +3257,12 @@ class AuthFlow:
             password_registered = self.register_password(email)
             otp_sent_at = time.time()
             if password_registered:
-                if not self.kickoff_otp_delivery("register_password_success"):
-                    raise RuntimeError("发送 OTP 失败: passwordless/resend/send 均未成功")
+                self._require_otp_delivery("register_password_success")
             else:
                 # 注册密码失败时优先按“已有账号 OTP”回退，避免卡死在 invalid_auth_step
                 logger.warning("注册密码失败，回退到已有账号 OTP 路径")
                 self.fetch_client_auth_session_dump("post_register_password_failed_new")
-                if not self.kickoff_otp_delivery("register_password_failed_fallback"):
-                    self.send_otp()
+                self._require_otp_delivery("register_password_failed_fallback")
 
             try:
                 otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "60")))
@@ -3265,8 +3278,7 @@ class AuthFlow:
             except TimeoutError:
                 logger.warning("未等到新账号 OTP，先重发后重试等待")
                 otp_sent_at = time.time()
-                if not self.kickoff_otp_delivery("new_register_timeout_retry"):
-                    self.send_otp()
+                self._require_otp_delivery("new_register_timeout_retry")
                 otp_code = self._wait_for_email_otp(
                     mail_provider,
                     email,
@@ -3320,7 +3332,7 @@ class AuthFlow:
                 if not continue_url or "/email-verification" in continue_url:
                     # password/verify 后推荐使用 resend，而不是 /email-otp/send
                     otp_sent_at = time.time()
-                    self.kickoff_otp_delivery("existing_login_password")
+                    self._require_otp_delivery("existing_login_password")
                     otp_code = self._wait_for_email_otp(
                         mail_provider,
                         email,
@@ -3340,7 +3352,8 @@ class AuthFlow:
                     # 某些模式在 /authorize/continue 已触发发码，不要重复 /email-otp/send 以免破坏 state
                     # 默认先尝试 /email-otp/resend 获取新码，失败再回看短窗口
                     forced_resend = self._env_flag("OTP_FORCE_RESEND", "1")
-                    if forced_resend and self.kickoff_otp_delivery("existing_forced_resend"):
+                    if forced_resend:
+                        self._require_otp_delivery("existing_forced_resend")
                         otp_sent_at = time.time()
                         logger.info(f"已有账号验证码模式={mode}，已主动 resend OTP")
                     else:
@@ -3359,8 +3372,7 @@ class AuthFlow:
                     # 若本轮没等到，优先 resend，再兜底 send_otp
                     logger.warning("未等到已有账号 OTP，先重发后重试等待")
                     otp_sent_at = time.time()
-                    if not self.kickoff_otp_delivery("existing_timeout_retry"):
-                        self.send_otp()
+                    self._require_otp_delivery("existing_timeout_retry")
                     otp_code = self._wait_for_email_otp(
                         mail_provider,
                         email,
@@ -3617,10 +3629,7 @@ class AuthFlow:
         if not continue_url or "/email-verification" in continue_url:
             # 仍需 OTP：优先 resend 获取新码
             otp_sent_at = time.time()
-            resend_ok = self.kickoff_otp_delivery("protocol_need_otp")
-            if not resend_ok and mode not in ("passwordless_signup", "passwordless_login"):
-                self.send_otp()
-                otp_sent_at = time.time()
+            self._require_otp_delivery("protocol_need_otp")
 
             otp_code = self._wait_for_email_otp(
                 mail_provider,

@@ -91,6 +91,10 @@ class ManualRegisterParams(BaseModel):
     )
     phone_only: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
+    go_protocol_register: bool = Field(
+        False,
+        validation_alias=AliasChoices("go_protocol_register", "goProtocolRegister"),
+    )
     use_roxybrowser: bool = Field(False, validation_alias=AliasChoices("use_roxybrowser", "useRoxyBrowser"))
     use_cloakbrowser: bool = Field(False, validation_alias=AliasChoices("use_cloakbrowser", "useCloakBrowser"))
     oauth_phone_sms_provider: str = Field(
@@ -172,17 +176,30 @@ def create_account_register_task_router(
         registration_flow = str(params.registration_flow or "standard").strip().lower()
         if registration_flow not in {"standard", "phone_cpa"}:
             raise HTTPException(status_code=400, detail="registration_flow 只支持 standard 或 phone_cpa")
+        if params.go_protocol_register and (registration_flow != "standard" or bool(params.phone_only)):
+            raise HTTPException(status_code=400, detail="Go 协议注册不支持手机号注册流程")
         use_cloakbrowser = registration_flow == "standard" and bool(params.use_cloakbrowser)
         use_roxybrowser = registration_flow == "standard" and bool(params.use_roxybrowser) and not use_cloakbrowser
+        use_go_protocol = (
+            registration_flow == "standard"
+            and bool(params.go_protocol_register)
+            and not use_cloakbrowser
+            and not use_roxybrowser
+        )
+        use_python_protocol = (
+            bool(params.protocol_register)
+            and not use_cloakbrowser
+            and not use_roxybrowser
+            and not use_go_protocol
+        )
         if use_roxybrowser:
             _assert_roxybrowser_available()
         register_mode = (
-            "protocol"
-            if registration_flow == "phone_cpa"
-            else "cloak"
-            if use_cloakbrowser
-            else "protocol"
-            if bool(params.protocol_register) and not use_roxybrowser
+            "protocol" if registration_flow == "phone_cpa"
+            else "cloak" if use_cloakbrowser
+            else "roxy" if use_roxybrowser
+            else "go_protocol" if use_go_protocol
+            else "protocol" if use_python_protocol
             else "browser"
         )
         phone_only = bool(params.phone_only)
