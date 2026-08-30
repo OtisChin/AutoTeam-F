@@ -80,3 +80,56 @@ open-reverselab/
 
 .superpowers/
 .superpowers/sdd/
+
+# BEGIN LOCAL-ONLY TEST/CACHE/RETIRED ARTIFACTS
+# Verification records created by local cleanup tasks
+/cleanup-artifacts/
+
+# Cache and temporary directories
+**/__pycache__/
+**/.cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.hypothesis/
+**/.tox/
+**/.nox/
+**/.ipynb_checkpoints/
+
+# Test suites and test-only source files
+/tests/
+**/tests/
+**/testdata/
+**/test_*.py
+**/*_test.py
+**/*_test.go
+**/test-*.js
+**/test-*.mjs
+**/test-*.cjs
+**/test-*.ts
+**/test-*.tsx
+**/*.test.js
+**/*.test.mjs
+**/*.test.cjs
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.js
+**/*.spec.mjs
+**/*.spec.cjs
+**/*.spec.ts
+**/*.spec.tsx
+/web/scripts/test-*.mjs
+
+# Retired, backup, patch, and editor residue
+/patches/
+/.open-reverselab/patches/
+*.patch
+*.old
+*.orig
+*.rej
+*.bak
+*.backup
+*~
+*.swp
+*.swo
+# END LOCAL-ONLY TEST/CACHE/RETIRED ARTIFACTS
