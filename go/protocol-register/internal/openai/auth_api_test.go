@@ -290,6 +290,96 @@ func TestAuthorizeContinueReturnsTypedKnownStates(t *testing.T) {
 	}
 }
 
+func TestCreateAccountAcceptsExternalURLState(t *testing.T) {
+	var srv *httptest.Server
+	var callbackURL string
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/accounts/create_account" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("openai-sentinel-token"); got != "sentinel-create" {
+			t.Errorf("openai-sentinel-token=%q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["name"] != "Alex Chen" || body["birthdate"] != "1993-01-01" {
+			t.Errorf("body=%#v", body)
+		}
+		callbackURL = srv.URL + "/api/auth/callback/openai?code=callback-code"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"continue_url": callbackURL,
+			"method":       http.MethodGet,
+			"page": map[string]any{
+				"type": "external_url",
+				"payload": map[string]any{
+					"url": callbackURL,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome150"))
+	got, err := client.CreateAccount(
+		context.Background(),
+		"sentinel-create",
+		"Alex Chen",
+		"1993-01-01",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PageType != "external_url" || got.ContinueURL != callbackURL {
+		t.Fatalf("step=%#v", got)
+	}
+}
+
+func TestCreateAccountRejectsInvalidStates(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "wrong page type",
+			body: map[string]any{
+				"page":         map[string]any{"type": "email_otp_verification"},
+				"continue_url": "/email-verification",
+			},
+		},
+		{
+			name: "missing external continuation",
+			body: map[string]any{
+				"page": map[string]any{"type": "external_url"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tt.body)
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome146"))
+			_, err := client.CreateAccount(
+				context.Background(),
+				"sentinel-create",
+				"Alex Chen",
+				"1993-01-01",
+			)
+			if !errors.Is(err, ErrInvalidAuthState) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
 func TestAuthorizeContinueRejectsInvalidAndChallengeStates(t *testing.T) {
 	tests := []struct {
 		name        string

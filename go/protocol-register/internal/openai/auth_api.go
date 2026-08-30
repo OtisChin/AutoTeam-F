@@ -48,6 +48,21 @@ func (r authStepResponse) authStep() (AuthStep, error) {
 	return step, nil
 }
 
+func (r authStepResponse) createAccountStep() (AuthStep, error) {
+	step := AuthStep{
+		PageType:              strings.TrimSpace(r.Page.Type),
+		ContinueURL:           strings.TrimSpace(r.ContinueURL),
+		EmailVerificationMode: strings.TrimSpace(r.Page.Payload.EmailVerificationMode),
+	}
+	if step.PageType != "" && step.PageType != "external_url" {
+		return AuthStep{}, fmt.Errorf("%w: unsupported create-account page", ErrInvalidAuthState)
+	}
+	if !validContinueURL(step.ContinueURL) {
+		return AuthStep{}, fmt.Errorf("%w: continuation missing or invalid", ErrInvalidAuthState)
+	}
+	return step, nil
+}
+
 type Client struct {
 	HTTP           *http.Client
 	BaseURL        string
@@ -175,7 +190,7 @@ func (c *Client) CreateAccount(ctx context.Context, sentinelToken, name, birthda
 	if err != nil {
 		return AuthStep{}, err
 	}
-	return out.authStep()
+	return out.createAccountStep()
 }
 
 func (c *Client) GetAuthSession(ctx context.Context) (map[string]any, error) {
