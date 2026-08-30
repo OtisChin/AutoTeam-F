@@ -131,18 +131,17 @@ OPENAI_EMAIL_OTP_MAX_RESENDS=1
 
 ## 协议注册安全默认值
 
-- `PROTOCOL_REGISTER_ENGINE=python` 仍是默认引擎；Go daemon 在本阶段硬编码
-  `protocol_ready=false`，不会向上游发送注册请求。
+- 注册方式由请求中的单值模式决定：`protocol` 始终进入 Python 实现，
+  `go_protocol` 始终进入独立 Go daemon；两条链路不会通过环境变量互相切换。
 - `OPENAI_HTTP_IMPERSONATE=chrome136` 在一次 Python 尝试开始时读取一次；TLS
   错误按网络失败处理，不会在尝试内轮换 profile 或替换 cookie jar。
 - HTTP transport 只对普通 `GET/HEAD/OPTIONS` 使用安全重试；OTP send 这类以
   GET 表达的 mutation 使用专用零重试 adapter，所有 POST mutation 均不自动重试。
-- Sentinel SDK 执行不可用时默认 fail-closed；synthetic fallback 仅保留显式
-  legacy 兼容开关，失败后不会继续发送注册 mutation。
+- Python 与 Go Sentinel SDK 执行不可用时都 fail-closed；Go 实现不生成
+  synthetic token，requirements/challenge/solve 任一阶段失败后停止本次尝试。
 - 邮箱 OTP 预算为一次初始请求、默认一次 resend，并默认最多校验两个不同新码。
-- Go 到 Python 的自动 fallback 只允许发生在 daemon 启动或健康检查失败时；
-  `/v1/register` 请求发出后的 timeout、连接中断或无效响应属于 indeterminate，
-  必须停止当前尝试，不能通过 Python 重放。
+- Go daemon 启动失败、健康未就绪、请求 timeout、连接中断或无效响应都不会回退
+  Python 协议实现；`go_protocol` 的失败只结束当前 Go 尝试。
 
 ## Sentinel SDK 自动跟随
 
@@ -245,11 +244,10 @@ RECONCILE_KICK_GHOST=true
 
 ## Go protocol registration service
 
-`PROTOCOL_REGISTER_ENGINE=python` 保持 Python 参考链路。设置为 `go` 会先检查
-本机 `protocol-registerd`，但本阶段 daemon 将 `protocol_ready=false` 硬编码在
-生产配置中，因此 `/v1/register` 会在解析请求和调用引擎前返回
-`service_not_ready`，不会接触上游。启用 startup-only fallback 时会回到 Python；
-禁用 fallback 时会返回明确的 unavailable 错误。
+在注册页选择“Go 协议注册”后，请求会被规范化为 `register_mode=go_protocol`。
+Python 只负责创建邮箱、调用本地 daemon 和持久化结果；认证状态机、每次尝试的
+浏览器指纹、HTTP/TLS client、Sentinel 运行时和认证阶段并发限制都由 Go 进程持有。
+`register_mode=protocol` 始终保留现有 Python 实现，两种模式互不回退。
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -258,10 +256,80 @@ RECONCILE_KICK_GHOST=true
 | `GO_PROTOCOL_REGISTER_BIN` | `bin/protocol-registerd.exe` | Windows binary path |
 | `GO_PROTOCOL_MAX_CONCURRENCY` | `20` | Daemon 总 admission 上限，包含等待邮箱 OTP 的尝试 |
 | `GO_PROTOCOL_AUTH_CONCURRENCY` | `3` | 上游认证阶段的保守并发上限 |
-| `GO_PROTOCOL_FALLBACK_PYTHON` | `1` | 仅 daemon 启动/健康检查失败时允许 Python fallback |
-| `GO_PROTOCOL_TRACE` | `0` | Include non-secret trace events |
-| `GO_PROTOCOL_IMPERSONATE` | `go-http` | 仅保留请求兼容性；标准 Go transport 会忽略传入值，并始终如实标识为 `go-http` |
+| `GO_PROTOCOL_FINGERPRINT_POOL` | `chrome144,chrome146,chrome150` | 唯一支持的 Go 指纹池；重复项去重，未知项使 readiness fail-closed |
+| `GO_PROTOCOL_TRACE` | `0` | 在响应中包含不含密钥的阶段事件 |
+| `GO_PROTOCOL_SENTINEL_SDK_URL` | empty | 临时固定官方 `https://sentinel.openai.com/sentinel/<version>/sdk.js` |
+| `GO_PROTOCOL_SENTINEL_SDK_VERSION` | empty | 临时固定官方 SDK 版本 |
+| `GO_PROTOCOL_SENTINEL_CACHE_DIR` | OS user cache | SDK source、latest 和 last-good 记录目录 |
+| `GO_PROTOCOL_SENTINEL_SDK_TTL_SECONDS` | `21600` | 官方 frame 发现缓存 TTL；`0` 表示每次刷新 |
+| `GO_PROTOCOL_SENTINEL_HTTP_TIMEOUT_SECONDS` | `10` | 单次 Sentinel 发现、下载和 challenge HTTP timeout |
+| `GO_PROTOCOL_SENTINEL_VM_TIMEOUT_SECONDS` | `45` | 单次隔离 Goja VM 的执行 timeout |
 
-Go register 调用一旦开始，客户端会把后续网络 timeout、连接中断和无效 JSON
-响应标记为 `indeterminate` 并直接返回错误。即使
-`GO_PROTOCOL_FALLBACK_PYTHON=1`，这些错误也不会触发 Python 注册。
+直接启动 daemon 时可用 `GO_PROTOCOL_REGISTER_ADDR` 覆盖默认监听地址
+`127.0.0.1:18787`。`PROTOCOL_REGISTER_ENGINE`、
+`GO_PROTOCOL_FALLBACK_PYTHON` 和 `GO_PROTOCOL_IMPERSONATE` 是已忽略的旧名称，
+不会改变模式分派、fallback 或指纹池。Go 请求一旦失败，Python 不会重放同一注册。
+
+### 指纹与并发
+
+daemon 只接受 `chrome144`、`chrome146` 和 `chrome150`。每个显式 Go 尝试开始时
+使用 `crypto/rand` 从池中选择一次，并在该尝试的 CSRF、authorize、Sentinel、
+OTP verify 和 session exchange 全链路固定同一个 TLS/HTTP2 profile、UA 与 client
+hints。邮箱验证码 API 使用独立标准 client，不共享 OpenAI cookie jar。
+
+`GO_PROTOCOL_MAX_CONCURRENCY` 限制 daemon 中所有在途注册；
+`GO_PROTOCOL_AUTH_CONCURRENCY` 只限制上游认证阶段。等待邮箱 OTP 时会释放认证
+容量，因此不会把慢邮箱轮询变成全局串行瓶颈。
+
+### Sentinel 自动发现与 readiness
+
+daemon 启动时解析指纹池，构建 Resolver、Compiler、Goja Runtime 和 Provider，
+然后用池中一个 profile 执行有界的 requirements-only `DryRun`。该检查只读取官方
+frame 和 SDK，不调用 `/backend-api/sentinel/req`，也不发送邮箱、OTP 或注册请求。
+无论检查结果如何，HTTP server 都会启动；未就绪时 `/v1/register` 在调用引擎前
+返回 HTTP 503 `service_not_ready`。
+
+SDK 候选顺序为当前发现/显式版本、最近一次完整验证成功的 last-good、内置版本
+`20260219f9f6`。只有 requirements、challenge、solve 和最终 token 校验全部成功后
+才更新 last-good。编译结果按版本与 source hash 缓存，同版本并发编译会合并；
+每个动作仍创建独立、可中断的 Goja VM。实现不启动 Python、Node 或外部 JavaScript
+进程，也不构造 synthetic token。
+
+`GET /healthz` 在进程运行时始终返回 HTTP 200，并包含：
+
+| Field | Meaning |
+|---|---|
+| `ok` | HTTP 进程可响应 |
+| `protocol_ready` | 指纹池与 Sentinel 是否同时可用于新注册 |
+| `fingerprint_pool` | 已解析、去重后的 profile 名称 |
+| `sentinel_ready` | 最近有效 Sentinel 状态 |
+| `sentinel_sdk_version` | 当前可执行 SDK 版本；未就绪时为空 |
+| `ready_reason` | 空或稳定原因：`fingerprint_pool_invalid`、`sentinel_not_checked`、`sentinel_sdk_resolution_failed`、`sentinel_sdk_compile_failed`、`sentinel_requirements_failed`、`sentinel_unavailable` |
+| `max_concurrency` / `auth_concurrency` / `inflight` | admission 配置与当前在途数 |
+| `service` / `version` | daemon 标识 |
+
+未知上游错误不会直接进入健康响应或日志，而会归一化为
+`sentinel_unavailable`。健康端点每次请求都读取 Provider 的当前状态；后续 DryRun
+或完整 token 周期重新验证可执行候选后，快照会反映新的 readiness。
+
+### 构建与只读在线检查
+
+Go module 的基线是精确 `Go 1.24.1`。TLS profile 依赖固定为
+`github.com/bogdanfinn/tls-client v1.15.2-0.20260702071810-b790a311273f`
+（commit `b790a311273f`），Goja 固定为
+`github.com/dop251/goja v0.0.0-20260603125802-cfe4039cb6d7`。
+
+```powershell
+cd go/protocol-register
+go build -o ../../bin/protocol-registerd.exe ./cmd/protocol-registerd
+go test ./...
+```
+
+默认测试完全离线。显式设置 `GO_PROTOCOL_SENTINEL_ONLINE_SMOKE=1` 后可运行只读
+在线检查；它只获取官方 frame/SDK 并执行 `DryRun`：
+
+```powershell
+$env:GO_PROTOCOL_SENTINEL_ONLINE_SMOKE='1'
+go test ./internal/sentinel -run '^TestOfficialSDKRequirementsOnlineSmoke$' -v
+Remove-Item Env:GO_PROTOCOL_SENTINEL_ONLINE_SMOKE
+```

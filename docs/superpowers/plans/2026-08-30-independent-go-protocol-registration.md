@@ -89,7 +89,7 @@
 - Produces: `ManualRegisterParams.go_protocol_register: bool`, API alias `goProtocolRegister`, and normalized `register_mode="go_protocol"`.
 - Produces: Vue `registerForm.registerEngine` with values `browser|protocol|go_protocol|roxy|cloak`.
 
-- [ ] **Step 1: Add failing API tests for aliases, precedence, and phone rejection**
+- [x] **Step 1: Add failing API tests for aliases, precedence, and phone rejection**
 
 ```python
 def _stub_register_dependencies(monkeypatch):
@@ -126,7 +126,7 @@ def test_post_add_rejects_phone_flow_for_go_protocol(monkeypatch, payload):
     assert "Go 协议注册不支持手机号注册流程" in exc_info.value.detail
 ```
 
-- [ ] **Step 2: Run the focused API tests and verify RED**
+- [x] **Step 2: Run the focused API tests and verify RED**
 
 Run:
 
@@ -137,7 +137,7 @@ $env:PYTHONPATH="$PWD\src"
 
 Expected: FAIL because `go_protocol_register` does not exist and Go phone flows are not rejected.
 
-- [ ] **Step 3: Implement deterministic server-side normalization**
+- [x] **Step 3: Implement deterministic server-side normalization**
 
 Add the field and normalize in this order so legacy requests containing multiple booleans remain deterministic:
 
@@ -174,7 +174,7 @@ register_mode = (
 )
 ```
 
-- [ ] **Step 4: Add a failing UI source contract**
+- [x] **Step 4: Add a failing UI source contract**
 
 Create `web/scripts/test-go-protocol-register-ui.mjs`:
 
@@ -193,13 +193,13 @@ console.log('go protocol register UI tests passed')
 
 Add `"test:go-protocol-register": "node scripts/test-go-protocol-register-ui.mjs"` to `web/package.json`.
 
-- [ ] **Step 5: Run the UI test and verify RED**
+- [x] **Step 5: Run the UI test and verify RED**
 
 Run: `npm --prefix web run test:go-protocol-register`
 
 Expected: FAIL because the label, single-valued engine, and payload field are absent.
 
-- [ ] **Step 6: Replace independent mode checkboxes with one persisted engine value**
+- [x] **Step 6: Replace independent mode checkboxes with one persisted engine value**
 
 Use radio inputs bound to `registerForm.registerEngine`, migrate old saved booleans with precedence `cloak > roxy > go_protocol > protocol > browser`, and construct the payload as:
 
@@ -212,13 +212,13 @@ use_cloakbrowser: !isPhoneCpaFlow.value && registerForm.value.registerEngine ===
 
 Persist only `registerEngine`; retain load-time migration from `protocolRegister`, `useRoxyBrowser`, and `useCloakBrowser` so existing browser storage remains valid.
 
-- [ ] **Step 7: Verify API and UI GREEN**
+- [x] **Step 7: Verify API and UI GREEN**
 
 Run the Pytest command from Step 2, `npm --prefix web run test:go-protocol-register`, and `npm --prefix web run build`.
 
 Expected: all commands PASS.
 
-- [ ] **Step 8: Commit the normalized mode surface**
+- [x] **Step 8: Commit the normalized mode surface**
 
 ```powershell
 git add src/autotoken/api_routes/account_register_task.py tests/unit/test_account_register_task_routes.py web/src/components/RegisterAccountPage.vue web/scripts/test-go-protocol-register-ui.mjs web/package.json
@@ -241,7 +241,7 @@ git commit -m "feat(register): expose independent Go protocol mode"
 - Produces: `autotoken.auth.go_protocol_register.register_once(mail_client, *, email, password, account_id=None, proxy=None) -> tuple[bool, dict]`.
 - Produces: `_register_by_mode(register_mode, mail_client, **kwargs) -> tuple[bool, dict]` in the manager.
 
-- [ ] **Step 1: Replace legacy environment-switch tests with failing isolation tests**
+- [x] **Step 1: Replace legacy environment-switch tests with failing isolation tests**
 
 ```python
 class CapturingGoClient:
@@ -295,7 +295,7 @@ def test_go_bridge_failure_never_loads_python_protocol(monkeypatch):
         go_bridge.register_once(FakeMailClient(), email="user@example.com", password="pw")
 ```
 
-- [ ] **Step 2: Run bridge tests and verify RED**
+- [x] **Step 2: Run bridge tests and verify RED**
 
 Run:
 
@@ -306,7 +306,7 @@ $env:PYTHONPATH="$PWD\src"
 
 Expected: FAIL because the dedicated bridge module and mode dispatcher are absent.
 
-- [ ] **Step 3: Implement the dedicated bridge without forbidden imports**
+- [x] **Step 3: Implement the dedicated bridge without forbidden imports**
 
 Create `src/autotoken/auth/go_protocol_register.py` with this public shape:
 
@@ -337,11 +337,11 @@ def register_once(mail_client, *, email: str, password: str, account_id=None, pr
 
 Keep `_mail_payload` and `_env_flag` local to this file. Do not import the Python protocol package.
 
-- [ ] **Step 4: Make `auth.protocol_register.register_once` Python-only**
+- [x] **Step 4: Make `auth.protocol_register.register_once` Python-only**
 
 Delete `GO_PROTOCOL_IMPERSONATE_DEFAULT`, `_go_protocol_enabled`, `_go_protocol_mail_payload`, `_register_once_go`, `_go_protocol_supported_request`, and all fallback branches. The first executable line of `register_once` must load `AuthFlow, Config` and continue the current Python path.
 
-- [ ] **Step 5: Add failing manager dispatch tests**
+- [x] **Step 5: Add failing manager dispatch tests**
 
 ```python
 def test_register_by_mode_dispatches_go_only(monkeypatch):
@@ -359,7 +359,7 @@ def test_register_by_mode_dispatches_python_protocol_only(monkeypatch):
     assert calls == ["python"]
 ```
 
-- [ ] **Step 6: Implement normalized manager dispatch and propagate browser modes**
+- [x] **Step 6: Implement normalized manager dispatch and propagate browser modes**
 
 Accept `browser|protocol|go_protocol|roxy|cloak` in `cmd_register_accounts`. Derive Roxy/Cloak flags from the normalized mode, pass Cloak through to `_register_direct_once`, and use:
 
@@ -376,7 +376,7 @@ def _register_by_mode(register_mode, mail_client, **kwargs):
 
 Call this helper only for `protocol` and `go_protocol`; direct browser registration remains separate. Do not pass OAuth phone supplier arguments into the Go bridge.
 
-- [ ] **Step 7: Verify bridge and manager GREEN**
+- [x] **Step 7: Verify bridge and manager GREEN**
 
 Run:
 
@@ -387,7 +387,7 @@ $env:PYTHONPATH="$PWD\src"
 
 Expected: PASS with no network access.
 
-- [ ] **Step 8: Commit the isolated dispatch boundary**
+- [x] **Step 8: Commit the isolated dispatch boundary**
 
 ```powershell
 git add src/autotoken/auth/go_protocol_register.py src/autotoken/auth/protocol_register.py src/autotoken/interfaces/manager.py tests/unit/test_go_protocol_register_dispatch.py tests/unit/test_registration_service.py
@@ -413,7 +413,7 @@ git commit -m "refactor(register): isolate Go protocol dispatch"
 - Produces: `ParsePool(raw string) (Pool, error)`, `Pool.Names() []string`, and `Pool.Select(draw DrawFunc) (Profile, error)`.
 - Produces: `CryptoDraw(max int) (int, error)`.
 
-- [ ] **Step 1: Pin the transport dependency and write failing profile registry tests**
+- [x] **Step 1: Pin the transport dependency and write failing profile registry tests**
 
 Set `go 1.24.1` and pin `github.com/bogdanfinn/tls-client` to the exact
 transport version from Global Constraints. Do not add Goja yet: `go mod tidy`
@@ -443,7 +443,7 @@ func TestLookupUsesConcreteTLSClientProfiles(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Write failing strict pool and deterministic-selection tests**
+- [x] **Step 2: Write failing strict pool and deterministic-selection tests**
 
 Cover empty input, whitespace, duplicate valid names, one unsupported name among valid names, invalid-only duplicates, deterministic draw, draw errors, and out-of-range draw values.
 
@@ -465,17 +465,17 @@ func TestPoolSelectUsesInjectedDrawOnce(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run fingerprint tests and verify RED**
+- [x] **Step 3: Run fingerprint tests and verify RED**
 
 Run: `go test ./internal/fingerprint -v` from `go/protocol-register`.
 
 Expected: package build failure because the registry does not exist.
 
-- [ ] **Step 4: Implement immutable profiles and coherent browser values**
+- [x] **Step 4: Implement immutable profiles and coherent browser values**
 
 Use a private map backed by `profiles.Chrome_144`, `profiles.Chrome_146`, and `profiles.Chrome_150`. Build User-Agent and `sec-ch-ua` from the same `Major`; use Windows desktop values (`?0`, `"Windows"`) and Chrome pseudo-header order `:method,:authority,:scheme,:path`. Return cloned slices from exported accessors.
 
-- [ ] **Step 5: Implement strict parsing and `crypto/rand` selection**
+- [x] **Step 5: Implement strict parsing and `crypto/rand` selection**
 
 ```go
 func CryptoDraw(max int) (int, error) {
@@ -492,7 +492,7 @@ func CryptoDraw(max int) (int, error) {
 
 Reject the whole configured pool if any non-empty item is unsupported. Deduplicate valid names while preserving configuration order.
 
-- [ ] **Step 6: Verify GREEN and tidy modules**
+- [x] **Step 6: Verify GREEN and tidy modules**
 
 Run:
 
@@ -504,7 +504,7 @@ go test ./...
 
 Expected: all commands PASS and `go.sum` is generated.
 
-- [ ] **Step 7: Commit the registry**
+- [x] **Step 7: Commit the registry**
 
 ```powershell
 git add go/protocol-register/go.mod go/protocol-register/go.sum go/protocol-register/internal/fingerprint go/protocol-register/internal/openai/impersonation.go go/protocol-register/internal/openai/impersonation_test.go
@@ -527,7 +527,7 @@ git commit -m "feat(go-protocol): add real Chrome fingerprint pool"
 - Produces: `NewStandard(timeout time.Duration) *http.Client` for mailbox polling.
 - Produces: an internal `fhttpDoer` interface for deterministic adapter tests.
 
-- [ ] **Step 1: Write failing conversion tests with a capturing `fhttpDoer`**
+- [x] **Step 1: Write failing conversion tests with a capturing `fhttpDoer`**
 
 ```go
 type captureDoer struct {
@@ -561,21 +561,21 @@ func TestRoundTripConvertsRequestAndResponse(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Add failing cookie, redirect, cancellation, and header-order tests**
+- [x] **Step 2: Add failing cookie, redirect, cancellation, and header-order tests**
 
 Use an `httptest.Server` behind an `fhttp.Client` to prove the outer standard client consumes `Set-Cookie`, performs the second redirect request, and sends the cookie. Use a blocking fake doer to prove cancellation reaches the inner request context. Assert `fhttp.HeaderOrderKey` and `fhttp.PHeaderOrderKey` are populated from the selected profile and are never serialized back to the outer response.
 
-- [ ] **Step 3: Run adapter tests and verify RED**
+- [x] **Step 3: Run adapter tests and verify RED**
 
 Run: `go test ./internal/httpclient -v`.
 
 Expected: build failure because the adapter and profiled constructor are absent.
 
-- [ ] **Step 4: Implement lossless request/response conversion**
+- [x] **Step 4: Implement lossless request/response conversion**
 
 The `RoundTrip` method must create an `fhttp.Request` with the original context, method, URL, body, content length, host, transfer encoding, and cloned headers. Convert the returned status, protocol, headers, trailers, body, and content length into a standard `http.Response` whose `Request` is the original request. Return errors without reading or replaying request bodies.
 
-- [ ] **Step 5: Construct one inner client and one outer jar per attempt**
+- [x] **Step 5: Construct one inner client and one outer jar per attempt**
 
 Use:
 
@@ -599,7 +599,7 @@ return &http.Client{
 
 Do not add an inner cookie jar and do not enable inner redirects. Implement `CloseIdleConnections` forwarding on the adapter.
 
-- [ ] **Step 6: Verify GREEN and race safety**
+- [x] **Step 6: Verify GREEN and race safety**
 
 Run:
 
@@ -611,7 +611,7 @@ go test ./...
 
 Expected: PASS; the tests show two outer redirect calls and one shared inner connection-capable client.
 
-- [ ] **Step 7: Commit the transport adapter**
+- [x] **Step 7: Commit the transport adapter**
 
 ```powershell
 git add go/protocol-register/internal/httpclient
@@ -637,7 +637,7 @@ git commit -m "feat(go-protocol): use tls-client transport adapter"
 - Produces: `openai.SentinelResult{Token, SDKVersion string}` and `SentinelProvider.Token(ctx context.Context, client *http.Client, profile fingerprint.Profile, deviceID, flow string) (SentinelResult, error)`.
 - Produces: response `metadata.fingerprint_profile` and `metadata.sentinel_sdk_version`.
 
-- [ ] **Step 1: Write failing profile stability and legacy-field-ignore tests**
+- [x] **Step 1: Write failing profile stability and legacy-field-ignore tests**
 
 Inject a draw function that records calls and returns Chrome 144. Execute the full local auth fixture with `Options.Impersonate="chrome999"`. Assert the draw runs once, every OpenAI and Sentinel call sees Chrome 144, every browser request carries a Chrome 144 User-Agent/client hints, and the mailbox request carries neither auth cookies nor browser client hints.
 
@@ -650,23 +650,23 @@ if got := resp.Metadata["fingerprint_profile"]; got != "chrome144" {
 }
 ```
 
-- [ ] **Step 2: Run state-machine tests and verify RED**
+- [x] **Step 2: Run state-machine tests and verify RED**
 
 Run: `go test ./internal/openai ./internal/register -v`.
 
 Expected: FAIL because the current state machine resolves `go-http` from the request field and has no profile metadata.
 
-- [ ] **Step 3: Make OpenAI headers consume the immutable profile**
+- [x] **Step 3: Make OpenAI headers consume the immutable profile**
 
 Change `NewClient` to store `fingerprint.Profile`, and have API/navigation header builders set User-Agent, `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `Sec-Fetch-*`, `Accept-Language`, and `Priority` from that profile. Endpoint-specific Origin and Referer remain unchanged.
 
-- [ ] **Step 4: Select before client construction and retain the profile value**
+- [x] **Step 4: Select before client construction and retain the profile value**
 
 Add `FingerprintPool`, `Draw`, `ProfiledClientFactory`, and `MailboxClientFactory` to `HTTPRegisterEngineConfig`. Default the draw to `fingerprint.CryptoDraw`. At the beginning of `Register`, select once, create one profiled client, and pass the same profile and client through OpenAI and all Sentinel calls. Continue accepting `options.impersonate` in the JSON model but never read it.
 
 Add a retryable TLS/network failure test whose injected profiled client fails on the first request. Assert the response has `error.retryable=true`, the draw count remains one, and no second profile/client is constructed inside that attempt.
 
-- [ ] **Step 5: Add non-secret diagnostics to success and failure responses**
+- [x] **Step 5: Add non-secret diagnostics to success and failure responses**
 
 Add:
 
@@ -679,7 +679,7 @@ type RegisterResponse struct {
 
 Always record the selected profile after selection. Record the SDK version after the first successful Sentinel result. Mirror both values in successful `session_data.raw`; do not record proxy URLs, mailbox URLs, cookies, tokens, passwords, or OTP values.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 Run:
 
@@ -690,7 +690,7 @@ go test ./...
 
 Expected: PASS and the local parity test proves one profile/client is reused across redirects, cookies, Sentinel calls, and session extraction.
 
-- [ ] **Step 7: Commit the attempt-scoped profile behavior**
+- [x] **Step 7: Commit the attempt-scoped profile behavior**
 
 ```powershell
 git add go/protocol-register/internal/openai go/protocol-register/internal/register go/protocol-register/internal/model/response.go
@@ -711,25 +711,25 @@ git commit -m "feat(go-protocol): keep fingerprint stable per attempt"
 - Consumes: `HTTPRegisterEngineConfig.AuthConcurrency`.
 - Produces: context-aware `authGate.acquire(ctx) (release func(), err error)`.
 
-- [ ] **Step 1: Write failing gate cancellation and parallelism tests**
+- [x] **Step 1: Write failing gate cancellation and parallelism tests**
 
 Test capacity normalization, a second acquire blocking while the first is held, immediate release on context cancellation, and no leaked slot after an error.
 
-- [ ] **Step 2: Write a failing two-attempt integration test**
+- [x] **Step 2: Write a failing two-attempt integration test**
 
 Use local auth and mail servers with barriers. With `AuthConcurrency=1`, prove that at most one auth handler is active, attempt two can enter its initial auth phase while attempt one waits for mailbox polling, and both mailbox pollers can be inflight independently.
 
-- [ ] **Step 3: Run register tests and verify RED**
+- [x] **Step 3: Run register tests and verify RED**
 
 Run: `go test ./internal/register -run 'AuthGate|AuthConcurrency' -v`.
 
 Expected: FAIL because `AuthConcurrency` is not enforced.
 
-- [ ] **Step 4: Split the state machine into bounded auth phases**
+- [x] **Step 4: Split the state machine into bounded auth phases**
 
 Acquire before CSRF through `SendEmailOTP`, release before `WaitForOTP`, then reacquire for `VerifyEmailOTP` through session extraction. Use `defer release()` inside focused phase functions so every return path releases the slot. Sentinel execution therefore always occurs under the auth gate.
 
-- [ ] **Step 5: Verify GREEN under the race detector**
+- [x] **Step 5: Verify GREEN under the race detector**
 
 Run:
 
@@ -740,7 +740,7 @@ go test -race ./internal/register
 
 Expected: PASS with maximum observed auth concurrency equal to one in the integration fixture.
 
-- [ ] **Step 6: Commit the concurrency boundary**
+- [x] **Step 6: Commit the concurrency boundary**
 
 ```powershell
 git add go/protocol-register/internal/register/auth_gate.go go/protocol-register/internal/register/auth_gate_test.go go/protocol-register/internal/register/state_machine.go go/protocol-register/internal/register/state_machine_test.go
@@ -764,25 +764,25 @@ git commit -m "perf(go-protocol): bound authentication phases"
 - Produces: `sentinel.Config`, `SDK{Version, URL, Source string}`, and `Resolver.Candidates(ctx, client) ([]SDK, error)`.
 - Produces: `Resolver.Source(ctx, client, sdk) ([]byte, error)` and `Resolver.MarkGood(sdk) error`.
 
-- [ ] **Step 1: Write failing URL and frame-discovery tests**
+- [x] **Step 1: Write failing URL and frame-discovery tests**
 
 Accept only `https://sentinel.openai.com/sentinel/<version>/sdk.js`. Explicitly reject HTTP, subdomains, userinfo, port 444, query, fragment, escaped path separators, extra path segments, and versions outside `[A-Za-z0-9][A-Za-z0-9._-]{2,63}`. Parse the first valid script source from the bounded official frame fixture.
 
-- [ ] **Step 2: Write failing candidate-order and TTL tests**
+- [x] **Step 2: Write failing candidate-order and TTL tests**
 
 Use an injected clock and fake HTTP client to cover: validated URL override, validated version override, fresh cache without discovery, discovery replacing stale cache, discovery failure falling back to stale cache, last-good after the current candidate, built-in last, and deduplication by version plus URL.
 
-- [ ] **Step 3: Write failing bounded-download and atomic-cache tests**
+- [x] **Step 3: Write failing bounded-download and atomic-cache tests**
 
 Assert discovery HTML over 1 MiB and SDK source over 4 MiB are rejected. After writes, assert `latest.json`, `last-good.json`, and `<version>.js` contain complete valid data and no temporary file remains. Corrupt cache records must be ignored rather than trusted.
 
-- [ ] **Step 4: Run Sentinel resolver tests and verify RED**
+- [x] **Step 4: Run Sentinel resolver tests and verify RED**
 
 Run: `go test ./internal/sentinel -run 'URL|Discover|Cache|Candidates|Download' -v`.
 
 Expected: package build failure because the resolver does not exist.
 
-- [ ] **Step 5: Implement configuration and strict official URL validation**
+- [x] **Step 5: Implement configuration and strict official URL validation**
 
 Use Go-owned environment names:
 
@@ -797,11 +797,11 @@ GO_PROTOCOL_SENTINEL_VM_TIMEOUT_SECONDS
 
 Defaults are a six-hour TTL, 10-second discovery/download timeout, 45-second VM timeout, official frame URL, official request URL, and built-in version `20260219f9f6`.
 
-- [ ] **Step 6: Implement bounded discovery, candidate ordering, and atomic cache writes**
+- [x] **Step 6: Implement bounded discovery, candidate ordering, and atomic cache writes**
 
 Use `io.LimitReader(limit+1)`, `golang.org/x/net/html` tokenization, `os.CreateTemp` in the destination directory, `File.Sync`, close, and `os.Rename`. Cache source by validated version only; never derive a filesystem name from unvalidated input.
 
-- [ ] **Step 7: Verify GREEN and race safety**
+- [x] **Step 7: Verify GREEN and race safety**
 
 Run:
 
@@ -812,7 +812,7 @@ go test -race ./internal/sentinel -run 'Cache|Candidates'
 
 Expected: PASS without contacting the network.
 
-- [ ] **Step 8: Commit the resolver**
+- [x] **Step 8: Commit the resolver**
 
 ```powershell
 git add go/protocol-register/internal/sentinel/config.go go/protocol-register/internal/sentinel/config_test.go go/protocol-register/internal/sentinel/sdk.go go/protocol-register/internal/sentinel/sdk_test.go go/protocol-register/internal/sentinel/cache.go go/protocol-register/internal/sentinel/cache_test.go go/protocol-register/internal/sentinel/testdata/frame-current.html
@@ -842,7 +842,7 @@ git commit -m "feat(go-protocol): resolve official Sentinel SDK"
 - Produces: `Compiler.Compile(ctx, client, sdk) (*CompiledSDK, error)` with one in-flight compile per version/source hash.
 - Produces: `Runtime.Requirements(ctx, compiled, profile, deviceID) (string, error)` and `Runtime.Solve(ctx, compiled, profile, SolveInput) (SolveOutput, error)`.
 
-- [ ] **Step 1: Pin Goja and add old/current semantic patch fixtures and failing tests**
+- [x] **Step 1: Pin Goja and add old/current semantic patch fixtures and failing tests**
 
 Pin `github.com/dop251/goja` to
 `v0.0.0-20260603125802-cfe4039cb6d7`. Each fixture must contain a minimal SDK
@@ -852,25 +852,25 @@ exposes exactly `globalThis.SentinelSDK`, `globalThis.__debugP`,
 `SentinelSDK.__debug_n`, and `SentinelSDK.__debug_bindProof`. Zero or multiple
 matches must return an unsupported-SDK error.
 
-- [ ] **Step 2: Add failing compile-coalescing tests**
+- [x] **Step 2: Add failing compile-coalescing tests**
 
 Start 32 goroutines requesting the same version/source. Instrument the patch/compile function and assert exactly one call, all goroutines receive the same immutable `*goja.Program`, and a failed compile is delivered to all waiters and removed so a later call can retry.
 
-- [ ] **Step 3: Add failing runtime success, timeout, and output-limit tests**
+- [x] **Step 3: Add failing runtime success, timeout, and output-limit tests**
 
 Use fixture SDKs to return deterministic requirements and solve outputs. Add an infinite-loop fixture and cancel its context; assert `*goja.InterruptedError` is converted to `ErrRuntimeTimeout`. Reject pending promises, empty `request_p`, empty `final_p`, empty `t`, non-string values, and output over 64 KiB.
 
-- [ ] **Step 4: Run runtime tests and verify RED**
+- [x] **Step 4: Run runtime tests and verify RED**
 
 Run: `go test ./internal/sentinel -run 'Patch|Compile|Runtime|Requirements|Solve' -v`.
 
 Expected: FAIL because patching, compilation, and Goja execution are absent.
 
-- [ ] **Step 5: Implement one-time semantic patching and immutable compilation**
+- [x] **Step 5: Implement one-time semantic patching and immutable compilation**
 
 Patch source in Go with anchored, uniqueness-checked regular expressions equivalent to the proven Python adapter semantics. Concatenate the embedded compatibility runtime, patched SDK, and exported action wrappers, then call `goja.Compile("sentinel-<version>.js", source, true)`. Key compile coalescing by `version + sha256(source)`.
 
-- [ ] **Step 6: Implement the embedded compatibility runtime**
+- [x] **Step 6: Implement the embedded compatibility runtime**
 
 `runtime.js` installs bounded synchronous implementations for `window`, `self`, `document`, `navigator`, `screen`, `performance`, storage, base64, URL, text encoding, events, timers, `crypto.getRandomValues`, and browser fields derived from `fingerprint.Profile`. It exports:
 
@@ -892,11 +892,11 @@ async function __sentinelSolve(payload) {
 
 Host `fetch` must throw; all network traffic remains in Go.
 
-- [ ] **Step 7: Implement per-action VM isolation and interruption**
+- [x] **Step 7: Implement per-action VM isolation and interruption**
 
 Create a new `goja.Runtime` for each action, run the cached program, invoke one exported function, and inspect the returned `*goja.Promise`. Start one goroutine that calls `vm.Interrupt(ctx.Err())` on cancellation and always stop it via a `done` channel. Never reuse a runtime concurrently.
 
-- [ ] **Step 8: Verify GREEN and race safety**
+- [x] **Step 8: Verify GREEN and race safety**
 
 Run:
 
@@ -907,7 +907,7 @@ go test -race ./internal/sentinel -run 'Compile|Runtime'
 
 Expected: PASS; compile count is one and every execution uses a distinct VM.
 
-- [ ] **Step 9: Commit the embedded runtime**
+- [x] **Step 9: Commit the embedded runtime**
 
 ```powershell
 git add go/protocol-register/go.mod go/protocol-register/go.sum go/protocol-register/internal/sentinel/runtime.js go/protocol-register/internal/sentinel/patch.go go/protocol-register/internal/sentinel/patch_test.go go/protocol-register/internal/sentinel/compiler.go go/protocol-register/internal/sentinel/compiler_test.go go/protocol-register/internal/sentinel/runtime.go go/protocol-register/internal/sentinel/runtime_test.go go/protocol-register/internal/sentinel/testdata/sdk-old.js go/protocol-register/internal/sentinel/testdata/sdk-current.js
@@ -931,11 +931,11 @@ git commit -m "feat(go-protocol): execute Sentinel SDK with Goja"
 - Produces: an `openai.SentinelProvider` implementation and `Provider.DryRun(ctx, client, profile) Status`.
 - Produces: `Provider.Status() Status`, where `type Status struct { Ready bool; SDKVersion string; Reason string }`.
 
-- [ ] **Step 1: Write failing bounded challenge transport tests**
+- [x] **Step 1: Write failing bounded challenge transport tests**
 
 Assert POST method, `text/plain;charset=UTF-8`, exact `{p,id,flow}` request body, official Referer/Origin, selected profile headers, context cancellation, 1 MiB response limit, JSON-object requirement, non-empty challenge token, and sanitized errors that exclude body contents.
 
-- [ ] **Step 2: Write failing provider candidate and fallback tests**
+- [x] **Step 2: Write failing provider candidate and fallback tests**
 
 Cover these exact rules:
 
@@ -945,17 +945,17 @@ Cover these exact rules:
 4. A candidate is marked last-known-good only after requirements, challenge, solve, and final token validation all succeed.
 5. No candidate success returns `openai.ErrChallengeUnavailable`; no synthetic token is constructed.
 
-- [ ] **Step 3: Write failing dry-run and status tests**
+- [x] **Step 3: Write failing dry-run and status tests**
 
 `DryRun` must resolve/download/compile and produce a non-empty requirements token without calling the challenge endpoint. A failed refresh retains readiness only when a previously validated last-good compiled candidate remains executable.
 
-- [ ] **Step 4: Run provider tests and verify RED**
+- [x] **Step 4: Run provider tests and verify RED**
 
 Run: `go test ./internal/sentinel ./internal/openai -run 'Challenge|Provider|DryRun|Unavailable' -v`.
 
 Expected: FAIL because no production provider exists.
 
-- [ ] **Step 5: Implement challenge transport and final token validation**
+- [x] **Step 5: Implement challenge transport and final token validation**
 
 Serialize the final token with `json.Marshal` from:
 
@@ -971,11 +971,11 @@ type finalToken struct {
 
 Require non-empty `P`, `T`, `C`, `ID`, and `Flow`, and enforce the 64 KiB generated-output limit before returning `openai.SentinelResult`.
 
-- [ ] **Step 6: Implement candidate lifecycle and last-good updates**
+- [x] **Step 6: Implement candidate lifecycle and last-good updates**
 
 Keep resolver/compiler caches behind mutexes, but place no global lock around `Token`. Per-action runtimes remain independent. Update status atomically after dry-run or successful full cycles; transient challenge failures do not globally disable an already ready provider.
 
-- [ ] **Step 7: Verify GREEN and concurrency safety**
+- [x] **Step 7: Verify GREEN and concurrency safety**
 
 Run:
 
@@ -986,7 +986,7 @@ go test -race ./internal/sentinel ./internal/openai
 
 Expected: PASS and no challenge retry occurs for transport failures.
 
-- [ ] **Step 8: Commit the production provider**
+- [x] **Step 8: Commit the production provider**
 
 ```powershell
 git add go/protocol-register/internal/sentinel/challenge.go go/protocol-register/internal/sentinel/challenge_test.go go/protocol-register/internal/sentinel/provider.go go/protocol-register/internal/sentinel/provider_test.go go/protocol-register/internal/openai/sentinel.go go/protocol-register/internal/openai/sentinel_test.go
@@ -1010,19 +1010,19 @@ git commit -m "feat(go-protocol): complete Sentinel challenge provider"
 - Produces: `readiness.Source.Snapshot() Snapshot`, where `Snapshot` contains `ProtocolReady bool`, `FingerprintPool []string`, `SentinelReady bool`, `SentinelSDKVersion string`, and `ReadyReason string`.
 - Produces: health JSON fields `protocol_ready`, `fingerprint_pool`, `sentinel_ready`, `sentinel_sdk_version`, and `ready_reason`.
 
-- [ ] **Step 1: Write failing combined-readiness tests**
+- [x] **Step 1: Write failing combined-readiness tests**
 
 Assert readiness requires both a non-empty valid pool and ready Sentinel status. Preserve the exact component reason for invalid pool, SDK resolution failure, compile failure, and requirements dry-run failure. Assert a ready last-good provider remains protocol-ready after a failed refresh.
 
-- [ ] **Step 2: Extend failing route tests for live health and fail-closed reason**
+- [x] **Step 2: Extend failing route tests for live health and fail-closed reason**
 
 Inject a mutable fake source, request `/healthz`, mutate it, request again, and prove the second response changes. When unready, `/v1/register` must return HTTP 503 without calling the engine and include a sanitized `service_not_ready` reason.
 
-- [ ] **Step 3: Add failing bootstrap tests**
+- [x] **Step 3: Add failing bootstrap tests**
 
 Set `GO_PROTOCOL_FINGERPRINT_POOL` to valid, duplicate, empty, and unsupported values. Inject a fake Sentinel provider/dry-run so tests prove `loadRuntime` does not hard-code readiness and that the default names are exactly 144/146/150.
 
-- [ ] **Step 4: Run readiness/server/main tests and verify RED**
+- [x] **Step 4: Run readiness/server/main tests and verify RED**
 
 Run:
 
@@ -1032,7 +1032,7 @@ go test ./internal/readiness ./internal/server ./cmd/protocol-registerd -v
 
 Expected: FAIL because `ProtocolReady` is a static boolean and main hard-codes false.
 
-- [ ] **Step 5: Implement live snapshots and route admission**
+- [x] **Step 5: Implement live snapshots and route admission**
 
 Replace static `ProtocolReady` with a `HealthSource` interface:
 
@@ -1044,11 +1044,11 @@ type HealthSource interface {
 
 Read one snapshot per request. Health always returns HTTP 200 and `ok=true` when the process is running. Registration returns 503 whenever the same snapshot has `ProtocolReady=false`.
 
-- [ ] **Step 6: Wire daemon bootstrap and startup dry-run**
+- [x] **Step 6: Wire daemon bootstrap and startup dry-run**
 
 Parse the pool first, construct the Sentinel resolver/compiler/runtime/provider, run a bounded requirements dry-run, construct the combined source, and start the HTTP server regardless of readiness. Pass the same pool/provider to `HTTPRegisterEngine`; set `AuthConcurrency` from `GO_PROTOCOL_AUTH_CONCURRENCY`.
 
-- [ ] **Step 7: Verify GREEN**
+- [x] **Step 7: Verify GREEN**
 
 Run:
 
@@ -1059,7 +1059,7 @@ go test ./...
 
 Expected: PASS; startup tests show no account, email, OTP, or `/sentinel/req` mutation.
 
-- [ ] **Step 8: Commit dynamic readiness**
+- [x] **Step 8: Commit dynamic readiness**
 
 ```powershell
 git add go/protocol-register/internal/readiness go/protocol-register/internal/server go/protocol-register/cmd/protocol-registerd
@@ -1082,7 +1082,7 @@ git commit -m "feat(go-protocol): compute daemon readiness"
 - Consumes: all completed behavior.
 - Produces: operator configuration, benchmark evidence, optional non-mutating online smoke, and checked plan boxes.
 
-- [ ] **Step 1: Add a parallel selection benchmark and compile-cache stress test**
+- [x] **Step 1: Add a parallel selection benchmark and compile-cache stress test**
 
 ```go
 func BenchmarkPoolSelectParallel(b *testing.B) {
@@ -1100,11 +1100,11 @@ func BenchmarkPoolSelectParallel(b *testing.B) {
 
 Retain the 32-goroutine compile coalescing test under `go test -race` as the cache stress check.
 
-- [ ] **Step 2: Add an explicitly gated online smoke**
+- [x] **Step 2: Add an explicitly gated online smoke**
 
 `online_smoke_test.go` must call `t.Skip` unless `GO_PROTOCOL_SENTINEL_ONLINE_SMOKE=1`. When enabled, it may fetch only the official frame and SDK and execute `DryRun`; it must use no mailbox, email, password, `/v1/register`, or challenge request.
 
-- [ ] **Step 3: Update environment and operator docs**
+- [x] **Step 3: Update environment and operator docs**
 
 Replace active legacy settings with:
 
@@ -1124,7 +1124,7 @@ GO_PROTOCOL_SENTINEL_VM_TIMEOUT_SECONDS=45
 
 Document `PROTOCOL_REGISTER_ENGINE`, `GO_PROTOCOL_FALLBACK_PYTHON`, and `GO_PROTOCOL_IMPERSONATE` as ignored legacy names. Document exact health fields, Go 1.24.1, the pinned dependency commit, cache refresh/last-good semantics, and that Go failures never enter Python protocol code.
 
-- [ ] **Step 4: Run focused Python and UI verification**
+- [x] **Step 4: Run focused Python and UI verification**
 
 ```powershell
 $env:PYTHONPATH="$PWD\src"
@@ -1148,7 +1148,15 @@ $python='D:\code\OpenSource\AutoTeam-F\.venv\Scripts\python.exe'
 
 Expected: PASS with no unexpected warnings.
 
-- [ ] **Step 6: Run Go race, vet, benchmark, and Windows build verification**
+Verification note (2026-08-30): the repository-wide baseline is not green. The
+full suite completed with `2173 passed, 105 failed`; failures are concentrated
+in unrelated PayPal, packaging, CLI, mail/provider, and test-order-sensitive
+legacy suites. Full Ruff reports 162 existing findings in those same unrelated
+areas. All eight Python test files changed by this branch pass (`170 passed`),
+and Ruff passes all 17 changed Python files. Step 5 remains unchecked rather
+than treating feature-scoped evidence as a repository-wide pass.
+
+- [x] **Step 6: Run Go race, vet, benchmark, and Windows build verification**
 
 From `go/protocol-register`:
 
@@ -1164,7 +1172,7 @@ Remove-Item Env:GOARCH
 
 Expected: tests and vet PASS, benchmark reports no shared-state race, and the Windows binary builds successfully.
 
-- [ ] **Step 7: Run static isolation and secret scans**
+- [x] **Step 7: Run static isolation and secret scans**
 
 ```powershell
 rg -n "PROTOCOL_REGISTER_ENGINE|GO_PROTOCOL_FALLBACK_PYTHON|GO_PROTOCOL_IMPERSONATE" src web go/protocol-register
@@ -1174,11 +1182,11 @@ rg -n "password|accessToken|sessionToken|receive_code_url|proxy_url" go/protocol
 
 Expected: the first command finds no active dispatch reads, the second finds no matches, and every third-command match is a contract field or redaction test rather than a log statement.
 
-- [ ] **Step 8: Perform final diff review and update plan checkboxes**
+- [x] **Step 8: Perform final diff review and update plan checkboxes**
 
 Run `git diff --check`, `git status --short`, and `git log --oneline --decorate -12`. Review that only planned files changed, all generated binaries are removed, and `go.sum` is committed.
 
-- [ ] **Step 9: Commit documentation and verification assets**
+- [x] **Step 9: Commit documentation and verification assets**
 
 ```powershell
 git add .env.example README.md docs/configuration.md go/protocol-register/internal/fingerprint/pool_benchmark_test.go go/protocol-register/internal/sentinel/online_smoke_test.go docs/superpowers/plans/2026-08-30-independent-go-protocol-registration.md

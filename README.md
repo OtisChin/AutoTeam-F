@@ -33,7 +33,8 @@
 
 | | 功能 | 描述 |
 |---|---|---|
-| 📧 | **自动注册** | 临时邮箱（`cloudflare_temp_email` 或 `cloud-mail` 双后端可切换）+ Playwright 自动注册 |
+| 📧 | **自动注册** | 临时邮箱双后端 + Browser / Python 协议 / Go 协议 / Roxy / Cloak 五种独立模式 |
+| ⚡ | **独立 Go 协议注册** | Go 1.24.1 daemon、Chrome 144/146/150 指纹池、内嵌 Goja Sentinel runtime |
 | 🆓 | **独立注册** | 批量直接注册并按配置保存注册后认证；Team invite / leave_workspace 生产链路已禁用 |
 | 🔐 | **Codex OAuth** | 自动登录 Codex，Team / Personal 双模式 |
 | 🔑 | **手动 OAuth 导入** | localhost 自动回调，失败可手动粘贴 |
@@ -100,6 +101,31 @@ uv run autotoken rotate
 > ⚠️ 如果你之前用的是上游 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的 “cloudmail”，那其实对应的是现在这里的 `cloud-mail` provider。建议统一写成 `MAIL_PROVIDER=cloud-mail`，并使用 `CLOUD_MAIL_*` 配置。详见 [docs/configuration.md#mail-provider-切换](docs/configuration.md#mail-provider-切换)。
 >
 > 启动时会做轻量协议指纹嗅探，base_url 与 `MAIL_PROVIDER` 错配会**提前 warning**，避免出现"登录成功 → 创建邮箱 401"这种半成功假象（[issue #1](https://github.com/ZRainbow1275/AutoToken-F/issues/1)）。
+
+### Go 协议注册（可选）
+
+注册页的“Go 协议注册”是独立的 `go_protocol` 模式，不会进入 Python 协议实现，
+失败时也不会回退 Python。Python 仅创建邮箱并调用本机 `protocol-registerd`；Go
+daemon 持有每次尝试固定的 Chrome 144/146/150 TLS/HTTP2 profile、认证状态机和
+内嵌 Goja Sentinel SDK runtime。
+
+```powershell
+cd go/protocol-register
+go build -o ../../bin/protocol-registerd.exe ./cmd/protocol-registerd
+cd ../..
+```
+
+默认配置会在首次选择 Go 模式时自动启动 `bin/protocol-registerd.exe`。可先检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18787/healthz
+```
+
+只有 `protocol_ready=true` 才接收新注册；未就绪会在调用注册引擎前返回 503。
+默认指纹池严格为 `chrome144,chrome146,chrome150`，Sentinel SDK 从
+`sentinel.openai.com` 官方 frame 自动发现并使用缓存/last-good 回退。完整配置、
+健康字段、依赖版本和只读在线 smoke 见
+[配置说明 · Go protocol registration service](docs/configuration.md#go-protocol-registration-service)。
 
 ### Docker 部署
 
