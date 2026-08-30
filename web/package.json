@@ -11,6 +11,7 @@
     "test:frontend-bundle": "node scripts/test-frontend-bundle.mjs",
     "test:frontend-regressions": "node scripts/run-frontend-tests.mjs",
     "test:theme": "node scripts/theme-regression.mjs",
+    "test:ui-primitives": "node scripts/test-ui-primitives.mjs",
     "test:account-loading": "node scripts/test-account-loading-performance.mjs",
     "test:frontend": "npm run build && npm run test:frontend-regressions",
     "test:bind-link": "node scripts/test-bind-link-payload.mjs",

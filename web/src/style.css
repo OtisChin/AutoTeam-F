@@ -950,6 +950,9 @@ textarea:focus-visible,
 .ui-surface-inset { background: var(--surface-inset); }
 .ui-surface-padding-none { padding: 0; }.ui-surface-padding-sm { padding: .65rem; }.ui-surface-padding-md { padding: 1rem; }.ui-surface-padding-lg { padding: 1.35rem; }
 .ui-surface-header { margin: calc(-1 * 1rem) calc(-1 * 1rem) 1rem; border-bottom: 1px solid var(--surface-line); padding: .85rem 1rem; }.ui-surface-footer { margin: 1rem calc(-1 * 1rem) calc(-1 * 1rem); border-top: 1px solid var(--surface-line); padding: .85rem 1rem; }
+.ui-surface-padding-none > .ui-surface-header { margin: 0; }.ui-surface-padding-none > .ui-surface-footer { margin: 0; }
+.ui-surface-padding-sm > .ui-surface-header { margin: -.65rem -.65rem .65rem; padding: .65rem; }.ui-surface-padding-sm > .ui-surface-footer { margin: .65rem -.65rem -.65rem; padding: .65rem; }
+.ui-surface-padding-lg > .ui-surface-header { margin: -1.35rem -1.35rem 1.35rem; padding: 1rem 1.35rem; }.ui-surface-padding-lg > .ui-surface-footer { margin: 1.35rem -1.35rem -1.35rem; padding: 1rem 1.35rem; }
 .ui-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: .45rem; border: 1px solid transparent; border-radius: 10px; padding: 0 1rem; font-weight: 650; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform 150ms var(--ease-out); }
 .ui-button-sm { min-height: 44px; padding-inline: .75rem; font-size: .8rem; }.ui-button-md { font-size: .86rem; }
 .ui-button-primary { background: var(--accent-fill); color: var(--text-on-accent); }.ui-button-primary:hover:not(:disabled) { background: var(--accent-hover); }
