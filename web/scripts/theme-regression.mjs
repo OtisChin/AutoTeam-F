@@ -222,6 +222,7 @@ assert.match(segmentedSource, /aria-checked/)
 assert.match(segmentedSource, /ArrowDown/)
 assert.match(segmentedSource, /ArrowUp/)
 assert.match(segmentedSource, /defineExpose\(\{\s*focusSelected\s*\}\)/)
+assert.match(segmentedSource, /segmentedBehavior/)
 
 const sheetSource = readFileSync(
   new URL('../src/components/ui/UiSheet.vue', import.meta.url),
@@ -236,3 +237,4 @@ assert.match(sheetSource, /@keydown\.esc/)
 assert.match(sheetSource, /@after-leave="handleAfterLeave"/)
 assert.match(sheetSource, /wasOpen/)
 assert.match(sheetSource, /onBeforeUnmount/)
+assert.match(sheetSource, /sheetBehavior/)
