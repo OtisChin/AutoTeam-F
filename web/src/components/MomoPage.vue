@@ -1,16 +1,5 @@
 <template>
   <div class="space-y-5">
-    <WorkflowWorkspace title="MoMo 提链" eyebrow="支付 / Vietnam" description="按配置、启动、进度和结果组织业务操作" :status-label="workflowStatusPresentation(busy ? 'running' : 'success').label" :status-tone="workflowStatusPresentation(busy ? 'running' : 'success').tone">
-      <template #configuration>
-        <WorkflowStage name="configuration" title="配置" description="确认账号、代理和运行参数" state="idle">
-          <WorkflowStage name="launch" title="启动" description="提交后会保留当前任务状态" state="idle"><UiButton variant="primary">开始任务</UiButton></WorkflowStage>
-        </WorkflowStage>
-      </template>
-      <template #progress><WorkflowStage name="progress" title="进度" description="实时状态与可恢复任务" state="idle"><UiStatusBadge label="等待操作" tone="neutral" /></WorkflowStage></template>
-      <template #result><WorkflowStage name="result" title="结果" description="完成后查看链接、订单或错误" state="idle"><UiStatePanel state="empty" title="暂无结果" message="启动任务后结果会显示在这里。" /></WorkflowStage></template>
-      <template #resources><WorkflowStage name="resources" title="资源" description="账号池、链接和日志" state="idle"><UiStatusBadge label="资源列表由当前页面管理" tone="info" /></WorkflowStage></template>
-    </WorkflowWorkspace>
-
     <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
@@ -322,15 +311,6 @@
 </template>
 
 <script setup>
-import { paypalStatusPresentation as workflowStatusPresentation } from '../operationsPresentation.js'
-
-import WorkflowWorkspace from './workflow/WorkflowWorkspace.vue'
-import WorkflowStage from './workflow/WorkflowStage.vue'
-import UiButton from './ui/UiButton.vue'
-import UiSegmentedControl from './ui/UiSegmentedControl.vue'
-import UiStatePanel from './ui/UiStatePanel.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
-
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { createPollingLifecycle } from '../pollingLifecycle.js'

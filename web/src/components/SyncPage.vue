@@ -1,7 +1,9 @@
 <template>
   <div>
-    <UiPageHeader title="同步中心" eyebrow="系统 / Sync" description="本地、CPA 与账号凭据对账。" />
-    <UiSurface variant="panel" class="mt-6">
+    <h2 class="text-xl font-bold text-white mb-2">同步中心</h2>
+    <p class="text-sm text-gray-400 mb-6">
+      这里放对账与同步类操作：本地账号池对账、同步到 CPA，以及从 CPA 反向拉取认证文件。
+    </p>
     <TaskPanel
       mode="sync"
       :running-task="runningTask"
@@ -9,14 +11,11 @@
       @task-started="$emit('task-started')"
       @refresh="$emit('refresh')"
     />
-    </UiSurface>
   </div>
 </template>
 
 <script setup>
 import TaskPanel from './TaskPanel.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiSurface from './ui/UiSurface.vue'
 
 defineProps({
   runningTask: Object,

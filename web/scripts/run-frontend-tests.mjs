@@ -5,10 +5,7 @@ import path from 'node:path'
 
 const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url))
 const tests = readdirSync(scriptsDirectory)
-  .filter(name =>
-    name.endsWith('.mjs') &&
-    (name.startsWith('test-') || name.endsWith('-regression.mjs'))
-  )
+  .filter(name => name.startsWith('test-') && name.endsWith('.mjs'))
   .sort((left, right) => left.localeCompare(right))
 
 let completed = 0

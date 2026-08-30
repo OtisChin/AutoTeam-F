@@ -1,22 +1,233 @@
 <template>
-  <div v-if="status" class="dashboard-workspace">
-    <UiPageHeader title="账号运营" description="筛选账号、批量授权、刷新额度并维护认证状态" :status="accountsError ? `数据暂时无法刷新${lastSuccessfulLabel ? `（${lastSuccessfulLabel}）` : ''}` : ''"><template #actions><button type="button" class="ui-button ui-button-primary" @click="openExternalAccountImport" :disabled="externalAccountImporting">{{ externalAccountImporting ? '导入中...' : '导入账号' }}</button><button type="button" class="ui-button ui-button-quiet" @click="emit('refresh')">刷新</button></template></UiPageHeader>
-    <div v-if="accountsError" class="dashboard-stale-warning"><UiStatePanel state="partial" title="账号数据暂时无法刷新" :message="`保留上次成功数据${lastSuccessfulLabel ? `（${lastSuccessfulLabel}）` : ''}，可继续查看和操作。`" action-label="立即重试" @action="retryAccounts" /></div>
-    <UiSegmentedControl v-model="activeDashboardTab" :options="dashboardTabs" aria-label="工作区" />
-    <template v-if="activeDashboardTab === 'chatgpt'"><UiMetricSummary label="账号概览" :items="cards" /><div class="dashboard-table-shell"><UiBatchBar v-if="selectedEmails.length" :count="selectedEmails.length" @clear="clearSelection"><button type="button" class="ui-quiet-action" @click="exportAccounts">导出选中</button><button type="button" class="ui-quiet-action" @click="batchOauthAuthorizeAccounts">批量 OAuth授权</button><button type="button" class="ui-quiet-action" @click="batchReloginAccounts">批量补登录</button><button type="button" class="ui-quiet-action" @click="batchDelete">批量删除</button></UiBatchBar><div class="dashboard-actions" aria-label="账号操作"><button type="button" class="ui-button ui-button-secondary" @click="exportAccounts" :disabled="!exportableAccounts.length">{{ selectedEmails.length ? `导出选中 (${selectedEmails.length})` : `导出筛选 (${filteredAccounts.length})` }}</button><button type="button" class="ui-button ui-button-secondary" @click="openCredentialExport" :disabled="!exportableAccounts.length">导出账密</button><button v-if="selectedEmails.length" type="button" class="ui-button ui-button-secondary" @click="exportSelectedAccessTokens" :disabled="accessTokenExporting">导出ac</button><button type="button" class="ui-button ui-button-secondary" @click="exportCpaAuths" :disabled="!cpaExportableAccounts.length || cpaExporting">导出CPA认证</button><button type="button" class="ui-button ui-button-secondary" @click="exportSubAuths" :disabled="!cpaExportableAccounts.length || subExporting">导出Sub2API认证</button><button type="button" class="ui-button ui-button-secondary" @click="oauthConfigOpen = true">OAuth配置</button><button type="button" class="ui-button ui-button-secondary" @click="refreshAllQuota" :disabled="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length">{{ refreshQuotaButtonLabel }}</button><button type="button" class="ui-button ui-button-secondary" @click="openCpaImport" :disabled="cpaImporting">导入CPA认证</button><button type="button" class="ui-button ui-button-secondary" @click="openFinishedImport" :disabled="finishedImporting">导入成品</button><button v-if="selectedEmails.length" type="button" class="ui-button ui-button-secondary" @click="openBatchAccountEditor">批量修改账号</button><button v-if="selectedEmails.length" type="button" class="ui-button ui-button-secondary" @click="batchUpdateExportStatus(true)" :disabled="exportStatusUpdating">标记已导出</button><button v-if="selectedEmails.length" type="button" class="ui-button ui-button-secondary" @click="batchUpdateExportStatus(false)" :disabled="exportStatusUpdating">标记未导出</button><button type="button" class="ui-button ui-button-danger" @click="deleteInvalidCredentials" :disabled="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length">删除无效凭证</button></div>
+  <div v-if="status">
+    <div v-if="accountsError" class="dashboard-stale-warning" role="status">
+      <div>
+        <strong>账号数据暂时无法刷新</strong>
+        <span>保留上次成功数据<span v-if="lastSuccessfulLabel">（{{ lastSuccessfulLabel }}）</span>，可继续查看和操作。</span>
+      </div>
+      <button type="button" :disabled="loading" @click="retryAccounts">
+        {{ loading ? '正在重试…' : '立即重试' }}
+      </button>
+    </div>
+    <div class="dashboard-tabs">
+      <button
+        v-for="tab in dashboardTabs"
+        :key="tab.value"
+        @click="activeDashboardTab = tab.value"
+        class="dashboard-tab"
+        :class="activeDashboardTab === tab.value
+          ? 'dashboard-tab-active'
+          : 'dashboard-tab-idle'">
+        {{ tab.label }}
+      </button>
+    </div>
+
+    <template v-if="activeDashboardTab === 'chatgpt'">
+    <div class="dashboard-summary-grid">
+      <div v-for="card in cards" :key="card.label" class="dashboard-summary-card">
+        <div class="dashboard-summary-label">{{ card.label }}</div>
+        <div class="dashboard-summary-value" :class="card.color">{{ card.value }}</div>
+      </div>
+    </div>
+
+    <!-- 账号表格 -->
+    <div class="dashboard-table-shell">
+      <div class="dashboard-table-header">
+        <div>
+          <h2 class="text-lg font-semibold text-white">账号列表</h2>
+          <p class="mt-1 text-xs text-gray-500">批量导出、OAuth授权、补登录、刷新额度和清理无效凭证。</p>
+        </div>
+        <div class="dashboard-actions">
+          <button
+            @click="exportAccounts"
+            :disabled="!exportableAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!exportableAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-cyan-600/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-600/20'">
+            {{ selectedEmails.length ? `导出选中 (${selectedEmails.length})` : `导出筛选 (${filteredAccounts.length})` }}
+          </button>
+          <button
+            @click="openCredentialExport"
+            :disabled="!exportableAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!exportableAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-600/20'">
+            {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="exportSelectedAccessTokens"
+            :disabled="accessTokenExporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="accessTokenExporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">
+            {{ accessTokenExporting ? '导出中...' : `导出ac (${selectedEmails.length})` }}
+          </button>
+          <button
+            @click="openExternalAccountImport"
+            :disabled="externalAccountImporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="externalAccountImporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+            {{ externalAccountImporting ? '导入中...' : '导入账号' }}
+          </button>
+          <button
+            @click="openCpaImport"
+            :disabled="cpaImporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="cpaImporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-purple-600/10 text-purple-300 border-purple-500/30 hover:bg-purple-600/20'">
+            {{ cpaImporting ? '导入中...' : '导入CPA认证' }}
+          </button>
+          <button
+            @click="openFinishedImport"
+            :disabled="finishedImporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="finishedImporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
+            {{ finishedImporting ? '导入中...' : '导入成品' }}
+          </button>
+          <button
+            @click="exportCpaAuths"
+            :disabled="!cpaExportableAccounts.length || cpaExporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!cpaExportableAccounts.length || cpaExporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-sky-600/10 text-sky-400 border-sky-500/30 hover:bg-sky-600/20'">
+            {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}
+          </button>
+          <button
+            @click="exportSubAuths"
+            :disabled="!cpaExportableAccounts.length || subExporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!cpaExportableAccounts.length || subExporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-indigo-600/10 text-indigo-300 border-indigo-500/30 hover:bg-indigo-600/20'">
+            {{ subExporting ? '导出中...' : `导出Sub2API认证 (${cpaExportableAccounts.length})` }}
+          </button>
+          <button
+            @click="batchOauthAuthorizeAccounts"
+            :disabled="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
+            {{ oauthBatchButtonLabel }}
+          </button>
+          <button
+            @click="batchReloginAccounts"
+            :disabled="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">
+            {{ batchReloginButtonLabel }}
+          </button>
+          <button
+            @click="oauthConfigOpen = true"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="oauthProxyEnabled
+              ? 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'
+              : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white'">
+            OAuth配置
+          </button>
+          <button
+            @click="refreshAllQuota"
+            :disabled="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-amber-600/10 text-amber-300 border-amber-500/30 hover:bg-amber-600/20'">
+            {{ refreshQuotaButtonLabel }}
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="openBatchAccountEditor"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="'bg-slate-600/10 text-slate-200 border-slate-500/30 hover:bg-slate-600/20'">
+            批量修改账号 ({{ selectedEmails.length }})
+          </button>
+          <button
+            @click="deleteInvalidCredentials"
+            :disabled="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-red-600/10 text-red-300 border-red-500/30 hover:bg-red-600/20'">
+            {{ invalidDeleting ? '删除中...' : `删除无效凭证 (${invalidCredentialAccounts.length})` }}
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="batchUpdateExportStatus(true)"
+            :disabled="exportStatusUpdating"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="exportStatusUpdating
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+            标记已导出 ({{ selectedEmails.length }})
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="batchUpdateExportStatus(false)"
+            :disabled="exportStatusUpdating"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="exportStatusUpdating
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-gray-700/70 text-gray-300 border-gray-600 hover:bg-gray-700'">
+            标记未导出 ({{ selectedEmails.length }})
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="batchDelete"
+            :disabled="deleteDisabled || batchDeleting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="deleteDisabled || batchDeleting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-rose-600/10 text-rose-400 border-rose-500/30 hover:bg-rose-600/20'">
+            {{ batchDeleting ? `批量删除中 ${batchProgress}` : `批量删除 (${selectedEmails.length})` }}
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="clearSelection"
+            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
+            取消选择
+          </button>
+          <button @click="emit('refresh')"
+            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+            刷新
+          </button>
+          <button @click="syncAccounts" :disabled="syncDisabled || syncing"
+            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition disabled:opacity-50 text-gray-400 hover:text-white">
+            {{ syncing ? '同步中...' : '同步账号' }}
+          </button>
+          <button @click="syncToAccountHub" :disabled="hubSyncing || !selectedEmails.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="hubSyncing || !selectedEmails.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-violet-600/10 text-violet-300 border-violet-500/30 hover:bg-violet-600/20'">
+            {{ hubSyncing ? '上传中...' : `同步到账号Hub (${selectedEmails.length})` }}
+          </button>
+        </div>
+      </div>
       <!-- OAuth 配置弹窗 -->
       <AccessibleModal v-if="oauthConfigOpen" label="OAuth 配置" @close="oauthConfigOpen = false">
-        <div class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border ui-border ui-bg-surface shadow-2xl">
+        <div class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
           <!-- Header -->
-          <div class="flex items-center justify-between gap-3 border-b ui-border px-5 py-4">
+          <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-4">
             <div>
               <h3 class="text-lg font-semibold text-white">OAuth 配置</h3>
               <p class="mt-1 text-xs text-gray-500">配置 OAuth授权/补登录代理和绑定方式；绑定邮箱/绑定手机号二选一。</p>
             </div>
-            <button @click="oauthConfigOpen = false" class="rounded-lg border border-gray-700 ui-bg-subtle px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700">关闭</button>
+            <button @click="oauthConfigOpen = false" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700">关闭</button>
           </div>
           <!-- Tabs -->
-          <div class="flex border-b ui-border px-5 pt-3">
+          <div class="flex border-b border-gray-800 px-5 pt-3">
             <button
               @click="oauthConfigTab = 'proxy'"
               class="px-4 py-2 text-sm font-medium border-b-2 transition"
@@ -52,26 +263,26 @@
                   <div class="mt-1 text-xs text-gray-500">用于仪表盘单个/批量 OAuth授权和补登录；不开启时保持直连。</div>
                 </div>
                 <label class="inline-flex items-center gap-2 text-sm text-gray-300">
-                  <input v-model="oauthProxyEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-700 ui-bg-muted text-cyan-500 focus:ring-cyan-500/30" />
+                  <input v-model="oauthProxyEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-500/30" />
                   启用代理
                 </label>
               </div>
               <div class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
                 <div>
                   <label class="text-xs text-gray-500">登录模式</label>
-                  <select v-model="oauthBrowserMode" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                  <select v-model="oauthBrowserMode" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                     <option value="protocol">协议模式</option>
                     <option value="roxy">RoxyBrowser 模式</option>
                   </select>
                 </div>
-                <div class="rounded-lg border ui-border ui-bg-muted/60 px-3 py-2 text-xs text-gray-400">
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 text-xs text-gray-400">
                   {{ oauthBrowserMode === 'roxy' ? 'OAuth授权/补登录将使用设置页的 RoxyBrowser 配置打开浏览器，适合协议风控较强时手动使用。' : '默认协议模式，速度快；遇到风控时可手动切换 RoxyBrowser。' }}
                 </div>
               </div>
               <div v-if="oauthProxyEnabled" class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
                 <div>
                   <label class="text-xs text-gray-500">代理模式</label>
-                  <select v-model="oauthProxyMode" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                  <select v-model="oauthProxyMode" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                     <option value="single">单条代理</option>
                     <option value="pool">动态代理池</option>
                     <option value="api">代理 API 轮换</option>
@@ -79,32 +290,32 @@
                 </div>
                 <div v-if="oauthProxyMode === 'single'">
                   <label class="text-xs text-gray-500">代理地址</label>
-                  <input v-model.trim="oauthProxyUrl" type="text" placeholder="hostname:port:username:password / socks5://user:pass@host:port" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+                  <input v-model.trim="oauthProxyUrl" type="text" placeholder="hostname:port:username:password / socks5://user:pass@host:port" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
                 </div>
                 <div v-else-if="oauthProxyMode === 'pool'">
                   <label class="text-xs text-gray-500">代理池，一行一个</label>
-                  <textarea v-model.trim="oauthProxyPoolText" rows="3" placeholder="hostname:port:username:password&#10;socks5://user:pass@host:port" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60"></textarea>
+                  <textarea v-model.trim="oauthProxyPoolText" rows="3" placeholder="hostname:port:username:password&#10;socks5://user:pass@host:port" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60"></textarea>
                 </div>
                 <div v-else class="grid gap-3 sm:grid-cols-[180px_120px_minmax(0,1fr)]">
                   <div>
                     <label class="text-xs text-gray-500">供应商</label>
-                    <select v-model="oauthProxyApiProvider" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                    <select v-model="oauthProxyApiProvider" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                       <option value="cliproxy">cliproxy</option>
                       <option value="1024proxy">1024proxy</option>
                     </select>
                   </div>
                   <div>
                     <label class="text-xs text-gray-500">国家</label>
-                    <input v-model.trim="oauthProxyApiCountry" type="text" placeholder="US / JP / GB" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+                    <input v-model.trim="oauthProxyApiCountry" type="text" placeholder="US / JP / GB" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
                   </div>
                   <div>
                     <label class="text-xs text-gray-500">连接入口代理，可选</label>
-                    <input v-model.trim="oauthProxyUrl" type="text" placeholder="API 未返回可直接连接地址时，用这里的代理入口" class="mt-1 w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+                    <input v-model.trim="oauthProxyUrl" type="text" placeholder="API 未返回可直接连接地址时，用这里的代理入口" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
                   </div>
                 </div>
                 <div class="lg:col-span-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
                   <span>{{ oauthProxySummary }}</span>
-                  <button @click="resetOauthProxyConfig" class="px-2.5 py-1 rounded-md border border-gray-700 ui-bg-surface text-gray-400 hover:text-white hover:ui-bg-subtle transition">清空代理配置</button>
+                  <button @click="resetOauthProxyConfig" class="px-2.5 py-1 rounded-md border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800 transition">清空代理配置</button>
                 </div>
               </div>
             </div>
@@ -115,7 +326,7 @@
               <div class="mt-4 space-y-4">
                 <div>
                   <label class="block text-xs text-gray-500 mb-1">邮件供应商</label>
-                  <select v-model="oauthEmailMailProvider" :disabled="oauthEmailLoading" class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                  <select v-model="oauthEmailMailProvider" :disabled="oauthEmailLoading" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
                     <option v-for="opt in oauthEmailMailProviderOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                   </select>
                   <div class="mt-1 text-xs text-gray-500">选择注册后用于绑定邮箱的邮件供应商；具体 API Key / token 在"设置 → 邮件 Provider"里配置。</div>
@@ -124,13 +335,13 @@
                   <div class="grid grid-cols-2 gap-3">
                     <div>
                       <label class="block text-xs text-gray-500 mb-1">LuckMail 邮箱类型</label>
-                      <select v-model="oauthEmailLuckmailEmailType" :disabled="oauthEmailLoading" class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                      <select v-model="oauthEmailLuckmailEmailType" :disabled="oauthEmailLoading" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
                         <option v-for="opt in luckmailEmailTypeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                       </select>
                     </div>
                     <div>
                       <label class="block text-xs text-gray-500 mb-1">LuckMail 首选域名</label>
-                      <select v-model="oauthEmailLuckmailDomain" :disabled="oauthEmailLoading" class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                      <select v-model="oauthEmailLuckmailDomain" :disabled="oauthEmailLoading" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
                         <option v-for="opt in luckmailDomainOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                       </select>
                     </div>
@@ -139,7 +350,7 @@
                 </template>
                 <div v-if="oauthEmailMailProvider && oauthEmailMailProvider !== 'luckmail' && oauthEmailMailProvider !== 'outlook'">
                   <label class="block text-xs text-gray-500 mb-1">注册域名</label>
-                  <select v-model="oauthEmailDomain" class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                  <select v-model="oauthEmailDomain" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
                     <option v-for="domain in oauthEmailDomainOptions" :key="domain" :value="domain">@{{ domain }}</option>
                   </select>
                   <div class="mt-1 text-xs text-gray-500">注册临时邮箱使用的域名。</div>
@@ -154,11 +365,11 @@
                   <div class="mt-1 text-xs text-gray-500">开启后，仪表盘单个/批量 OAuth授权和补登录遇到 add-phone 会自动绑定手机号。</div>
                 </div>
                 <label class="inline-flex items-center gap-2 text-sm text-gray-300">
-                  <input v-model="oauthBindPhone" type="checkbox" class="h-4 w-4 rounded border-gray-700 ui-bg-muted text-emerald-500 focus:ring-emerald-500/30" />
+                  <input v-model="oauthBindPhone" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-emerald-500 focus:ring-emerald-500/30" />
                   启用手机号绑定（关闭则绑定邮箱）
                 </label>
               </div>
-              <div class="mt-4 rounded-lg border ui-border ui-bg-muted/70 p-3 text-xs text-gray-400">
+              <div class="mt-4 rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-xs text-gray-400">
                 <div>当前模式：<span :class="oauthBindPhone ? 'text-emerald-300' : 'text-amber-300'">{{ oauthBindPhone ? '绑定手机号' : '绑定邮箱' }}</span></div>
                 <div class="mt-1">二选一：启用手机号绑定时，会发送 bind_phone=true、bind_email=false；关闭时发送 bind_email=true、bind_phone=false。</div>
                 <div class="mt-1">接码来源使用“手机号接码”页签保存的配置，例如手机号池、hero-sms、smsbower、SMSCloud、Oasis 或 TuJie。</div>
@@ -175,7 +386,7 @@
                   class="min-w-[72px] rounded-full border px-3 py-1.5 text-center text-xs whitespace-nowrap"
                   :class="oauthPhoneSmsConfigured
                     ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                    : 'ui-bg-subtle text-gray-400 border-gray-700'">
+                    : 'bg-gray-800 text-gray-400 border-gray-700'">
                   {{ oauthPhoneSmsConfigured ? '已配置' : '未配置' }}
                 </span>
               </div>
@@ -186,7 +397,7 @@
                   <select
                     v-model="oauthPhoneSmsForm.provider"
                     :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving"
-                    class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
+                    class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
                     <option value="phone_pool">OAuth 手机号池</option>
                     <option value="hero_sms">hero-sms</option>
                     <option value="smsbower">smsbower</option>
@@ -198,7 +409,7 @@
                 </div>
                 <div>
                   <label class="block text-xs text-gray-500 mb-1">固定参数</label>
-                  <div class="rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-300">
+                  <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
                     服务：OpenAI（service: dr）
                   </div>
                   <div class="mt-1 text-xs text-gray-500">国家会随 OAuth授权/补登录请求传给后端；列表来自所选接码供应商。</div>
@@ -212,7 +423,7 @@
                       type="search"
                       autocomplete="off"
                       :placeholder="oauthPhoneSmsCountriesLoading ? '国家列表加载中...' : '搜索国家名称或 ID'"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 pr-9 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60 disabled:opacity-60"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 pr-9 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60 disabled:opacity-60"
                       @focus="openOauthPhoneSmsCountryDropdown"
                       @input="handleOauthPhoneSmsCountryInput"
                       @blur="closeOauthPhoneSmsCountryDropdownSoon"
@@ -220,19 +431,19 @@
                     <button
                       type="button"
                       :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving || oauthPhoneSmsCountriesLoading"
-                      class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1.5 py-1 text-xs text-gray-400 transition hover:ui-bg-subtle hover:text-white disabled:pointer-events-none disabled:opacity-40"
+                      class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1.5 py-1 text-xs text-gray-400 transition hover:bg-gray-800 hover:text-white disabled:pointer-events-none disabled:opacity-40"
                       @mousedown.prevent
                       @click="toggleOauthPhoneSmsCountryDropdown">
                       ▾
                     </button>
                     <div
                       v-if="oauthPhoneSmsCountryDropdownOpen"
-                      class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border ui-border ui-bg-muted shadow-xl shadow-black/40">
+                      class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 shadow-xl shadow-black/40">
                       <button
                         v-for="option in oauthPhoneSmsCountryOptionsForSelect"
                         :key="option.value"
                         type="button"
-                        class="block w-full px-3 py-2 text-left text-sm transition hover:ui-bg-surface"
+                        class="block w-full px-3 py-2 text-left text-sm transition hover:bg-gray-900"
                         :class="option.value === currentOauthPhoneSmsCountry ? 'bg-emerald-600/15 text-emerald-200' : 'text-gray-200'"
                         @mousedown.prevent="selectOauthPhoneSmsCountry(option)">
                         <span class="block truncate">{{ option.label }}</span>
@@ -257,13 +468,13 @@
                       type="password"
                       autocomplete="off"
                       :placeholder="oauthPhoneSmsStatus.hero_sms_api_key_masked || '留空则保留现有配置'"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">hero-sms 价格模式</label>
                     <select
                       v-model="oauthPhoneSmsForm.hero_sms_price_mode"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
                       <option value="lowest">优先最低价格</option>
                       <option value="ceiling">仅限制最高价格</option>
                     </select>
@@ -277,7 +488,7 @@
                       inputmode="decimal"
                       autocomplete="off"
                       placeholder="例如 0.1，留空不限下限"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     <div class="mt-1 text-xs text-gray-500">填 0.1 时，0.1 以下的号码不会取。</div>
                   </div>
                   <div>
@@ -288,7 +499,7 @@
                       inputmode="decimal"
                       autocomplete="off"
                       placeholder="例如 0.045，留空不限价"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     <div class="mt-1 text-xs text-gray-500">作为价格上限；留空则不限上限。</div>
                   </div>
                 </template>
@@ -304,7 +515,7 @@
                       type="password"
                       autocomplete="off"
                       :placeholder="oauthPhoneSmsStatus.smscloud_api_key_masked || '留空则保留现有配置'"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">SMSCloud 最低价格</label>
@@ -314,7 +525,7 @@
                       inputmode="decimal"
                       autocomplete="off"
                       placeholder="例如 0.05，留空不限下限"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     <div class="mt-1 text-xs text-gray-500">实际扣费低于该价格会取消订单，不继续使用。</div>
                   </div>
                   <div>
@@ -325,7 +536,7 @@
                       inputmode="decimal"
                       autocomplete="off"
                       placeholder="例如 0.08，留空按默认价格"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     <div class="mt-1 text-xs text-gray-500">作为 SMSCloud flexible 的 maxPrice。</div>
                   </div>
                 </template>
@@ -341,13 +552,13 @@
                       type="password"
                       autocomplete="off"
                       :placeholder="oauthPhoneSmsStatus.smsbower_api_key_masked || '留空则保留现有配置'"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">smsbower 价格模式</label>
                     <select
                       v-model="oauthPhoneSmsForm.smsbower_price_mode"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
                       <option value="lowest">优先最低价格</option>
                       <option value="ceiling">仅限制最高价格</option>
                     </select>
@@ -361,7 +572,7 @@
                       inputmode="decimal"
                       autocomplete="off"
                       placeholder="例如 0.1，留空不限下限"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     <div class="mt-1 text-xs text-gray-500">填 0.1 时，0.1 以下的 provider 不会取。</div>
                   </div>
                   <div>
@@ -372,7 +583,7 @@
                       inputmode="decimal"
                       autocomplete="off"
                       placeholder="例如 0.045，留空不限价"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     <div class="mt-1 text-xs text-gray-500">作为价格上限；留空则不限上限。</div>
                   </div>
                 </template>
@@ -389,7 +600,7 @@
                       spellcheck="false"
                       autocomplete="off"
                       placeholder="一行一个或粘贴多个 CDK，例如 SMS-6L2A-6TAH-Q7BA"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 font-mono text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
                     <div class="mt-1 text-xs text-gray-500">每个 CDK 只对应一个号码和验证码，注册成功后会保存 CDK 与账号的映射。</div>
                   </div>
                   <div>
@@ -402,7 +613,7 @@
                       type="text"
                       autocomplete="off"
                       placeholder="例如 data/oasis_cdks.txt"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">Oasis API 地址</label>
@@ -411,7 +622,7 @@
                       type="text"
                       autocomplete="off"
                       placeholder="https://sms.oapi.vip"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">账号映射文件</label>
@@ -420,7 +631,7 @@
                       type="text"
                       autocomplete="off"
                       placeholder="oasis-cdk-accounts.jsonl"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div class="grid grid-cols-2 gap-3">
                     <div>
@@ -431,7 +642,7 @@
                         min="1"
                         autocomplete="off"
                         placeholder="24"
-                        class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                        class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     </div>
                     <div>
                       <label class="block text-xs text-gray-500 mb-1">轮询间隔 ms</label>
@@ -441,7 +652,7 @@
                         min="500"
                         autocomplete="off"
                         placeholder="5000"
-                        class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                        class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     </div>
                   </div>
                 </template>
@@ -457,7 +668,7 @@
                       spellcheck="false"
                       autocomplete="off"
                       placeholder="一行一个或粘贴多个 CDK，例如 SMS-AE4H6TLEZV5H69SJGQ"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 font-mono text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
                     <div class="mt-1 text-xs text-gray-500">每个 CDK 只对应一个号码和验证码，OAuth 成功后会保存 CDK 与账号的映射。</div>
                   </div>
                   <div>
@@ -470,7 +681,7 @@
                       type="text"
                       autocomplete="off"
                       placeholder="例如 data/tujie_cdks.txt"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">TuJie 取码页面地址</label>
@@ -479,7 +690,7 @@
                       type="text"
                       autocomplete="off"
                       placeholder="填写 TuJie 页面地址；支持 {cdk} 占位符"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">账号映射文件</label>
@@ -488,7 +699,7 @@
                       type="text"
                       autocomplete="off"
                       placeholder="tujie-cdk-accounts.jsonl"
-                      class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div class="grid grid-cols-2 gap-3">
                     <div>
@@ -499,7 +710,7 @@
                         min="1"
                         autocomplete="off"
                         placeholder="24"
-                        class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                        class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     </div>
                     <div>
                       <label class="block text-xs text-gray-500 mb-1">轮询间隔 ms</label>
@@ -509,7 +720,7 @@
                         min="500"
                         autocomplete="off"
                         placeholder="5000"
-                        class="w-full rounded-lg border ui-border ui-bg-muted px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                        class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                     </div>
                   </div>
                 </template>
@@ -519,7 +730,7 @@
                 <button
                   @click="loadOauthPhoneSmsConfig"
                   :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving"
-                  class="rounded-lg border border-gray-700 ui-bg-subtle px-4 py-2 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-50">
+                  class="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-50">
                   {{ oauthPhoneSmsLoading ? '刷新中...' : '刷新接码配置' }}
                 </button>
                 <button
@@ -532,25 +743,170 @@
             </div>
           </div>
           <!-- Footer -->
-          <div class="flex justify-end gap-3 border-t ui-border px-5 py-4">
-            <button @click="oauthConfigOpen = false" class="px-4 py-2 text-sm rounded-lg border border-gray-700 ui-bg-subtle text-gray-300 hover:bg-gray-700 transition">关闭</button>
+          <div class="flex justify-end gap-3 border-t border-gray-800 px-5 py-4">
+            <button @click="oauthConfigOpen = false" class="px-4 py-2 text-sm rounded-lg border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 transition">关闭</button>
             <button @click="saveOauthConfig" :disabled="oauthEmailSaving || oauthPhoneSmsSaving" class="px-4 py-2 text-sm rounded-lg bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition">{{ oauthEmailSaving || oauthPhoneSmsSaving ? '保存中...' : '保存配置' }}</button>
           </div>
         </div>
       </AccessibleModal>
-      <UiDataToolbar :result-label="`显示 ${accountPageStartDisplay}-${accountPageEndDisplay} / ${accountFilteredTotal}（池 ${accountPoolTotal}）${selectedEmails.length ? `，已选 ${selectedEmails.length}` : ''}`" :active-filter-count="activeFilterCount" clearable @clear-filters="clearFilters">
-        <template #primary><input v-model.trim="emailFilter" type="search" placeholder="按邮箱搜索" aria-label="按邮箱搜索" class="ui-filter-input" /><select v-model="statusFilter" aria-label="账号状态" class="ui-filter-select"><option value="">全部状态</option><option v-for="option in accountStatusOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.count }})</option></select><select v-model="accountTypeFilter" aria-label="账号类型" class="ui-filter-select"><option value="">全部类型</option><option v-for="option in accountTypeOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.count }})</option></select></template>
-        <template #filters><select v-model="trialFilter" aria-label="试用资格" class="ui-filter-select"><option value="">全部试用资格</option><option value="eligible">可试用 ({{ trialEligibleCount }})</option><option value="not_eligible">不可试用</option></select><select v-model="bindProviderFilter" aria-label="绑定渠道" class="ui-filter-select"><option value="">全部绑定渠道</option><option v-for="option in accountBindProviderFilterOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.count }})</option></select><select v-model="registerDateFilter" aria-label="注册日期" class="ui-filter-select"><option value="">全部注册日期</option><option v-for="option in registerDateOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><select v-model="registerStartTimeFilter" aria-label="注册开始时间" class="ui-filter-select"><option value="">注册开始</option><option v-for="option in bindTimeOptions" :key="`register-start-${option.value}`" :value="option.value">{{ option.label }}</option></select><select v-model="registerEndTimeFilter" aria-label="注册结束时间" class="ui-filter-select"><option value="">注册结束</option><option v-for="option in bindTimeOptions" :key="`register-end-${option.value}`" :value="option.value">{{ option.label }}</option></select><select v-model="credentialExportFilter" aria-label="账密导出状态" class="ui-filter-select"><option value="">全部导出状态</option><option v-for="option in credentialExportOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.count }})</option></select><select v-model="exportDateFilter" aria-label="导出日期" class="ui-filter-select"><option value="">全部导出日期</option><option v-for="option in exportDateOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><select v-model="exportStartTimeFilter" aria-label="导出开始时间" class="ui-filter-select"><option value="">导出开始</option><option v-for="option in bindTimeOptions" :key="`export-start-${option.value}`" :value="option.value">{{ option.label }}</option></select><select v-model="exportEndTimeFilter" aria-label="导出结束时间" class="ui-filter-select"><option value="">导出结束</option><option v-for="option in bindTimeOptions" :key="`export-end-${option.value}`" :value="option.value">{{ option.label }}</option></select><select v-model="accountHubSyncFilter" aria-label="账号 Hub 同步状态" class="ui-filter-select"><option value="">全部同步状态</option><option v-for="option in accountHubSyncOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.count }})</option></select><select v-model="authCredentialFilter" aria-label="认证凭证状态" class="ui-filter-select"><option value="">全部凭证</option><option v-for="option in authCredentialOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.count }})</option></select><select v-model="bindDateFilter" aria-label="绑卡日期" class="ui-filter-select"><option value="">全部绑定日期</option><option v-for="option in bindDateOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><select v-model="bindStartTimeFilter" aria-label="绑卡开始时间" class="ui-filter-select"><option value="">开始时间</option><option v-for="option in bindTimeOptions" :key="`start-${option.value}`" :value="option.value">{{ option.label }}</option></select><select v-model="bindEndTimeFilter" aria-label="绑卡结束时间" class="ui-filter-select"><option value="">结束时间</option><option v-for="option in bindTimeOptions" :key="`end-${option.value}`" :value="option.value">{{ option.label }}</option></select></template>
-        <template #actions><button type="button" class="ui-quiet-action" @click="syncAccounts" :disabled="syncDisabled || syncing">{{ syncing ? '同步中...' : '同步账号' }}</button><button type="button" class="ui-quiet-action" @click="syncToAccountHub" :disabled="hubSyncing || !selectedEmails.length">同步到账号Hub</button></template>
-      </UiDataToolbar>
+      <div class="dashboard-filter-bar">
+        <div class="dashboard-filters">
+          <label class="relative block">
+            <input
+              v-model.trim="emailFilter"
+              type="search"
+              placeholder="按邮箱搜索"
+              class="w-full sm:w-72 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+          </label>
+          <select
+            v-model="statusFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部状态</option>
+            <option v-for="option in accountStatusOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="accountTypeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部类型</option>
+            <option v-for="option in accountTypeOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="trialFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
+            <option value="">全部试用资格</option>
+            <option value="eligible">可试用 ({{ trialEligibleCount }})</option>
+            <option value="not_eligible">不可试用</option>
+          </select>
+          <select
+            v-model="bindProviderFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部绑定渠道</option>
+            <option v-for="option in accountBindProviderFilterOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="registerDateFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部注册日期</option>
+            <option v-for="option in registerDateOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="registerStartTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">注册开始</option>
+            <option v-for="option in bindTimeOptions" :key="`register-start-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="registerEndTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">注册结束</option>
+            <option v-for="option in bindTimeOptions" :key="`register-end-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="credentialExportFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部导出状态</option>
+            <option v-for="option in credentialExportOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="exportDateFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部导出日期</option>
+            <option v-for="option in exportDateOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="exportStartTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">导出开始</option>
+            <option v-for="option in bindTimeOptions" :key="`export-start-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="exportEndTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">导出结束</option>
+            <option v-for="option in bindTimeOptions" :key="`export-end-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="accountHubSyncFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部同步状态</option>
+            <option v-for="option in accountHubSyncOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="authCredentialFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部凭证</option>
+            <option v-for="option in authCredentialOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="bindDateFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部绑定日期</option>
+            <option v-for="option in bindDateOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="bindStartTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">开始时间</option>
+            <option v-for="option in bindTimeOptions" :key="`start-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="bindEndTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">结束时间</option>
+            <option v-for="option in bindTimeOptions" :key="`end-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <button
+            v-if="emailFilter || statusFilter || accountTypeFilter || trialFilter || bindProviderFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
+            @click="clearFilters"
+            class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
+            清空筛选
+          </button>
+        </div>
+        <div class="text-xs text-gray-500">
+          显示
+          <span class="text-gray-300 font-mono">{{ accountPageStartDisplay }}-{{ accountPageEndDisplay }}</span>
+          / <span class="text-gray-300 font-mono">{{ accountFilteredTotal }}</span>
+          / <span class="font-mono">{{ accountPoolTotal }}</span>
+          <span v-if="selectedEmails.length">，已选 <span class="text-blue-400 font-mono">{{ selectedEmails.length }}</span></span>
+        </div>
+      </div>
       <div v-if="message" class="mx-4 mt-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">
         {{ message }}
       </div>
-      <UiTableFrame label="账号列表" :busy="loading" :empty="!filteredAccounts.length" min-width="1200px">
-        <div class="overflow-x-auto">
+      <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
-            <tr class="text-gray-400 text-left border-b ui-border">
+            <tr class="text-gray-400 text-left border-b border-gray-800">
               <th class="px-3 py-3 font-medium w-8">
                 <input
                   type="checkbox"
@@ -582,7 +938,7 @@
                     class="inline-flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-[11px] font-semibold transition"
                     :class="accountDisplayOrder === 'desc'
                       ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
-                      : 'border-gray-700 ui-bg-subtle/70 text-gray-400 hover:border-gray-600 hover:text-gray-200'"
+                      : 'border-gray-700 bg-gray-800/70 text-gray-400 hover:border-gray-600 hover:text-gray-200'"
                     :title="accountDisplayOrder === 'desc' ? '当前倒序显示，点击切换正序' : '当前正序显示，点击切换倒序'"
                     :aria-label="accountDisplayOrder === 'desc' ? '切换为账号正序显示' : '切换为账号倒序显示'">
                     ↑↓
@@ -597,13 +953,12 @@
             </tr>
             <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
               v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email]"
-              class="border-b ui-border/50 hover:ui-bg-subtle/30 transition"
+              class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
               :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">
               <td class="px-3 py-3">
                 <input
                   v-if="!acc.is_main_account"
                   type="checkbox"
-                  :aria-label="`选择账号 ${displayEmail(acc)}`"
                   :checked="isSelected(acc.email)"
                   @change="toggleSelect(acc.email)"
                   class="accent-rose-500 cursor-pointer" />
@@ -619,7 +974,11 @@
                   Hub: {{ acc.hub_source_name }}
                 </div>
               </td>
-              <td class="px-4 py-3"><UiStatusBadge :label="accountTypePresentation(acc.account_type).label" :tone="accountTypePresentation(acc.account_type).tone" />
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="accountTypeClass(acc.account_type)">
+                  {{ accountTypeLabel(acc.account_type) }}
+                </span>
                 <span
                   v-if="acc.trial_eligible"
                   class="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
@@ -627,11 +986,32 @@
                   可试用
                 </span>
               </td>
-              <td class="px-4 py-3"><UiStatusBadge :label="accountStatusPresentation(acc.status).label" :tone="accountStatusPresentation(acc.status).tone" /></td>
-              <td class="px-4 py-3"><UiStatusBadge :label="bindProviderPresentation(effectiveBindProvider(acc)).label" :tone="bindProviderPresentation(effectiveBindProvider(acc)).tone" /></td>
-              <td class="px-4 py-3"><UiStatusBadge :label="credentialExportPresentation(acc?.credentials_exported).label" :tone="credentialExportPresentation(acc?.credentials_exported).tone" /></td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="statusClass(acc.status)">
+                  <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(acc.status)"></span>
+                  {{ statusLabel(acc.status) }}
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="bindProviderClass(effectiveBindProvider(acc))">
+                  {{ bindProviderLabel(effectiveBindProvider(acc)) }}
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="credentialExportClass(acc)">
+                  {{ credentialExportLabel(acc) }}
+                </span>
+              </td>
               <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ exportTimeLabel(acc) }}</td>
-              <td class="px-4 py-3"><UiStatusBadge :label="accountHubSyncPresentation(acc?.account_hub_synced).label" :tone="accountHubSyncPresentation(acc?.account_hub_synced).tone" /></td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="accountHubSyncClass(acc)">
+                  {{ accountHubSyncLabel(acc) }}
+                </span>
+              </td>
               <td
                 class="px-4 py-3 text-right font-mono"
                 :class="pctColor(quota(acc, 'primary'))"
@@ -653,27 +1033,85 @@
                   :disabled="accountActionBusy && actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
                   :class="accountActionBusy && actionEmail === acc.email
-                    ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-wait'
-                    : 'ui-bg-subtle text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white'">
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-wait'
+                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white'">
                   {{ accountActionBusy && actionEmail === acc.email ? '处理中…' : '操作' }}
                 </button>
               </td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <div
+        v-if="accountFilteredTotal > 0"
+        class="flex flex-col gap-3 border-t border-gray-800 px-4 py-3 text-xs text-gray-500 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex flex-wrap items-center gap-2">
+          <span>账号分页：每页</span>
+          <select
+            v-model.number="accountPageSize"
+            class="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500/60 focus:outline-none focus:ring-2 focus:ring-cyan-500/30">
+            <option v-for="option in ACCOUNT_PAGE_SIZE_OPTIONS" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <span>条，第</span>
+          <span class="font-mono text-gray-300">{{ accountCurrentPage }}</span>
+          <span>/</span>
+          <span class="font-mono text-gray-300">{{ accountTotalPages }}</span>
+          <span>页</span>
         </div>
-      </UiTableFrame>
-      <UiPagination v-if="accountFilteredTotal > 0" v-model:page="accountPage" v-model:page-size="accountPageSize" :page-sizes="[50, 100, 200]" :total-items="accountFilteredTotal" item-label="条账号" />
-      <!-- legacy portal contract: <Teleport to="body"><div v-if="accountActionMenuAccount" role="dialog"></div></Teleport> -->
-      <AccessibleModal v-if="accountActionMenuAccount" role="dialog" label="账号操作" @close="closeAccountActionMenu">
-        <div ref="accountActionDialogRef" tabindex="-1" @keydown.tab="trapAccountActionDialogFocus">
-          <section class="w-full max-w-lg overflow-hidden rounded-2xl border ui-border ui-bg-surface shadow-2xl">
-            <header class="flex items-start justify-between gap-4 border-b ui-border px-5 py-4">
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            @click="setAccountPage(1)"
+            :disabled="accountCurrentPage <= 1"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            首页
+          </button>
+          <button
+            type="button"
+            @click="setAccountPage(accountCurrentPage - 1)"
+            :disabled="accountCurrentPage <= 1"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            上一页
+          </button>
+          <button
+            type="button"
+            @click="setAccountPage(accountCurrentPage + 1)"
+            :disabled="accountCurrentPage >= accountTotalPages"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            下一页
+          </button>
+          <button
+            type="button"
+            @click="setAccountPage(accountTotalPages)"
+            :disabled="accountCurrentPage >= accountTotalPages"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            末页
+          </button>
+        </div>
+      </div>
+
+      <Teleport to="body">
+        <div
+          v-if="accountActionMenuAccount"
+          ref="accountActionDialogRef"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="account-action-dialog-title"
+          tabindex="-1"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          @click.self="closeAccountActionMenu"
+          @keydown.esc.stop="closeAccountActionMenu"
+          @keydown.tab="trapAccountActionDialogFocus"
+        >
+          <section class="w-full max-w-lg overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 shadow-2xl">
+            <header class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
               <div class="min-w-0">
                 <h3 id="account-action-dialog-title" class="font-semibold text-white">账号操作</h3>
                 <p class="mt-1 truncate font-mono text-xs text-gray-500">{{ displayEmail(accountActionMenuAccount) }}</p>
               </div>
-              <button ref="accountActionDialogInitialFocusRef" type="button" class="rounded-lg border border-gray-700 ui-bg-subtle px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700" @click="closeAccountActionMenu">关闭</button>
+              <button ref="accountActionDialogInitialFocusRef" type="button" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700" @click="closeAccountActionMenu">关闭</button>
             </header>
             <div class="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
               <button type="button" :disabled="accountActionMenuBusy" class="account-action-choice text-emerald-300" @click="copyAccountAccessToken(accountActionMenuAccount.email)">
@@ -698,12 +1136,12 @@
             </div>
           </section>
         </div>
-      </AccessibleModal>
+      </Teleport>
 
       <!-- 外部账号导入弹窗 -->
       <AccessibleModal v-if="externalAccountImportOpen" label="导入账号" @close="closeExternalAccountImport">
-        <div class="ui-bg-surface border ui-border rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
-          <div class="px-4 py-3 border-b ui-border flex items-center justify-between">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入账号</h3>
               <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL；新账号默认 Free，绑定渠道为外部导入。</div>
@@ -718,11 +1156,11 @@
                 v-model="externalAccountImportText"
                 rows="10"
                 placeholder="user@example.com----https://example.com/api/mail?token=..."
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
               <div class="mt-1 text-xs text-gray-500">重复邮箱只导入第一条；已存在账号会更新取件URL和绑定渠道，不覆盖账号类型/状态。</div>
             </div>
 
-            <div v-if="externalAccountImportResult" class="rounded-xl border ui-border ui-bg-muted/60 p-3 text-xs">
+            <div v-if="externalAccountImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
               <div class="text-gray-200">
                 新增 {{ externalAccountImportResult.imported || 0 }}，更新 {{ externalAccountImportResult.updated || 0 }}，重复 {{ externalAccountImportResult.duplicates || 0 }}，无效 {{ externalAccountImportResult.invalid?.length || 0 }}
               </div>
@@ -734,10 +1172,10 @@
               </div>
             </div>
           </div>
-          <div class="px-4 py-3 border-t ui-border flex justify-end gap-3">
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeExternalAccountImport"
-              class="px-4 py-2 ui-bg-subtle hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
               关闭
             </button>
             <button
@@ -745,7 +1183,7 @@
               :disabled="externalAccountImporting || !externalAccountImportText.trim()"
               class="px-4 py-2 text-sm rounded-lg border transition"
               :class="externalAccountImporting || !externalAccountImportText.trim()
-                ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-not-allowed'
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'">
               {{ externalAccountImporting ? '导入中...' : '开始导入' }}
             </button>
@@ -755,8 +1193,8 @@
 
       <!-- 成品账号导入弹窗 -->
       <AccessibleModal v-if="finishedImportOpen" label="导入成品账号" @close="closeFinishedImport">
-        <div class="ui-bg-surface border ui-border rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
-          <div class="px-4 py-3 border-b ui-border flex items-center justify-between">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入成品</h3>
               <div class="text-xs text-gray-500 mt-0.5">读取成品账号 JSON 和邮箱池 TXT，离线构造 CPA/Codex 认证文件。</div>
@@ -785,12 +1223,12 @@
                 type="file"
                 accept=".txt,text/plain"
                 @change="handleFinishedMailboxesFile"
-                class="block w-full text-xs text-gray-300 file:mr-3 file:rounded-lg file:border file:border-gray-600 file:ui-bg-subtle file:px-3 file:py-2 file:text-xs file:font-medium file:text-gray-200 hover:file:bg-gray-700" />
+                class="block w-full text-xs text-gray-300 file:mr-3 file:rounded-lg file:border file:border-gray-600 file:bg-gray-800 file:px-3 file:py-2 file:text-xs file:font-medium file:text-gray-200 hover:file:bg-gray-700" />
               <div v-if="finishedMailboxesFile" class="mt-2 text-xs text-gray-300 font-mono break-all">{{ finishedMailboxesFile.name }}</div>
               <div class="mt-1 text-xs text-gray-500">匹配到邮箱池时，会把账号标记为 outlook 并保留邮箱来源标识。</div>
             </div>
 
-            <div v-if="finishedImportResult" class="rounded-xl border ui-border ui-bg-muted/60 p-3 text-xs">
+            <div v-if="finishedImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
               <div class="text-gray-200">
                 导入 {{ finishedImportResult.imported || 0 }}，更新账号 {{ finishedImportResult.accounts_updated || 0 }}，邮箱匹配 {{ finishedImportResult.mailboxes_matched || 0 }}/{{ finishedImportResult.mailboxes_total || 0 }}
               </div>
@@ -802,10 +1240,10 @@
               </div>
             </div>
           </div>
-          <div class="px-4 py-3 border-t ui-border flex justify-end gap-3">
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeFinishedImport"
-              class="px-4 py-2 ui-bg-subtle hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
               关闭
             </button>
             <button
@@ -813,7 +1251,7 @@
               :disabled="finishedImporting || !finishedAccountsFile"
               class="px-4 py-2 text-sm rounded-lg border transition"
               :class="finishedImporting || !finishedAccountsFile
-                ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-not-allowed'
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-teal-600 hover:bg-teal-500 text-white border-teal-500'">
               {{ finishedImporting ? '导入中...' : '开始导入' }}
             </button>
@@ -823,8 +1261,8 @@
 
       <!-- CPA 认证导入弹窗 -->
       <AccessibleModal v-if="cpaImportOpen" label="导入 CPA 认证" @close="closeCpaImport">
-        <div class="ui-bg-surface border ui-border rounded-xl w-full max-w-3xl max-h-[86vh] flex flex-col">
-          <div class="px-4 py-3 border-b ui-border flex items-center justify-between">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-3xl max-h-[86vh] flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入 CPA 认证</h3>
               <div class="text-xs text-gray-500 mt-0.5">支持粘贴 JSON、选择多个 JSON/ZIP 文件，或选择文件夹批量导入。</div>
@@ -839,24 +1277,24 @@
                 v-model="cpaImportText"
                 rows="8"
                 placeholder='{"type":"codex","email":"...","access_token":"...","id_token":"...","refresh_token":"..."}'
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/60"></textarea>
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/60"></textarea>
             </div>
 
             <div class="grid gap-3 md:grid-cols-2">
-              <label class="rounded-xl border ui-border ui-bg-muted/60 p-4 cursor-pointer hover:border-purple-500/40 transition">
+              <label class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 cursor-pointer hover:border-purple-500/40 transition">
                 <input type="file" multiple accept=".json,.zip,application/json,application/zip" class="hidden" @change="handleCpaImportFiles" />
                 <div class="text-sm font-semibold text-gray-100">选择文件</div>
                 <div class="mt-1 text-xs text-gray-500">可一次选择多个 .json 或 .zip。</div>
               </label>
-              <label class="rounded-xl border ui-border ui-bg-muted/60 p-4 cursor-pointer hover:border-purple-500/40 transition">
+              <label class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 cursor-pointer hover:border-purple-500/40 transition">
                 <input type="file" multiple webkitdirectory directory class="hidden" @change="handleCpaImportFiles" />
                 <div class="text-sm font-semibold text-gray-100">选择文件夹</div>
                 <div class="mt-1 text-xs text-gray-500">会递归读取文件夹中的 .json/.zip。</div>
               </label>
             </div>
 
-            <div v-if="cpaImportFiles.length" class="rounded-xl border ui-border ui-bg-muted/60 overflow-hidden">
-              <div class="px-3 py-2 border-b ui-border flex items-center justify-between">
+            <div v-if="cpaImportFiles.length" class="rounded-xl border border-gray-800 bg-gray-950/60 overflow-hidden">
+              <div class="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
                 <div class="text-xs text-gray-400">待导入文件：{{ cpaImportFiles.length }}</div>
                 <button @click="cpaImportFiles = []" class="text-xs text-gray-500 hover:text-gray-200">清空</button>
               </div>
@@ -867,7 +1305,7 @@
               </div>
             </div>
 
-            <div v-if="cpaImportResult" class="rounded-xl border ui-border ui-bg-muted/60 p-3 text-xs">
+            <div v-if="cpaImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
               <div class="text-gray-200">
                 导入 {{ cpaImportResult.imported || 0 }}，更新 {{ cpaImportResult.updated || 0 }}，新增账号 {{ cpaImportResult.accounts_added || 0 }}，更新账号 {{ cpaImportResult.accounts_updated || 0 }}，重复 {{ cpaImportResult.duplicates || 0 }}
               </div>
@@ -879,10 +1317,10 @@
               </div>
             </div>
           </div>
-          <div class="px-4 py-3 border-t ui-border flex justify-end gap-3">
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeCpaImport"
-              class="px-4 py-2 ui-bg-subtle hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
               关闭
             </button>
             <button
@@ -890,7 +1328,7 @@
               :disabled="cpaImporting || (!cpaImportText.trim() && !cpaImportFiles.length)"
               class="px-4 py-2 text-sm rounded-lg border transition"
               :class="cpaImporting || (!cpaImportText.trim() && !cpaImportFiles.length)
-                ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-not-allowed'
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-purple-600 hover:bg-purple-500 text-white border-purple-500'">
               {{ cpaImporting ? '导入中...' : '开始导入' }}
             </button>
@@ -899,9 +1337,20 @@
       </AccessibleModal>
 
       <!-- 订阅状态弹窗 -->
-      <AccessibleModal v-if="subscriptionDialog.open" role="dialog" label="ChatGPT 订阅状态" @close="closeSubscriptionDialog">
-        <div ref="subscriptionDialogRef" tabindex="-1" @keydown.tab="trapAccountSecondaryDialogFocus($event, subscriptionDialogRef)">
-        <div class="w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 ui-bg-subtle shadow-2xl">
+      <Teleport to="body">
+        <div
+          v-if="subscriptionDialog.open"
+          ref="subscriptionDialogRef"
+          role="dialog"
+          aria-modal="true"
+          aria-label="ChatGPT 订阅状态"
+          tabindex="-1"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          @click.self="closeSubscriptionDialog"
+          @keydown.esc.stop="closeSubscriptionDialog"
+          @keydown.tab="trapAccountSecondaryDialogFocus($event, subscriptionDialogRef)"
+        >
+        <div class="w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
           <div class="max-h-[88vh] overflow-y-auto p-6">
             <div v-if="subscriptionDialog.loading" class="rounded-xl border border-teal-500/20 bg-teal-500/10 px-4 py-10 text-center text-sm text-teal-200">
               正在查询 ChatGPT 实时订阅状态...
@@ -910,7 +1359,7 @@
               {{ subscriptionDialog.error }}
             </div>
             <div v-else-if="subscriptionDialog.data" class="space-y-7">
-              <div class="flex flex-col gap-4 border-b ui-border pb-6 md:flex-row md:items-start md:justify-between">
+              <div class="flex flex-col gap-4 border-b border-slate-800 pb-6 md:flex-row md:items-start md:justify-between">
                 <div>
                   <h3 class="text-3xl font-black text-violet-400">{{ subscriptionPlanLabel }}</h3>
                   <div class="mt-3 break-all font-mono text-sm text-slate-400">
@@ -928,16 +1377,16 @@
                   <span class="rounded-full border px-3 py-1.5 text-xs font-bold"
                     :class="activeSubscription.renewing
                       ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                      : 'border-slate-700 ui-bg-subtle text-slate-300'">
+                      : 'border-slate-700 bg-slate-900 text-slate-300'">
                     {{ activeSubscription.renewing ? '自动续费' : '未自动续费' }}
                   </span>
                   <span class="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1.5 text-xs font-bold text-indigo-200">JWT={{ activeSubscription.jwt_plan_type || '-' }}</span>
-                  <button @click="closeSubscriptionDialog" class="rounded-full border border-slate-700 ui-bg-subtle px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:ui-bg-subtle hover:text-white">关闭</button>
+                  <button @click="closeSubscriptionDialog" class="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
                 </div>
               </div>
 
               <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                <div v-for="item in subscriptionSummaryItems" :key="item.label" class="rounded-xl border ui-border ui-bg-subtle/70 p-4">
+                <div v-for="item in subscriptionSummaryItems" :key="item.label" class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
                   <div class="text-xs text-slate-400">{{ item.label }}</div>
                   <div class="mt-3 whitespace-pre-line text-xl font-black text-white" :class="item.accent ? 'text-emerald-300 text-3xl' : ''">{{ item.value }}</div>
                   <div v-if="item.meta" class="mt-2 text-sm text-blue-300">{{ item.meta }}</div>
@@ -949,7 +1398,7 @@
                   订阅时间线
                 </div>
                 <div class="grid gap-4 md:grid-cols-3">
-                  <div v-for="item in subscriptionTimelineItems" :key="item.label" class="rounded-xl border ui-border ui-bg-subtle/70 p-4">
+                  <div v-for="item in subscriptionTimelineItems" :key="item.label" class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
                     <div class="text-xs text-slate-400">{{ item.label }}</div>
                     <div class="mt-3 break-all font-mono text-lg font-bold text-white">{{ item.value }}</div>
                   </div>
@@ -964,11 +1413,11 @@
                     <div class="mt-2 text-sm text-blue-200">{{ discount.label }}</div>
                   </div>
                 </div>
-                <div v-else class="rounded-xl border ui-border ui-bg-subtle/70 p-4 text-sm text-slate-500">暂无优惠</div>
+                <div v-else class="rounded-xl border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-500">暂无优惠</div>
               </div>
 
               <div>
-                <div class="mb-3 border-b ui-border pb-3 text-base font-bold text-blue-100">该账号可购买的套餐</div>
+                <div class="mb-3 border-b border-slate-800 pb-3 text-base font-bold text-blue-100">该账号可购买的套餐</div>
                 <div class="flex flex-wrap gap-2">
                   <span
                     v-for="plan in subscriptionAvailablePlanItems"
@@ -976,7 +1425,7 @@
                     class="rounded-lg border px-3 py-2 font-mono text-sm"
                     :class="plan === subscriptionPlanKey
                       ? 'border-violet-500 bg-violet-500/15 text-cyan-200'
-                      : 'ui-border ui-bg-subtle text-slate-100'">
+                      : 'border-slate-800 bg-slate-900 text-slate-100'">
                     {{ plan }}<span v-if="plan === subscriptionPlanKey"> ★</span>
                   </span>
                 </div>
@@ -984,27 +1433,38 @@
 
               <details class="group">
                 <summary class="cursor-pointer select-none text-sm text-slate-400 transition hover:text-slate-200">查看原始 JSON</summary>
-                <pre class="mt-3 max-h-72 overflow-auto rounded-xl border ui-border ui-bg-subtle/80 p-4 text-xs text-slate-300">{{ subscriptionRawJson }}</pre>
+                <pre class="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-4 text-xs text-slate-300">{{ subscriptionRawJson }}</pre>
               </details>
             </div>
             <div class="mt-6 flex justify-end">
-              <button ref="subscriptionDialogInitialFocusRef" type="button" @click="closeSubscriptionDialog" class="rounded-lg border border-slate-700 ui-bg-subtle px-4 py-2 text-sm font-semibold text-slate-300 transition hover:ui-bg-subtle hover:text-white">关闭</button>
+              <button ref="subscriptionDialogInitialFocusRef" type="button" @click="closeSubscriptionDialog" class="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
               </div>
             </div>
           </div>
         </div>
-      </AccessibleModal>
+      </Teleport>
 
       <!-- 最近邮件弹窗 -->
-      <AccessibleModal v-if="latestMailDialog.open" role="dialog" label="最近一封邮件" @close="closeLatestMailDialog">
-        <div ref="latestMailDialogRef" tabindex="-1" @keydown.tab="trapAccountSecondaryDialogFocus($event, latestMailDialogRef)">
-        <div class="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 ui-bg-subtle shadow-2xl">
-          <div class="flex flex-wrap items-start justify-between gap-3 border-b ui-border px-6 py-4">
+      <Teleport to="body">
+        <div
+          v-if="latestMailDialog.open"
+          ref="latestMailDialogRef"
+          role="dialog"
+          aria-modal="true"
+          aria-label="最近一封邮件"
+          tabindex="-1"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          @click.self="closeLatestMailDialog"
+          @keydown.esc.stop="closeLatestMailDialog"
+          @keydown.tab="trapAccountSecondaryDialogFocus($event, latestMailDialogRef)"
+        >
+        <div class="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-6 py-4">
             <div class="min-w-0">
               <h3 class="text-xl font-bold text-sky-300">最近一封邮件</h3>
               <div class="mt-1 break-all font-mono text-xs text-slate-400">{{ latestMailDialog.email }}</div>
             </div>
-            <button ref="latestMailDialogInitialFocusRef" type="button" @click="closeLatestMailDialog" class="rounded-full border border-slate-700 ui-bg-subtle px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:ui-bg-subtle hover:text-white">关闭</button>
+            <button ref="latestMailDialogInitialFocusRef" type="button" @click="closeLatestMailDialog" class="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
           </div>
           <div class="max-h-[82vh] overflow-y-auto p-6">
             <div v-if="latestMailDialog.loading" class="rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-10 text-center text-sm text-sky-200">
@@ -1013,14 +1473,14 @@
             <div v-else-if="latestMailDialog.error" class="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-5 text-sm text-red-300">
               {{ latestMailDialog.error }}
             </div>
-            <div v-else-if="!activeLatestMail" class="rounded-xl border ui-border ui-bg-subtle/70 px-4 py-10 text-center text-sm text-slate-500">
+            <div v-else-if="!activeLatestMail" class="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-10 text-center text-sm text-slate-500">
               收件箱暂无邮件
               <div v-if="latestMailDialog.data?.provider || latestMailDialog.data?.mail_email" class="mt-2 font-mono text-xs text-slate-600">
                 {{ latestMailDialog.data?.provider || '-' }} · {{ latestMailDialog.data?.mail_email || '-' }}
               </div>
             </div>
             <div v-else class="space-y-4">
-              <div class="rounded-xl border ui-border ui-bg-subtle/70 p-4">
+              <div class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
                 <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div class="min-w-0">
                     <div class="text-xs text-slate-500">
@@ -1032,7 +1492,7 @@
                       <div>收件人：<span class="font-mono text-slate-200">{{ activeLatestMail.toEmail || latestMailDialog.data?.mail_email || '-' }}</span></div>
                     </div>
                   </div>
-                  <div class="shrink-0 rounded-lg border ui-border ui-bg-subtle px-3 py-2 font-mono text-xs text-slate-400">
+                  <div class="shrink-0 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-400">
                     {{ formatLatestMailDate(activeLatestMail.createTime || activeLatestMail.createdAt) }}
                   </div>
                 </div>
@@ -1041,19 +1501,19 @@
                 v-if="activeLatestMail.html"
                 :srcdoc="latestMailSrcdoc"
                 sandbox=""
-                class="h-[48vh] w-full rounded-xl border ui-border bg-white"
+                class="h-[48vh] w-full rounded-xl border border-slate-800 bg-white"
               ></iframe>
-              <pre v-else class="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border ui-border ui-bg-subtle p-4 text-xs leading-5 text-slate-200">{{ activeLatestMail.text || activeLatestMail.content || '无正文' }}</pre>
+              <pre v-else class="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs leading-5 text-slate-200">{{ activeLatestMail.text || activeLatestMail.content || '无正文' }}</pre>
             </div>
           </div>
           </div>
         </div>
-      </AccessibleModal>
+      </Teleport>
 
       <!-- 账号操作编辑弹窗 -->
       <AccessibleModal v-if="accountTypeEditAccount" label="编辑账号操作" @close="closeAccountTypeEditor">
-        <div class="ui-bg-surface border ui-border rounded-xl w-full max-w-md">
-          <div class="px-4 py-3 border-b ui-border flex items-center justify-between">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">编辑账号操作</h3>
               <div class="text-xs text-gray-500 font-mono mt-0.5">{{ accountTypeEditAccount.email }}</div>
@@ -1066,7 +1526,7 @@
               <select
                 id="account-type-edit"
                 v-model="accountTypeEditValue"
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option v-for="option in editableAccountTypeOptions" :key="option.value" :value="option.value">
                   {{ option.label }}
                 </option>
@@ -1077,7 +1537,7 @@
               <select
                 id="account-status-edit"
                 v-model="accountStatusEditValue"
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option v-for="option in editableAccountStatusOptions" :key="option.value" :value="option.value">
                   {{ option.label }}
                 </option>
@@ -1088,7 +1548,7 @@
               <select
                 id="account-provider-edit"
                 v-model="accountBindProviderEditValue"
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option v-for="option in editableBindProviderOptions" :key="option.value" :value="option.value">
                   {{ option.label }}
                 </option>
@@ -1098,10 +1558,10 @@
               这里只修改本地账号池记录，不会自动移出 Team、同步 CPA 或刷新 auth 文件。
             </div>
           </div>
-          <div class="px-4 py-3 border-t ui-border flex justify-end gap-3">
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeAccountTypeEditor"
-              class="px-4 py-2 ui-bg-subtle hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
               取消
             </button>
             <button
@@ -1109,7 +1569,7 @@
               :disabled="accountTypeSaving || accountMetadataEditUnchanged"
               class="px-4 py-2 text-sm rounded-lg border transition"
               :class="accountTypeSaving || accountMetadataEditUnchanged
-                ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-not-allowed'
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-cyan-600 hover:bg-cyan-500 text-white border-cyan-500'">
               {{ accountTypeSaving ? '保存中...' : '保存' }}
             </button>
@@ -1119,8 +1579,8 @@
 
       <!-- 批量修改账号弹窗 -->
       <AccessibleModal v-if="batchAccountEditOpen" label="批量修改账号" @close="closeBatchAccountEditor">
-        <div class="ui-bg-surface border ui-border rounded-xl w-full max-w-md">
-          <div class="px-4 py-3 border-b ui-border flex items-center justify-between">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">批量修改账号</h3>
               <div class="text-xs text-gray-500 font-mono mt-0.5">{{ batchAccountEditEmails.length }} 个账号</div>
@@ -1133,7 +1593,7 @@
               <select
                 id="batch-account-type-edit"
                 v-model="batchAccountEditType"
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option :value="BATCH_METADATA_SKIP">不修改</option>
                 <option v-for="option in editableAccountTypeOptions" :key="option.value" :value="option.value">
                   {{ option.label }}
@@ -1145,7 +1605,7 @@
               <select
                 id="batch-account-status-edit"
                 v-model="batchAccountEditStatus"
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option :value="BATCH_METADATA_SKIP">不修改</option>
                 <option v-for="option in editableAccountStatusOptions" :key="option.value" :value="option.value">
                   {{ option.label }}
@@ -1157,7 +1617,7 @@
               <select
                 id="batch-account-provider-edit"
                 v-model="batchAccountEditProvider"
-                class="w-full ui-bg-muted border ui-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                 <option :value="BATCH_METADATA_SKIP">不修改</option>
                 <option v-for="option in editableBindProviderOptions" :key="option.value" :value="option.value">
                   {{ option.label }}
@@ -1168,10 +1628,10 @@
               只会修改选中的本地账号池记录；未选择的字段保持不变。
             </div>
           </div>
-          <div class="px-4 py-3 border-t ui-border flex justify-end gap-3">
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeBatchAccountEditor"
-              class="px-4 py-2 ui-bg-subtle hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
               取消
             </button>
             <button
@@ -1179,7 +1639,7 @@
               :disabled="batchAccountSaving || !batchAccountMetadataHasChanges"
               class="px-4 py-2 text-sm rounded-lg border transition"
               :class="batchAccountSaving || !batchAccountMetadataHasChanges
-                ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-not-allowed'
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-cyan-600 hover:bg-cyan-500 text-white border-cyan-500'">
               {{ batchAccountSaving ? '保存中...' : '保存' }}
             </button>
@@ -1189,8 +1649,8 @@
 
       <!-- 账密导出弹窗 -->
       <AccessibleModal v-if="credentialExportOpen" label="导出账密 TXT" @close="closeCredentialExport">
-        <div class="credential-export-panel ui-bg-surface border ui-border rounded-xl w-full max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden">
-          <div class="shrink-0 px-4 py-3 border-b ui-border flex items-center justify-between">
+        <div class="credential-export-panel bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden">
+          <div class="shrink-0 px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导出账密 TXT</h3>
               <div class="text-xs text-gray-500 mt-0.5">
@@ -1202,30 +1662,30 @@
           </div>
           <div class="credential-export-body p-4 space-y-4 min-h-0 flex-1 overflow-y-auto">
             <div class="grid gap-3 text-xs text-gray-300">
-              <div class="rounded-lg border ui-border ui-bg-muted/70 p-3">
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
                 <div class="font-semibold text-gray-100 mb-1">域名邮箱</div>
                 <div class="font-mono break-all">邮箱-----密码-----https://gptcode.external.cc.cd/</div>
               </div>
-              <div class="rounded-lg border ui-border ui-bg-muted/70 p-3">
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
                 <div class="font-semibold text-gray-100 mb-1">LuckMail</div>
                 <div class="font-mono break-all">邮箱-----token-----https://mail.cpacc.us.ci/</div>
               </div>
-              <div class="rounded-lg border ui-border ui-bg-muted/70 p-3">
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
                 <div class="font-semibold text-gray-100 mb-1">Outlook OAuth 邮箱</div>
                 <div class="font-mono break-all">邮箱----密码----client-id----refresh-token</div>
                 <div class="mt-1 text-gray-500">邮箱大小写按 Outlook 账号池原始记录导出。</div>
               </div>
-              <div class="rounded-lg border ui-border ui-bg-muted/70 p-3">
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
                 <div class="font-semibold text-gray-100 mb-1">Outlook mailapi 邮箱</div>
                 <div class="font-mono break-all">邮箱-----密码-----https://mailapi.icu/key?type=html&orderNo=...</div>
                 <div class="mt-1 text-gray-500">mailapi 类型保持原来的三段式导出。</div>
               </div>
             </div>
           </div>
-          <div class="shrink-0 px-4 py-3 border-t ui-border flex justify-end gap-3">
+          <div class="shrink-0 px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
             <button
               @click="closeCredentialExport"
-              class="px-4 py-2 ui-bg-subtle hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
               取消
             </button>
             <button
@@ -1233,7 +1693,7 @@
               :disabled="credentialExporting || !exportableAccounts.length"
               class="px-4 py-2 text-sm rounded-lg border transition"
               :class="credentialExporting || !exportableAccounts.length
-                ? 'ui-bg-subtle text-gray-500 border-gray-700 cursor-not-allowed'
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'">
               {{ credentialExporting ? '导出中...' : '导出 txt' }}
             </button>
@@ -1247,20 +1707,20 @@
       <div class="flex items-center justify-between gap-3 mb-3">
         <h2 class="text-lg font-semibold text-white">Kiro 统计面板</h2>
         <button @click="emit('refresh')"
-          class="px-3 py-1.5 ui-bg-subtle hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+          class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
           刷新
         </button>
       </div>
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div v-for="card in kiroCards" :key="card.label"
-          class="ui-bg-surface border ui-border rounded-xl p-4">
+          class="bg-gray-900 border border-gray-800 rounded-xl p-4">
           <div class="text-sm text-gray-400">{{ card.label }}</div>
           <div class="text-3xl font-bold mt-1" :class="card.color">{{ card.value }}</div>
         </div>
       </div>
 
-      <div class="ui-bg-surface border ui-border rounded-xl overflow-hidden">
-        <div class="px-4 py-3 border-b ui-border flex items-center justify-between gap-3 flex-wrap">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3 flex-wrap">
           <h2 class="text-lg font-semibold text-white">Kiro 账号列表</h2>
         </div>
         <div class="px-4 py-10 text-sm text-gray-500">
@@ -1271,8 +1731,21 @@
   </div>
 
   <!-- Loading skeleton -->
-  <UiStatePanel v-else-if="loading" state="loading" title="正在加载账号" message="请稍候…" />
-  <UiStatePanel v-else-if="accountsError" state="error" role="alert" title="账号数据加载失败" :message="accountsError" action-label="重新加载账号" @action="retryAccounts" />
+  <div v-else-if="loading" class="space-y-4">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div v-for="i in 4" :key="i" class="bg-gray-900 border border-gray-800 rounded-xl p-4 h-20 animate-pulse"></div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-xl h-64 animate-pulse"></div>
+  </div>
+  <div v-else-if="accountsError" role="alert" class="dashboard-load-error">
+    <div class="dashboard-load-error-icon" aria-hidden="true">!</div>
+    <div>
+      <h2>账号数据加载失败</h2>
+      <p>{{ accountsError }}</p>
+      <p class="dashboard-load-error-hint">网络恢复后重试；页面不会停在无反馈的空白状态。</p>
+    </div>
+    <button type="button" @click="retryAccounts">重新加载账号</button>
+  </div>
 </template>
 
 <script setup>
@@ -1290,16 +1763,6 @@ import { confirmExportStatusBatches } from '../exportCommit.js'
 import { createMessageClearScheduler } from '../messageLifecycle.js'
 import { createSessionStorageFacade } from '../sessionStorageScope.js'
 import AccessibleModal from './AccessibleModal.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiSegmentedControl from './ui/UiSegmentedControl.vue'
-import UiMetricSummary from './ui/UiMetricSummary.vue'
-import UiDataToolbar from './ui/UiDataToolbar.vue'
-import UiBatchBar from './ui/UiBatchBar.vue'
-import UiTableFrame from './ui/UiTableFrame.vue'
-import UiPagination from './ui/UiPagination.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
-import UiStatePanel from './ui/UiStatePanel.vue'
-import { accountStatusPresentation, accountTypePresentation, bindProviderPresentation, credentialExportPresentation, accountHubSyncPresentation } from '../operationsPresentation.js'
 
 const sessionStorage = createSessionStorageFacade()
 
@@ -3089,20 +3552,18 @@ async function submitCpaImport() {
   }
 }
 
-const activeFilterCount = computed(() => [emailFilter, statusFilter, accountTypeFilter, trialFilter, bindProviderFilter, registerDateFilter, registerStartTimeFilter, registerEndTimeFilter, credentialExportFilter, exportDateFilter, exportStartTimeFilter, exportEndTimeFilter, accountHubSyncFilter, authCredentialFilter, bindDateFilter, bindStartTimeFilter, bindEndTimeFilter].filter(filter => String(filter.value || '').length).length)
-
 const cards = computed(() => {
   if (!props.status) return []
   const s = props.status.summary
   return [
-    { key: 'active', label: '活跃', value: s.active, tone: 'success' },
-    { key: 'stashed', label: '暂存', value: s.stashed || 0, tone: 'neutral' },
-    { key: 'fail', label: '废弃', value: s.fail || 0, tone: 'danger' },
-    { key: 'free', label: 'Free', value: s.free || 0, tone: 'info' },
-    { key: 'team', label: 'Team', value: s.team || 0, tone: 'info' },
-    { key: 'plus', label: 'Plus', value: s.plus || 0, tone: 'info' },
-    { key: 'pro', label: 'Pro', value: s.pro || 0, tone: 'info' },
-    { key: 'total', label: '总计', value: s.total, tone: 'neutral' },
+    { label: '活跃', value: s.active, color: 'text-green-400' },
+    { label: '暂存', value: s.stashed || 0, color: 'text-slate-300' },
+    { label: '废弃', value: s.fail || 0, color: 'text-orange-400' },
+    { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
+    { label: 'Team', value: s.team || 0, color: 'text-violet-400' },
+    { label: 'Plus', value: s.plus || 0, color: 'text-sky-400' },
+    { label: 'Pro', value: s.pro || 0, color: 'text-blue-400' },
+    { label: '总计', value: s.total, color: 'text-white' },
   ]
 })
 
@@ -4222,3 +4683,4 @@ async function batchDelete() {
   }
 }
 </script>
+

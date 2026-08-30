@@ -27,7 +27,7 @@ assert.match(sidebar, /function handleDesktopBreakpointChange[\s\S]*closeMobileM
 assert.match(sidebar, /desktopMediaQuery\.addEventListener\('change', handleDesktopBreakpointChange\)/, 'the desktop breakpoint listener should be installed')
 assert.match(sidebar, /desktopMediaQuery\?*\.removeEventListener\('change', handleDesktopBreakpointChange\)/, 'the desktop breakpoint listener should be removed on unmount')
 assert.match(sidebar, /if \(mobileMenuOpen\.value\) void closeMobileMenu\(\)/, 'choosing a sheet destination should restore focus instead of dropping it on body')
-assert.match(pageLoadError, /<UiStatePanel[\s\S]*@action="emit\('retry'\)"/, 'a failed async page should expose an in-place retry action')
+assert.match(pageLoadError, /@click="emit\('retry'\)"/, 'a failed async page should expose an in-place retry action')
 assert.match(pageLoadError, /重新加载/, 'the async-page retry action should have a clear label')
 assert.match(app, /function retryPageLoad\(key\)/, 'the app shell should be able to recreate a failed async page')
 assert.match(app, /onRetry:\s*\(\)\s*=>\s*retryPageLoad\(key\)/, 'the async-page error view should retry the failed page in place')

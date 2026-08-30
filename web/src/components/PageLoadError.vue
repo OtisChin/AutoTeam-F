@@ -1,14 +1,10 @@
 <template>
-  <UiStatePanel
-    state="error"
-    title="页面加载失败"
-    :message="error?.message || '请检查网络后重新加载。'"
-    action-label="重新加载"
-    @action="emit('retry')"
-  />
+  <section class="page-load-error" role="alert">
+    <strong>页面加载失败</strong>
+    <span>{{ error?.message || '请刷新后重试' }}</span>
+  </section>
 </template>
+
 <script setup>
-import UiStatePanel from './ui/UiStatePanel.vue'
 defineProps({ error: { type: Error, default: null } })
-const emit = defineEmits(['retry'])
 </script>

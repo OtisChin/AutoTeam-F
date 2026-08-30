@@ -13,24 +13,38 @@
       class="mb-6 grid grid-cols-1 gap-4"
       :class="activeTab === 'gopay' ? 'xl:grid-cols-[420px_minmax(0,1fr)] xl:items-start' : ''">
       <div>
-        <UiPageHeader
-          :title="standalone ? 'GoPay' : '自动绑卡服务'"
-          eyebrow="工作流"
-          :description="standalone
-            ? '走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。'
-            : '支持生成官方支付链接，以及 ChatGPT、Kiro 绑卡流程。'"
-        />
-        <p v-if="false" class="text-sm text-gray-400" :class="!standalone ? 'mb-4' : ''">
+        <h2 class="text-xl font-bold text-white mb-2">{{ standalone ? 'GoPay' : '自动绑卡服务' }}</h2>
+        <p class="text-sm text-gray-400" :class="!standalone ? 'mb-4' : ''">
           {{ standalone
             ? '走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。'
             : '支持生成官方支付链接，以及 ChatGPT、Kiro 绑卡流程。' }}
         </p>
-        <UiSegmentedControl
-          v-if="!standalone"
-          v-model="activeTab"
-          :options="bindWorkflowTabs"
-          aria-label="绑卡工作流"
-        />
+        <div v-if="!standalone" class="flex flex-wrap gap-2">
+          <button
+            @click="activeTab = 'bind'"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="activeTab === 'bind'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            ChatGPT
+          </button>
+          <button
+            @click="activeTab = 'kiro'"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="activeTab === 'kiro'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            Kiro
+          </button>
+          <button
+            @click="activeTab = 'generate'"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="activeTab === 'generate'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            生成支付链接
+          </button>
+        </div>
       </div>
       <div
         v-if="activeTab === 'gopay'"
@@ -46,7 +60,7 @@
       </div>
     </div>
 
-    <div v-if="activeTab === 'generate'" data-workflow-stage="configuration" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+    <div v-if="activeTab === 'generate'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
       <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
         <div>
           <h3 class="text-lg font-semibold text-white">生成支付链接</h3>
@@ -282,7 +296,7 @@
       </div>
     </div>
 
-    <div v-if="activeTab === 'bind'" data-workflow-stage="configuration" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+    <div v-if="activeTab === 'bind'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
       <div class="mb-4">
         <h3 class="text-lg font-semibold text-white">ChatGPT</h3>
         <p class="text-sm text-gray-400 mt-1">
@@ -518,15 +532,13 @@
         </div>
 
         <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 min-w-0 flex flex-col">
-          <div data-workflow-stage="progress" class="flex items-center justify-between gap-3 mb-3">
+          <div class="flex items-center justify-between gap-3 mb-3">
             <div class="text-sm text-gray-400">实时绑卡日志</div>
-            <UiStatusBadge v-if="bindTaskRunning" tone="info" label="运行中" />
-            <UiStatusBadge v-else-if="bindTask" tone="neutral" label="已停止" />
             <div v-if="bindTask" class="text-xs text-gray-500 font-mono">
               {{ bindTask.task_id }}
             </div>
           </div>
-          <div data-workflow-stage="progress" class="rounded-lg border border-gray-800 bg-gray-900 p-3 flex-1 min-h-[420px] overflow-y-auto space-y-2">
+          <div class="rounded-lg border border-gray-800 bg-gray-900 p-3 flex-1 min-h-[420px] overflow-y-auto space-y-2">
             <div v-if="!bindLogEntries.length" class="text-sm text-gray-500">
               尚未提交绑卡任务。
             </div>
@@ -546,7 +558,7 @@
       </div>
     </div>
 
-    <div v-else-if="activeTab === 'kiro'" data-workflow-stage="configuration" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+    <div v-else-if="activeTab === 'kiro'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
       <div class="mb-4">
         <h3 class="text-lg font-semibold text-white">Kiro</h3>
         <p class="text-sm text-gray-400 mt-1">
@@ -558,7 +570,7 @@
       </div>
     </div>
 
-    <div v-else-if="activeTab === 'gopay'" data-workflow-stage="configuration" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6 xl:h-[calc(100vh-150px)] xl:min-h-0 xl:flex xl:flex-col xl:overflow-hidden">
+    <div v-else-if="activeTab === 'gopay'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6 xl:h-[calc(100vh-150px)] xl:min-h-0 xl:flex xl:flex-col xl:overflow-hidden">
       <div class="grid grid-cols-1 gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[480px_minmax(0,1fr)] xl:overflow-hidden">
         <div class="flex flex-col gap-3 xl:min-h-0">
           <div class="shrink-0 rounded-xl border border-gray-800 bg-gray-950/60 p-4">
@@ -1437,10 +1449,8 @@
         </div>
 
         <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 min-w-0 flex flex-col h-[520px] xl:h-full min-h-0">
-          <div data-workflow-stage="progress" class="flex items-center justify-between gap-3 mb-3">
+          <div class="flex items-center justify-between gap-3 mb-3">
             <div class="text-sm text-gray-400">实时 GoPay 日志</div>
-            <UiStatusBadge v-if="gopayTaskRunning" tone="info" label="运行中" />
-            <UiStatusBadge v-else-if="gopayTask" tone="neutral" label="已停止" />
             <div v-if="gopayTask" class="text-xs text-gray-500 font-mono">
               {{ gopayTask.task_id }}
             </div>
@@ -1465,7 +1475,7 @@
       </div>
     </div>
 
-    <div v-if="activeTab === 'generate'" data-workflow-stage="result" class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div v-if="activeTab === 'generate'" class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 class="text-lg font-semibold text-white mb-4">历史记录</h3>
       <div class="space-y-2">
         <div v-if="!history.length" class="text-sm text-gray-500">暂无历史记录</div>
@@ -1854,9 +1864,6 @@ import { api } from '../api.js'
 import { computeGoPayBoardView } from '../gopayBoard.js'
 import { createPollingLifecycle } from '../pollingLifecycle.js'
 import { createSessionStorageFacade } from '../sessionStorageScope.js'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiSegmentedControl from './ui/UiSegmentedControl.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
 import {
   bindCountryOptions,
   bindPlanLabel,
@@ -1879,13 +1886,6 @@ const props = defineProps({
   },
 })
 const emit = defineEmits(['refresh'])
-
-const bindWorkflowTabs = [
-  { value: 'bind', label: 'ChatGPT', description: '绑卡' },
-  { value: 'kiro', label: 'Kiro', description: '绑卡' },
-  { value: 'generate', label: '生成支付链接', description: '配置' },
-  { value: 'gopay', label: 'GoPay', description: '支付' },
-]
 
 const BIND_HISTORY_KEY = 'autotoken_bind_history_v1'
 const CHATGPT_BIND_FORM_STATE_KEY = 'autotoken_chatgpt_bind_form_state_v1'

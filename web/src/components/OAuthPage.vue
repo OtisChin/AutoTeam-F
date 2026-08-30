@@ -1,14 +1,5 @@
 <template>
-  <div class="oauth-workspace">
-    <WorkflowWorkspace
-      title="OAuth 登录"
-      eyebrow="授权 / 手动登录"
-      description="生成链接、完成授权并提交回调，状态会在当前工作区持续更新。"
-      :status-label="manualAccountBusy ? '授权进行中' : (manualAccountStatus?.status === 'completed' ? '授权完成' : '工作区就绪')"
-      :status-tone="manualAccountBusy ? 'info' : (manualAccountStatus?.status === 'completed' ? 'success' : 'neutral')"
-    >
-      <template #configuration>
-        <WorkflowStage name="configuration" title="生成链接" description="输入账号邮箱并启动 OAuth 会话。">
+  <div class="mt-6 space-y-6">
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
@@ -17,6 +8,14 @@
             参考 CLIProxyAPI 的手动 OAuth 思路：系统先生成认证链接，你在浏览器中手动完成登录，最后把回调 URL 粘贴回来完成认证。
           </p>
         </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="manualAccountBusy
+            ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'"
+        >
+          {{ manualAccountBusy ? '进行中' : '空闲' }}
+        </span>
       </div>
 
       <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">
@@ -40,7 +39,6 @@
       <div v-if="!manualAccountBusy" class="space-y-3">
         <input
           v-model.trim="manualEmail"
-          aria-label="OAuth 账号邮箱"
           type="email"
           autocomplete="username"
           placeholder="输入账号邮箱，用于自动获取验证码"
@@ -111,7 +109,6 @@
         <div class="space-y-3">
           <input
             v-model.trim="manualCallbackUrl"
-            aria-label="OAuth 回调 URL"
             type="text"
             placeholder="粘贴回调 URL，例如 http://localhost:1455/auth/callback?code=...&state=..."
             :disabled="manualSubmitting"
@@ -141,34 +138,12 @@
         </div>
       </div>
     </div>
-        </WorkflowStage>
-      </template>
-      <template #progress>
-        <WorkflowStage name="progress" title="完成授权" description="在浏览器中完成登录，自动回调或手动回调均可。" :state="manualAccountBusy ? 'active' : 'idle'">
-          <UiStatusBadge :label="manualAccountBusy ? '等待浏览器授权' : '等待授权'" :tone="manualAccountBusy ? 'info' : 'neutral'" />
-        </WorkflowStage>
-      </template>
-      <template #result>
-        <WorkflowStage name="result" title="提交回调" description="提交最终回调 URL 后交换 token 并保存账号。" :state="manualAccountStatus?.status === 'completed' ? 'complete' : (manualAccountStatus?.status === 'error' ? 'error' : 'idle')">
-          <UiStatePanel v-if="manualAccountStatus?.status === 'completed'" state="empty" title="OAuth 已完成" :message="manualAccountStatus.message || '账号已添加。'" />
-          <UiStatePanel v-else-if="manualAccountStatus?.status === 'error'" state="error" title="OAuth 失败" :message="manualAccountStatus.error || '请检查回调并重试。'" />
-          <UiStatePanel v-else state="empty" title="等待回调" message="完成浏览器授权后，在配置区提交回调 URL。" />
-        </WorkflowStage>
-      </template>
-      <template #resources>
-        <WorkflowStage name="resources" title="授权资源" description="当前链接和回调状态" state="idle"><UiStatusBadge label="状态由服务端同步" tone="info" /></WorkflowStage>
-      </template>
-    </WorkflowWorkspace>
   </div>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '../api.js'
-import WorkflowStage from './workflow/WorkflowStage.vue'
-import WorkflowWorkspace from './workflow/WorkflowWorkspace.vue'
-import UiStatePanel from './ui/UiStatePanel.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
 
 const props = defineProps({
   manualAccountStatus: {

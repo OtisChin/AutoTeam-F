@@ -3,41 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#f5f5f7" />
   <title>AutoToken</title>
-  <script data-theme-bootstrap>
-    (() => {
-      const storageKey = 'autotoken_theme'
-      const allowed = new Set(['system', 'light', 'dark'])
-      let preference = 'system'
-      try {
-        const stored = localStorage.getItem(storageKey)
-        if (allowed.has(stored)) preference = stored
-      } catch {}
-
-      let resolvedTheme = preference
-      if (preference === 'system') {
-        try {
-          resolvedTheme = matchMedia('(prefers-color-scheme: dark)').matches
-            ? 'dark'
-            : 'light'
-        } catch {
-          resolvedTheme = 'light'
-        }
-      }
-
-      const root = document.documentElement
-      root.dataset.themePreference = preference
-      root.dataset.theme = resolvedTheme
-      root.style.colorScheme = resolvedTheme
-      const themeColor = document.querySelector('meta[name="theme-color"]')
-      if (themeColor) {
-        themeColor.content = resolvedTheme === 'dark' ? '#151517' : '#f5f5f7'
-      }
-    })()
-  </script>
 </head>
-<body class="min-h-screen">
+<body class="bg-gray-950 text-gray-100 min-h-screen">
   <div id="app"></div>
   <script type="module" src="/src/main.js"></script>
 </body>

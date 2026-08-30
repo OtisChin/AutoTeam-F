@@ -1,62 +1,118 @@
 <template>
-  <section class="task-history-workspace">
-    <UiMetricSummary :items="metricItems" label="任务指标" />
-    <UiDataToolbar :result-label="`${filteredTasks.length} / ${tasks.length} 条任务`" :active-filter-count="activeFilterCount" clearable @clear-filters="clearFilters">
-      <template #filters>
-        <label class="ui-inline-field"><span>搜索</span><input v-model.trim="query" type="search" placeholder="任务 ID、参数或结果" /></label>
-        <label class="ui-inline-field"><span>状态</span><select v-model="status"><option value="">全部</option><option value="pending">待执行</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">失败</option></select></label>
-        <label class="ui-inline-field"><span>命令</span><input v-model.trim="command" type="search" placeholder="筛选命令" /></label>
-      </template>
-    </UiDataToolbar>
-    <UiStatePanel v-if="!tasks.length" state="empty" title="暂无任务记录" message="后台任务完成后会显示在这里。" />
-    <UiTableFrame v-else label="任务历史" :empty="!pagedTasks.length">
-      <table class="ui-data-table">
-        <thead><tr><th>任务 ID</th><th>命令</th><th>状态</th><th>创建时间</th><th>耗时</th><th>结果</th><th>操作</th></tr></thead>
+  <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+    <div class="px-4 py-3 border-b border-gray-800">
+      <h2 class="text-lg font-semibold text-white">任务历史</h2>
+    </div>
+
+    <div v-if="tasks.length === 0" class="px-4 py-8 text-center text-gray-500 text-sm">
+      暂无任务记录
+    </div>
+
+    <div v-else class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-gray-400 text-left border-b border-gray-800">
+            <th class="px-4 py-3 font-medium">任务 ID</th>
+            <th class="px-4 py-3 font-medium">命令</th>
+            <th class="px-4 py-3 font-medium">参数</th>
+            <th class="px-4 py-3 font-medium">状态</th>
+            <th class="px-4 py-3 font-medium">创建时间</th>
+            <th class="px-4 py-3 font-medium">耗时</th>
+            <th class="px-4 py-3 font-medium">结果</th>
+          </tr>
+        </thead>
         <tbody>
-          <tr v-for="task in pagedTasks" :key="task.task_id || task.id">
-            <td><code>{{ task.task_id || task.id || '-' }}</code></td>
-            <td>{{ task.command || '-' }}</td>
-            <td><UiStatusBadge :label="taskStatusPresentation(task.status).label" :tone="taskStatusPresentation(task.status).tone" /></td>
-            <td>{{ formatTime(task.created_at) }}</td><td>{{ duration(task) }}</td>
-            <td class="ui-table-truncate">{{ task.error || formatResult(task.result) }}</td>
-            <td><UiButton variant="quiet" size="sm" @click="openDetail(task)">详情</UiButton></td>
+          <tr v-for="task in tasks" :key="task.task_id"
+            class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
+            <td class="px-4 py-3 font-mono text-xs text-gray-400">{{ task.task_id }}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-0.5 bg-gray-800 rounded text-xs font-medium text-gray-300">
+                {{ task.command }}
+              </span>
+            </td>
+            <td class="px-4 py-3 text-xs text-gray-400">{{ formatParams(task.params) }}</td>
+            <td class="px-4 py-3">
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="taskStatusClass(task.status)">
+                <span v-if="task.status === 'running'" class="animate-spin inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full"></span>
+                <span v-else class="w-1.5 h-1.5 rounded-full" :class="taskDotClass(task.status)"></span>
+                {{ taskStatusLabel(task.status) }}
+              </span>
+            </td>
+            <td class="px-4 py-3 text-xs text-gray-400">{{ formatTime(task.created_at) }}</td>
+            <td class="px-4 py-3 text-xs text-gray-400">{{ duration(task) }}</td>
+            <td class="px-4 py-3 text-xs max-w-xs truncate" :class="taskHasFailure(task) ? 'text-red-400' : 'text-gray-400'">
+              {{ task.error || formatResult(task.result) }}
+            </td>
           </tr>
         </tbody>
       </table>
-      <template #footer><UiPagination v-model:page="page" :page-size="pageSize" :total-items="filteredTasks.length" :page-sizes="[25, 50, 100]" @update:page-size="setPageSize" /></template>
-    </UiTableFrame>
-    <AccessibleModal v-if="detailTask" label="任务详情" @close="detailTask = null">
-      <section class="ui-modal-card"><header class="ui-modal-header"><h2>任务详情</h2><UiButton variant="quiet" size="sm" @click="detailTask = null">关闭</UiButton></header><div class="ui-modal-body ui-detail-grid"><dl><dt>任务 ID</dt><dd>{{ detailTask.task_id || detailTask.id || '-' }}</dd><dt>命令</dt><dd>{{ detailTask.command || '-' }}</dd><dt>状态</dt><dd><UiStatusBadge :label="taskStatusPresentation(detailTask.status).label" :tone="taskStatusPresentation(detailTask.status).tone" /></dd></dl><pre>{{ JSON.stringify({ params: detailTask.params, result: detailTask.result, error: detailTask.error }, null, 2) }}</pre></div></section>
-    </AccessibleModal>
-  </section>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
-import { filterTaskHistory, pageTaskHistory, summarizeTaskHistory, TASK_HISTORY_PAGE_SIZE } from '../taskHistoryData.js'
-import { taskStatusPresentation } from '../operationsPresentation.js'
-import AccessibleModal from './AccessibleModal.vue'
-import UiButton from './ui/UiButton.vue'
-import UiDataToolbar from './ui/UiDataToolbar.vue'
-import UiMetricSummary from './ui/UiMetricSummary.vue'
-import UiPagination from './ui/UiPagination.vue'
-import UiStatePanel from './ui/UiStatePanel.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
-import UiTableFrame from './ui/UiTableFrame.vue'
+defineProps({
+  tasks: { type: Array, default: () => [] },
+})
 
-const props = defineProps({ tasks: { type: Array, default: () => [] } })
-const query = ref(''); const status = ref(''); const command = ref(''); const page = ref(1); const pageSize = ref(TASK_HISTORY_PAGE_SIZE); const detailTask = ref(null)
-const filteredTasks = computed(() => filterTaskHistory(props.tasks, { query: query.value, status: status.value, command: command.value }))
-const paged = computed(() => pageTaskHistory(filteredTasks.value, page.value, pageSize.value))
-const pagedTasks = computed(() => paged.value.rows)
-const summary = computed(() => summarizeTaskHistory(props.tasks))
-const metricItems = computed(() => [{ key: 'total', label: '总数', value: summary.value.total }, { key: 'active', label: '进行中', value: summary.value.active, tone: 'warning' }, { key: 'completed', label: '已完成', value: summary.value.completed, tone: 'success' }, { key: 'failed', label: '失败', value: summary.value.failed, tone: 'danger' }])
-const activeFilterCount = computed(() => [query.value, status.value, command.value].filter(Boolean).length)
-watch(filteredTasks, () => { page.value = 1 })
-function setPageSize(value) { pageSize.value = Number(value) || TASK_HISTORY_PAGE_SIZE; page.value = 1 }
-function clearFilters() { query.value = ''; status.value = ''; command.value = '' }
-function openDetail(task) { detailTask.value = task }
-function formatTime(ts) { if (!ts) return '-'; const d = new Date(Number(ts) * 1000); return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString() }
-function duration(task) { const start = Number(task?.started_at || task?.created_at); const end = Number(task?.finished_at || (task?.status === 'running' ? Date.now() / 1000 : 0)); if (!start || !end) return '-'; const sec = Math.max(0, Math.round(end - start)); return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s` }
-function formatResult(result) { if (result == null) return '-'; if (typeof result === 'string') return result; if (result.message) return result.message; try { return JSON.stringify(result) } catch { return String(result) } }
+function taskStatusClass(s) {
+  return {
+    pending: 'text-gray-400',
+    running: 'text-yellow-400',
+    completed: 'text-green-400',
+    failed: 'text-red-400',
+  }[s] || 'text-gray-400'
+}
+
+function taskDotClass(s) {
+  return {
+    pending: 'bg-gray-400',
+    completed: 'bg-green-400',
+    failed: 'bg-red-400',
+  }[s] || 'bg-gray-400'
+}
+
+function taskStatusLabel(s) {
+  return { pending: '等待中', running: '执行中', completed: '已完成', failed: '失败' }[s] || s
+}
+
+function formatTime(ts) {
+  if (!ts) return '-'
+  const d = new Date(ts * 1000)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+}
+
+function duration(task) {
+  const start = task.started_at || task.created_at
+  const end = task.finished_at || (task.status === 'running' ? Date.now() / 1000 : null)
+  if (!start || !end) return '-'
+  const sec = Math.round(end - start)
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  return `${min}m ${sec % 60}s`
+}
+
+function formatParams(params) {
+  if (!params || Object.keys(params).length === 0) return '-'
+  return Object.entries(params).map(([k, v]) => `${k}=${v}`).join(', ')
+}
+
+function formatResult(result) {
+  if (result === null || result === undefined) return '-'
+  if (typeof result === 'string') return result
+  const failed = Number(result.failed || 0)
+  if (failed > 0 && Array.isArray(result.results)) {
+    const firstFailure = result.results.find(item => item && !['registered', 'success'].includes(String(item.status || '')))
+    const reason = firstFailure?.reason || firstFailure?.message || firstFailure?.raw || firstFailure?.error
+    if (reason) return `失败原因：${reason}`
+  }
+  if (result.message) return result.message
+  return JSON.stringify(result)
+}
+
+function taskHasFailure(task) {
+  if (task?.error) return true
+  const result = task?.result
+  return Boolean(result && Number(result.failed || 0) > 0)
+}
 </script>

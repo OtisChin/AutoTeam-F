@@ -10,11 +10,10 @@ export function createRequestTimeoutError(timeoutMs) {
 export async function fetchWithTimeout(
   input,
   init = {},
-  { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = globalThis.fetch, consume = null } = {},
+  { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = globalThis.fetch } = {},
 ) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    const response = await fetchImpl(input, init)
-    return typeof consume === 'function' ? await consume(response) : response
+    return fetchImpl(input, init)
   }
 
   const controller = new AbortController()
@@ -30,8 +29,7 @@ export async function fetchWithTimeout(
 
   const timeoutId = setTimeout(() => controller.abort(timeoutError), timeoutMs)
   try {
-    const response = await fetchImpl(input, { ...init, signal: controller.signal })
-    return typeof consume === 'function' ? await consume(response) : response
+    return await fetchImpl(input, { ...init, signal: controller.signal })
   } catch (error) {
     if (controller.signal.reason === timeoutError) throw timeoutError
     throw error

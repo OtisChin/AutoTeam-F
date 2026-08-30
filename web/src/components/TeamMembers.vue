@@ -1,45 +1,175 @@
 <template>
-  <div class="team-workspace">
-    <UiPageHeader title="Team 成员" eyebrow="账号 / Team" description="成员、邀请和本地账号状态" :status="error && data ? '显示上次成功数据' : ''">
-      <template #actions><UiButton variant="secondary" :loading="loading" @click="fetchMembers">刷新</UiButton></template>
-    </UiPageHeader>
-    <UiMetricSummary label="Team 指标" :items="metricItems" />
-    <UiStatePanel v-if="!data && loading" state="loading" title="正在加载 Team 成员" message="读取成员和邀请状态…" />
-    <UiStatePanel v-else-if="!data && error" state="error" title="Team 成员加载失败" :message="error" action-label="重试" @action="fetchMembers" />
-    <UiStatePanel v-else-if="data && error" state="partial" title="显示上次成功数据" :message="error" />
-    <UiStatePanel v-else-if="data && !members.length" state="empty" title="暂无 Team 成员" message="邀请成员后，他们会显示在这里。" />
-    <UiTableFrame label="Team 成员" :busy="loading" :empty="!members.length" min-width="900px">
-      <template #header><span class="ui-table-frame-meta">{{ members.length }} 位成员 · {{ inviteCount }} 个待接受邀请</span></template>
-      <table class="ui-data-table"><thead><tr><th>#</th><th>邮箱</th><th>角色</th><th>状态</th><th>来源</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="(member, index) in members" :key="memberKey(member)"><td class="ui-table-index">{{ index + 1 }}</td><td><strong>{{ member.email || '-' }}</strong><small class="ui-table-subtext">{{ member.user_id || '邀请中' }}</small></td><td><UiStatusBadge :label="roleLabel(member)" :tone="member.role === 'account-owner' ? 'info' : 'neutral'" /></td><td><UiStatusBadge :label="member.type === 'invite' ? '待接受' : '已加入'" :tone="member.type === 'invite' ? 'warning' : 'success'" /></td><td><UiStatusBadge :label="member.is_local ? '本地管理' : '外部'" :tone="member.is_local ? 'info' : 'neutral'" /></td><td><UiButton v-if="member.role !== 'account-owner'" variant="danger" size="sm" :loading="removingId === memberKey(member)" @click="requestRemove(member)">移出</UiButton><span v-else class="ui-muted">所有者</span></td></tr></tbody>
-      </table>
-    </UiTableFrame>
-    <AccessibleModal v-if="pendingMember" label="确认移出 Team 成员" @close="closeRemoveDialog"><section class="ui-modal-card"><header class="ui-modal-header"><h2>确认移出成员</h2><UiButton variant="quiet" size="sm" aria-label="关闭" @click="closeRemoveDialog">关闭</UiButton></header><div class="ui-modal-body"><p>确认{{ pendingMember.type === 'invite' ? '取消邀请' : '移出 Team' }} <strong>{{ pendingMember.email }}</strong>？</p></div><footer class="ui-modal-footer"><UiButton variant="quiet" @click="closeRemoveDialog">取消</UiButton><UiButton variant="danger" :loading="Boolean(removingId)" @click="confirmRemove">确认</UiButton></footer></section></AccessibleModal>
+  <div>
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-xl font-bold text-white">Team 成员</h2>
+      <button @click="fetchMembers" :disabled="loading"
+        class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm rounded-lg border border-gray-700 transition disabled:opacity-50">
+        {{ loading ? '加载中...' : '刷新' }}
+      </button>
+    </div>
+
+    <div v-if="error" class="mb-4 px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">
+      {{ error }}
+    </div>
+
+    <div v-if="data" class="space-y-4">
+      <!-- 统计 -->
+      <div class="flex gap-4 text-sm">
+        <span class="px-3 py-1.5 bg-gray-800 rounded-lg text-gray-300">成员: <span class="text-white font-medium">{{ data.total }}</span></span>
+        <span v-if="data.invites > 0" class="px-3 py-1.5 bg-gray-800 rounded-lg text-gray-300">待接受邀请: <span class="text-yellow-400 font-medium">{{ data.invites }}</span></span>
+      </div>
+
+      <!-- 成员表格 -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-gray-400 text-left border-b border-gray-800">
+                <th class="px-4 py-3 font-medium">#</th>
+                <th class="px-4 py-3 font-medium">邮箱</th>
+                <th class="px-4 py-3 font-medium">角色</th>
+                <th class="px-4 py-3 font-medium">类型</th>
+                <th class="px-4 py-3 font-medium">来源</th>
+                <th class="px-4 py-3 font-medium text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(m, i) in data.members" :key="m.email + m.type"
+                class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
+                <td class="px-4 py-3 text-gray-500">{{ i + 1 }}</td>
+                <td class="px-4 py-3 font-mono text-xs">{{ m.email }}</td>
+                <td class="px-4 py-3">
+                  <span class="px-2 py-0.5 rounded text-xs font-medium"
+                    :class="{
+                      'bg-purple-500/10 text-purple-400': m.role === 'account-owner',
+                      'bg-blue-500/10 text-blue-400': m.role === 'account-admin',
+                      'bg-gray-500/10 text-gray-300': m.role !== 'account-owner' && m.role !== 'account-admin',
+                    }">
+                    {{ m.role || 'member' }}
+                  </span>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="px-2 py-0.5 rounded text-xs font-medium"
+                    :class="m.type === 'invite' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-green-500/10 text-green-400'">
+                    {{ m.type === 'invite' ? '待接受' : '已加入' }}
+                  </span>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs" :class="m.is_local ? 'text-blue-400' : 'text-gray-500'">
+                    {{ m.is_local ? '本地管理' : '外部' }}
+                  </span>
+                </td>
+                <td class="px-4 py-3 text-right">
+                  <button
+                    v-if="m.role !== 'account-owner'"
+                    @click="removeMember(m)"
+                    :disabled="removingId === memberKey(m)"
+                    class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+                    :class="removingId === memberKey(m)
+                      ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                      : 'bg-rose-600/10 text-rose-400 border-rose-500/30 hover:bg-rose-600/20'"
+                  >
+                    {{ removingId === memberKey(m) ? '处理中...' : '移出' }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div v-else-if="loading" class="bg-gray-900 border border-gray-800 rounded-xl h-64 animate-pulse"></div>
+
+    <!-- Empty -->
+    <div v-else class="text-center text-gray-500 py-12">
+      点击「刷新」加载 Team 成员列表
+    </div>
   </div>
 </template>
+
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { api } from '../api.js'
 import { createSessionStorageFacade } from '../sessionStorageScope.js'
-import AccessibleModal from './AccessibleModal.vue'
-import UiButton from './ui/UiButton.vue'
-import UiMetricSummary from './ui/UiMetricSummary.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiStatePanel from './ui/UiStatePanel.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
-import UiTableFrame from './ui/UiTableFrame.vue'
-const sessionStorage = createSessionStorageFacade(); const CACHE_KEY = 'autotoken_team_members'; const CACHE_TTL = 600000
-const data = ref(null); const loading = ref(false); const error = ref(''); const removingId = ref(''); const pendingMember = ref(null)
-const members = computed(() => Array.isArray(data.value?.members) ? data.value.members : [])
-const inviteCount = computed(() => Number(data.value?.invites || members.value.filter(member => member.type === 'invite').length))
-const metricItems = computed(() => [{ key: 'total', label: '成员总数', value: Number(data.value?.total ?? members.value.length), tone: 'neutral' }, { key: 'active', label: '已加入', value: members.value.filter(member => member.type !== 'invite').length, tone: 'success' }, { key: 'invites', label: '待接受邀请', value: inviteCount.value, tone: 'warning' }])
-function memberKey(member) { return `${member.type || 'member'}:${member.user_id || ''}:${member.email || ''}` }
-function roleLabel(member) { return member.role === 'account-owner' ? '所有者' : member.role === 'account-admin' ? '管理员' : '成员' }
-function loadCache() { try { const cached = JSON.parse(sessionStorage.getItem(CACHE_KEY) || 'null'); return cached?.time && Date.now() - cached.time < CACHE_TTL ? cached.data : null } catch { return null } }
-function saveCache(value) { try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ data: value, time: Date.now() })) } catch {} }
-async function fetchMembers() { loading.value = true; error.value = ''; try { const next = await api.getTeamMembers(); data.value = next; saveCache(next) } catch (e) { error.value = e?.message || '加载失败' } finally { loading.value = false } }
-function requestRemove(member) { if (member.role !== 'account-owner') pendingMember.value = member }
-function closeRemoveDialog() { if (!removingId.value) pendingMember.value = null }
-async function confirmRemove() { const member = pendingMember.value; if (!member) return; removingId.value = memberKey(member); error.value = ''; try { await api.removeTeamMember({ email: member.email, user_id: member.user_id, type: member.type }); sessionStorage.removeItem(CACHE_KEY); pendingMember.value = null; await fetchMembers() } catch (e) { error.value = e?.message || '移出失败' } finally { removingId.value = '' } }
-onMounted(() => { const cached = loadCache(); if (cached) data.value = cached; else void fetchMembers() })
+
+const sessionStorage = createSessionStorageFacade()
+
+const data = ref(null)
+const loading = ref(false)
+const error = ref('')
+const removingId = ref('')
+
+const CACHE_KEY = 'autotoken_team_members'
+
+function loadCache() {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY)
+    if (raw) {
+      const cached = JSON.parse(raw)
+      // 缓存 10 分钟有效
+      if (cached.time && Date.now() - cached.time < 600000) {
+        return cached.data
+      }
+    }
+  } catch {}
+  return null
+}
+
+function saveCache(d) {
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify({ data: d, time: Date.now() }))
+  } catch {}
+}
+
+function memberKey(member) {
+  return `${member.type}:${member.user_id}:${member.email}`
+}
+
+async function fetchMembers() {
+  loading.value = true
+  error.value = ''
+  try {
+    data.value = await api.getTeamMembers()
+    saveCache(data.value)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function removeMember(member) {
+  const actionText = member.type === 'invite' ? '取消邀请' : '移出 Team'
+  const ok = window.confirm(`确认${actionText} ${member.email}？`)
+  if (!ok) return
+
+  removingId.value = memberKey(member)
+  error.value = ''
+  try {
+    await api.removeTeamMember({
+      email: member.email,
+      user_id: member.user_id,
+      type: member.type,
+    })
+    try {
+      sessionStorage.removeItem(CACHE_KEY)
+    } catch {}
+    await fetchMembers()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    removingId.value = ''
+  }
+}
+
+onMounted(() => {
+  const cached = loadCache()
+  if (cached) {
+    data.value = cached
+  } else {
+    fetchMembers()
+  }
+})
 </script>

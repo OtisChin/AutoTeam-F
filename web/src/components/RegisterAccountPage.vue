@@ -1,15 +1,5 @@
 <template>
   <div class="space-y-6 xl:h-[calc(100vh-3rem)] xl:min-h-0">
-    <WorkflowWorkspace title="注册账号" eyebrow="账号 / Registration" description="按配置、启动、进度和结果组织注册任务" :status-label="props.runningTask ? '任务进行中' : '工作区就绪'" :status-tone="props.runningTask ? 'warning' : 'info'">
-      <template #configuration>
-        <WorkflowStage name="configuration" title="注册配置" description="选择注册方式、邮箱来源、代理和短信服务" state="idle"><UiStatusBadge label="配置保留" tone="info" /></WorkflowStage>
-        <WorkflowStage name="launch" title="启动任务" description="提交后会保留当前表单与任务快照" state="idle"><UiButton variant="primary" :loading="registeringBusy || registeringAccount" :disabled="!canSubmitRegister" @click="submitManualRegister">开始注册</UiButton></WorkflowStage>
-      </template>
-      <template #progress><WorkflowStage name="progress" title="注册进度" description="实时任务、取消控制和日志" :state="props.runningTask ? 'active' : 'idle'"><UiStatusBadge :label="props.runningTask ? '执行中' : '等待任务'" :tone="props.runningTask ? 'warning' : 'neutral'" /></WorkflowStage></template>
-      <template #result><WorkflowStage name="result" title="注册结果" description="查看成功、失败和恢复信息" state="idle"><UiStatePanel state="empty" title="暂无结果" message="启动注册任务后，结果会显示在这里。" /></WorkflowStage></template>
-      <template #resources><WorkflowStage name="resources" title="邮箱池资源" description="Outlook、iCloud 与 mail.com 邮箱池" state="idle"><UiStatusBadge label="按需加载" tone="neutral" /></WorkflowStage></template>
-    </WorkflowWorkspace>
-
     <div class="grid shrink-0 grid-cols-1 gap-4 xl:grid-cols-[380px_minmax(0,1fr)] xl:items-stretch">
       <div class="flex flex-col justify-center">
         <h2 class="text-xl font-bold text-white">注册账号</h2>
@@ -836,7 +826,7 @@
       @click.self="closeOutlookPoolDialog"
     >
       <section
-        role="region"
+        role="dialog"
         aria-modal="true"
         aria-labelledby="outlook-pool-title"
         class="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
@@ -980,7 +970,7 @@
   <Teleport to="body">
     <div v-if="mailComPoolDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" @click.self="closeMailComPoolDialog">
       <section
-        role="region"
+        role="dialog"
         aria-modal="true"
         aria-labelledby="mailcom-pool-title"
         class="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
@@ -1179,7 +1169,7 @@
       @click.self="closeOutlookImportDialog"
     >
       <section
-        role="region"
+        role="dialog"
         aria-modal="true"
         aria-labelledby="outlook-import-title"
         class="w-full max-w-2xl overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
@@ -1252,14 +1242,6 @@
 </template>
 
 <script setup>
-import AccessibleModal from './AccessibleModal.vue'
-import UiButton from './ui/UiButton.vue'
-import UiSegmentedControl from './ui/UiSegmentedControl.vue'
-import UiStatePanel from './ui/UiStatePanel.vue'
-import UiStatusBadge from './ui/UiStatusBadge.vue'
-import WorkflowStage from './workflow/WorkflowStage.vue'
-import WorkflowWorkspace from './workflow/WorkflowWorkspace.vue'
-
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { api } from '../api.js'
 import { accountPoolAllAccounts, accountPoolVisibleAccounts as resolveAccountPoolVisibleAccounts } from '../accountPoolStatus.js'
