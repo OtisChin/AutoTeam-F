@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -443,6 +444,191 @@ func TestHTTPRegisterEngineDoesNotReselectProfileAfterRetryableNetworkFailure(t 
 	}
 }
 
+func TestHTTPRegisterEngineAuthConcurrencyReleasesDuringMailboxPolling(t *testing.T) {
+	var authActive atomic.Int32
+	var maxAuthActive atomic.Int32
+	var csrfCalls atomic.Int32
+	firstAuthEntered := make(chan struct{})
+	secondAuthEntered := make(chan struct{})
+	releaseFirstAuth := make(chan struct{})
+	firstSendOTPEntered := make(chan struct{})
+	releaseFirstSendOTP := make(chan struct{})
+	var sendOTPCalls atomic.Int32
+
+	var authServer *httptest.Server
+	authServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		active := authActive.Add(1)
+		updateMaxInt32(&maxAuthActive, active)
+		defer authActive.Add(-1)
+
+		writeJSON := func(payload any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(payload)
+		}
+		switch r.URL.Path {
+		case "/api/auth/csrf":
+			switch csrfCalls.Add(1) {
+			case 1:
+				close(firstAuthEntered)
+				select {
+				case <-releaseFirstAuth:
+				case <-r.Context().Done():
+					return
+				}
+			case 2:
+				close(secondAuthEntered)
+			}
+			writeJSON(map[string]string{"csrfToken": "csrf-1"})
+		case "/api/auth/signin/openai":
+			writeJSON(map[string]string{"url": authServer.URL + "/oauth/start"})
+		case "/oauth/start":
+			http.SetCookie(w, &http.Cookie{Name: "oai-did", Value: "device-1", Path: "/"})
+			w.WriteHeader(http.StatusOK)
+		case "/api/accounts/authorize/continue":
+			writeJSON(map[string]any{
+				"page": map[string]any{
+					"type":    "email_otp_verification",
+					"payload": map[string]string{"email_verification_mode": "passwordless_signup"},
+				},
+				"continue_url": "/email-verification",
+			})
+		case "/email-verification":
+			w.WriteHeader(http.StatusOK)
+		case "/api/accounts/email-otp/send":
+			if sendOTPCalls.Add(1) == 1 {
+				close(firstSendOTPEntered)
+				select {
+				case <-releaseFirstSendOTP:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			writeJSON(map[string]bool{"ok": true})
+		case "/api/accounts/email-otp/validate":
+			writeJSON(map[string]any{"page": map[string]string{"type": "about_you"}, "continue_url": "/about-you"})
+		case "/api/accounts/create_account":
+			writeJSON(map[string]string{"continue_url": "/authorize/resume"})
+		case "/authorize/resume":
+			http.SetCookie(w, &http.Cookie{Name: "next-auth.session-token", Value: "session-1", Path: "/"})
+			w.WriteHeader(http.StatusOK)
+		case "/api/auth/session":
+			writeJSON(map[string]any{"accessToken": "access-1", "user": map[string]string{"email": "user@example.com"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authServer.Close()
+
+	var mailInflight atomic.Int32
+	var maxMailInflight atomic.Int32
+	bothMailEntered := make(chan struct{})
+	releaseMail := make(chan struct{})
+	mailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inflight := mailInflight.Add(1)
+		updateMaxInt32(&maxMailInflight, inflight)
+		defer mailInflight.Add(-1)
+		if inflight == 2 {
+			close(bothMailEntered)
+		}
+		select {
+		case <-releaseMail:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": "123456"})
+		case <-r.Context().Done():
+			return
+		}
+	}))
+	defer mailServer.Close()
+
+	cfg := localHTTPConfig(authServer.URL)
+	cfg.AuthConcurrency = 1
+	cfg.SentinelProvider = statelessSentinelProvider{}
+	profiledFactory := cfg.ProfiledClientFactory
+	var profiledClientCalls atomic.Int32
+	secondClientReady := make(chan struct{})
+	cfg.ProfiledClientFactory = func(profile fingerprint.Profile, proxyURL string, timeout time.Duration) (*http.Client, error) {
+		client, err := profiledFactory(profile, proxyURL, timeout)
+		if profiledClientCalls.Add(1) == 2 {
+			close(secondClientReady)
+		}
+		return client, err
+	}
+	engine := register.NewHTTPRegisterEngine(cfg)
+	responses := make(chan model.RegisterResponse, 2)
+	registerAttempt := func(email string) {
+		responses <- engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
+			Email: email,
+			Mail:  model.MailConfig{Provider: "generic-api", ReceiveCodeURL: mailServer.URL},
+			Options: model.RegisterOptions{
+				TimeoutSeconds: 5,
+			},
+		})
+	}
+
+	go registerAttempt("first@example.com")
+	select {
+	case <-firstAuthEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first attempt did not enter auth")
+	}
+	go registerAttempt("second@example.com")
+	select {
+	case <-secondClientReady:
+	case <-time.After(time.Second):
+		close(releaseFirstAuth)
+		close(releaseFirstSendOTP)
+		close(releaseMail)
+		t.Fatal("second attempt did not reach the auth gate")
+	}
+	select {
+	case <-secondAuthEntered:
+		close(releaseFirstAuth)
+		close(releaseFirstSendOTP)
+		close(releaseMail)
+		t.Fatal("second attempt entered auth while first held the only slot")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseFirstAuth)
+	select {
+	case <-firstSendOTPEntered:
+	case <-time.After(time.Second):
+		close(releaseFirstSendOTP)
+		close(releaseMail)
+		t.Fatal("first attempt did not reach SendEmailOTP")
+	}
+	select {
+	case <-secondAuthEntered:
+		close(releaseFirstSendOTP)
+		close(releaseMail)
+		t.Fatal("second attempt entered auth before the first auth phase completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseFirstSendOTP)
+
+	select {
+	case <-bothMailEntered:
+		if authActive.Load() != 0 {
+			t.Fatalf("auth active while both mail pollers waited: %d", authActive.Load())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("both mailbox pollers did not become inflight")
+	}
+	close(releaseMail)
+	for range 2 {
+		select {
+		case resp := <-responses:
+			if !resp.Success {
+				t.Fatalf("response=%#v", resp)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("registration attempt did not finish")
+		}
+	}
+	if maxAuthActive.Load() != 1 || maxMailInflight.Load() != 2 || csrfCalls.Load() != 2 {
+		t.Fatalf("max auth=%d max mail=%d csrf calls=%d", maxAuthActive.Load(), maxMailInflight.Load(), csrfCalls.Load())
+	}
+}
+
 func TestHTTPRegisterEngineSanitizesProxyURLErrors(t *testing.T) {
 	secret := "proxy-password"
 	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: "http://127.0.0.1:1", ChatGPTBaseURL: "http://127.0.0.1:1"})
@@ -535,4 +721,18 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type statelessSentinelProvider struct{}
+
+func (statelessSentinelProvider) Token(_ context.Context, _ *http.Client, _ fingerprint.Profile, _ string, flow string) (openai.SentinelResult, error) {
+	return openai.SentinelResult{Token: "mock-" + flow, SDKVersion: "sdk-concurrency-1"}, nil
+}
+
+func updateMaxInt32(maximum *atomic.Int32, candidate int32) {
+	for current := maximum.Load(); candidate > current; current = maximum.Load() {
+		if maximum.CompareAndSwap(current, candidate) {
+			return
+		}
+	}
 }

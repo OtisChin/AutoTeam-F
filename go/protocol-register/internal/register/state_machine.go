@@ -26,8 +26,12 @@ type HTTPRegisterEngineConfig struct {
 	Draw                  fingerprint.DrawFunc
 	ProfiledClientFactory ProfiledClientFactory
 	MailboxClientFactory  MailboxClientFactory
+	AuthConcurrency       int
 }
-type HTTPRegisterEngine struct{ cfg HTTPRegisterEngineConfig }
+type HTTPRegisterEngine struct {
+	cfg      HTTPRegisterEngineConfig
+	authGate *authGate
+}
 
 func NewHTTPRegisterEngine(cfg HTTPRegisterEngineConfig) *HTTPRegisterEngine {
 	if cfg.SentinelProvider == nil {
@@ -51,7 +55,10 @@ func NewHTTPRegisterEngine(cfg HTTPRegisterEngineConfig) *HTTPRegisterEngine {
 			return httpclient.NewStandard(timeout), nil
 		}
 	}
-	return &HTTPRegisterEngine{cfg: cfg}
+	if cfg.AuthConcurrency <= 0 {
+		cfg.AuthConcurrency = defaultAuthConcurrency
+	}
+	return &HTTPRegisterEngine{cfg: cfg, authGate: newAuthGate(cfg.AuthConcurrency)}
 }
 
 func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest) model.RegisterResponse {
@@ -78,77 +85,35 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 	}
 	defer client.CloseIdleConnections()
 	api := openai.NewClient(client, e.cfg.BaseURL, e.cfg.ChatGPTBaseURL, profile)
-	csrf, err := api.GetCSRF(ctx)
-	if err != nil {
-		return fail(req.Email, "network_error", err.Error(), "csrf", true, progress.Events(), metadata)
+	attempt := &registrationAttempt{
+		engine:   e,
+		ctx:      ctx,
+		request:  req,
+		client:   client,
+		profile:  profile,
+		api:      api,
+		progress: progress,
+		metadata: metadata,
 	}
-	progress.Add("csrf", "csrf token acquired", nil)
-	deviceID, err := api.InitializeOAuth(ctx, csrf)
-	if err != nil {
-		return authFailure(req.Email, err, "signin_openai", "network_error", true, progress.Events(), metadata)
-	}
-	authorizeToken, err := e.sentinelToken(ctx, client, profile, deviceID, "authorize_continue", metadata)
-	if err != nil {
-		return authFailure(req.Email, err, "authorize_continue", "register_failed", true, progress.Events(), metadata)
-	}
-	authStep, err := api.AuthorizeContinue(ctx, req.Email, authorizeToken)
-	if err != nil {
-		return authFailure(req.Email, err, "authorize_continue", "register_failed", true, progress.Events(), metadata)
-	}
-	progress.Add("email_submitted", "email accepted", map[string]any{"page_type": authStep.PageType})
-	if err := api.FollowContinue(ctx, authStep.ContinueURL); err != nil {
-		return authFailure(req.Email, err, "authorize_continue", "register_failed", true, progress.Events(), metadata)
-	}
-	if authStep.PageType == "create_account_password" {
-		passwordToken, err := e.sentinelToken(ctx, client, profile, deviceID, "username_password_create", metadata)
-		if err != nil {
-			return authFailure(req.Email, err, "register_password", "register_failed", true, progress.Events(), metadata)
-		}
-		if err := api.RegisterPassword(ctx, req.Email, req.Password, passwordToken); err != nil {
-			return authFailure(req.Email, err, "register_password", "register_failed", true, progress.Events(), metadata)
-		}
-	}
-	if err := api.SendEmailOTP(ctx); err != nil {
-		return fail(req.Email, "register_failed", err.Error(), "send_email_otp", true, progress.Events(), metadata)
+	deviceID, failure := attempt.runInitialAuthPhase()
+	if failure != nil {
+		return *failure
 	}
 	mailHTTPClient, err := e.cfg.MailboxClientFactory(timeout + 30*time.Second)
 	if err != nil {
-		return fail(req.Email, "network_error", err.Error(), "mail_client", true, progress.Events(), metadata)
+		return *attempt.failure("network_error", err, "mail_client", true)
 	}
 	if mailHTTPClient == nil {
-		return fail(req.Email, "network_error", "mailbox client unavailable", "mail_client", true, progress.Events(), metadata)
+		return *attempt.failure("network_error", errors.New("mailbox client unavailable"), "mail_client", true)
 	}
 	defer mailHTTPClient.CloseIdleConnections()
 	code, err := mailbridge.NewClient(mailHTTPClient, 3*time.Second).WaitForOTP(ctx, req.Mail.ReceiveCodeURL)
 	if err != nil {
-		return fail(req.Email, "email_code_timeout", "email OTP not received within timeout", "email_otp", false, progress.Events(), metadata)
+		return *attempt.failure("email_code_timeout", errors.New("email OTP not received within timeout"), "email_otp", false)
 	}
-	otpStep, err := api.VerifyEmailOTP(ctx, code)
-	if err != nil {
-		return authFailure(req.Email, err, "verify_email_otp", "register_failed", true, progress.Events(), metadata)
-	}
-	if otpStep.PageType != "about_you" {
-		return authFailure(req.Email, openai.ErrInvalidAuthState, "verify_email_otp", "register_failed", true, progress.Events(), metadata)
-	}
-	progress.Add("otp_verified", "email OTP verified", nil)
-	createToken, err := e.sentinelToken(ctx, client, profile, deviceID, "create_account", metadata)
-	if err != nil {
-		return authFailure(req.Email, err, "create_account", "phone_blocked", false, progress.Events(), metadata)
-	}
-	createStep, err := api.CreateAccount(ctx, createToken, "Alex Chen", "1993-01-01")
-	if err != nil {
-		return authFailure(req.Email, err, "create_account", "phone_blocked", false, progress.Events(), metadata)
-	}
-	if err := api.FollowContinue(ctx, createStep.ContinueURL); err != nil {
-		return authFailure(req.Email, err, "create_account_redirect", "register_failed", false, progress.Events(), metadata)
-	}
-	rawSession, err := api.GetAuthSession(ctx)
-	if err != nil {
-		return fail(req.Email, "register_failed", err.Error(), "auth_session", true, progress.Events(), metadata)
-	}
-	sessionData, err := openai.ExtractSession(rawSession, client.Jar, api.ChatGPTBaseURL)
-	if err != nil {
-		return fail(req.Email, "session_missing", err.Error(), "auth_session", false, progress.Events(), metadata)
+	sessionData, failure := attempt.runFinalAuthPhase(deviceID, code)
+	if failure != nil {
+		return *failure
 	}
 	sessionData["email"] = req.Email
 	raw := map[string]any{
@@ -160,6 +125,111 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 	}
 	sessionData["raw"] = raw
 	return model.RegisterResponse{Success: true, Status: "success", Email: req.Email, SessionData: sessionData, Metadata: metadata, Events: progress.Events()}
+}
+
+type registrationAttempt struct {
+	engine   *HTTPRegisterEngine
+	ctx      context.Context
+	request  model.RegisterRequest
+	client   *http.Client
+	profile  fingerprint.Profile
+	api      *openai.Client
+	progress *Progress
+	metadata map[string]string
+}
+
+func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResponse) {
+	release, err := a.engine.authGate.acquire(a.ctx)
+	if err != nil {
+		return "", a.failure("network_error", err, "auth_gate", true)
+	}
+	defer release()
+
+	csrf, err := a.api.GetCSRF(a.ctx)
+	if err != nil {
+		return "", a.failure("network_error", err, "csrf", true)
+	}
+	a.progress.Add("csrf", "csrf token acquired", nil)
+	deviceID, err := a.api.InitializeOAuth(a.ctx, csrf)
+	if err != nil {
+		return "", a.authFailure(err, "signin_openai", "network_error", true)
+	}
+	authorizeToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "authorize_continue", a.metadata)
+	if err != nil {
+		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
+	}
+	authStep, err := a.api.AuthorizeContinue(a.ctx, a.request.Email, authorizeToken)
+	if err != nil {
+		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
+	}
+	a.progress.Add("email_submitted", "email accepted", map[string]any{"page_type": authStep.PageType})
+	if err := a.api.FollowContinue(a.ctx, authStep.ContinueURL); err != nil {
+		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
+	}
+	if authStep.PageType == "create_account_password" {
+		passwordToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "username_password_create", a.metadata)
+		if err != nil {
+			return "", a.authFailure(err, "register_password", "register_failed", true)
+		}
+		if err := a.api.RegisterPassword(a.ctx, a.request.Email, a.request.Password, passwordToken); err != nil {
+			return "", a.authFailure(err, "register_password", "register_failed", true)
+		}
+	}
+	if err := a.api.SendEmailOTP(a.ctx); err != nil {
+		return "", a.failure("register_failed", err, "send_email_otp", true)
+	}
+	return deviceID, nil
+}
+
+func (a *registrationAttempt) runFinalAuthPhase(deviceID, code string) (map[string]any, *model.RegisterResponse) {
+	release, err := a.engine.authGate.acquire(a.ctx)
+	if err != nil {
+		return nil, a.failure("network_error", err, "auth_gate", true)
+	}
+	defer release()
+
+	otpStep, err := a.api.VerifyEmailOTP(a.ctx, code)
+	if err != nil {
+		return nil, a.authFailure(err, "verify_email_otp", "register_failed", true)
+	}
+	if otpStep.PageType != "about_you" {
+		return nil, a.authFailure(openai.ErrInvalidAuthState, "verify_email_otp", "register_failed", true)
+	}
+	a.progress.Add("otp_verified", "email OTP verified", nil)
+	createToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "create_account", a.metadata)
+	if err != nil {
+		return nil, a.authFailure(err, "create_account", "phone_blocked", false)
+	}
+	createStep, err := a.api.CreateAccount(a.ctx, createToken, "Alex Chen", "1993-01-01")
+	if err != nil {
+		return nil, a.authFailure(err, "create_account", "phone_blocked", false)
+	}
+	if err := a.api.FollowContinue(a.ctx, createStep.ContinueURL); err != nil {
+		return nil, a.authFailure(err, "create_account_redirect", "register_failed", false)
+	}
+	rawSession, err := a.api.GetAuthSession(a.ctx)
+	if err != nil {
+		return nil, a.failure("register_failed", err, "auth_session", true)
+	}
+	sessionData, err := openai.ExtractSession(rawSession, a.client.Jar, a.api.ChatGPTBaseURL)
+	if err != nil {
+		return nil, a.failure("session_missing", err, "auth_session", false)
+	}
+	return sessionData, nil
+}
+
+func (a *registrationAttempt) failure(status string, err error, step string, retryable bool) *model.RegisterResponse {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	response := fail(a.request.Email, status, detail, step, retryable, a.progress.Events(), a.metadata)
+	return &response
+}
+
+func (a *registrationAttempt) authFailure(err error, step, fallbackStatus string, fallbackRetryable bool) *model.RegisterResponse {
+	response := authFailure(a.request.Email, err, step, fallbackStatus, fallbackRetryable, a.progress.Events(), a.metadata)
+	return &response
 }
 
 func (e *HTTPRegisterEngine) sentinelToken(ctx context.Context, client *http.Client, profile fingerprint.Profile, deviceID, flow string, metadata map[string]string) (string, error) {
