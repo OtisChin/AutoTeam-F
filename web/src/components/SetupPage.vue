@@ -9,7 +9,6 @@
       </header>
       <div v-if="message" class="setup-message" :class="messageClass" :role="messageRole" aria-live="polite">{{ message }}</div>
       <div class="setup-form">
-        <label class="sr-only" for="setup-mail-provider">Mail Provider</label>
         <UiFormField id="setup-mail-provider" label="Mail Provider" help="选择注册流程使用的邮箱供应商。" required>
           <template #default="{ inputId, describedBy }">
             <select :id="inputId" v-model="provider" :aria-describedby="describedBy" required>
@@ -21,7 +20,6 @@
           <h2>{{ providerFieldTitle }}</h2>
           <UiFormField v-for="field in providerFields" :id="fieldInputId(field)" :key="field.key" :label="field.prompt" :required="!field.optional">
             <template #default="{ inputId, describedBy }">
-              <label class="sr-only" :for="fieldInputId(field)">{{ field.prompt }}</label>
               <input :id="inputId" v-model="form[field.key]" :type="isSecretField(field.key) ? 'password' : 'text'" :placeholder="field.default || ''" :required="!field.optional" :aria-required="!field.optional" :aria-describedby="describedBy" />
             </template>
           </UiFormField>
@@ -30,13 +28,12 @@
           <h2>通用配置</h2>
           <UiFormField v-for="field in commonFields" :id="fieldInputId(field)" :key="field.key" :label="field.prompt" :help="field.key === 'API_KEY' ? '留空时自动生成。' : ''" :required="!field.optional">
             <template #default="{ inputId, describedBy }">
-              <label class="sr-only" :for="fieldInputId(field)">{{ field.prompt }}</label>
               <input :id="inputId" v-model="form[field.key]" :type="isSecretField(field.key) ? 'password' : 'text'" :placeholder="field.default || ''" :required="!field.optional" :aria-required="!field.optional" :aria-describedby="describedBy" />
             </template>
           </UiFormField>
         </section>
       </div>
-      <UiButton class="setup-submit" variant="primary" :disabled="saving || configured" :loading="saving" @click="save">{{ configured ? '配置已保存' : '保存配置' }}</UiButton>
+      <UiButton class="setup-submit" variant="primary" :disabled="saving || configured" :loading="saving" @click="save">{{ saving ? '验证并保存中...' : configured ? '配置已保存' : '保存配置' }}</UiButton>
     </section>
   </div>
 </template>

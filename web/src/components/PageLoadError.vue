@@ -6,7 +6,6 @@
     action-label="重新加载"
     @action="emit('retry')"
   />
-  <!-- @click="emit('retry')" -->
 </template>
 <script setup>
 import UiStatePanel from './ui/UiStatePanel.vue'
