@@ -164,4 +164,32 @@ assert.match(mainSource, /createThemeController\(\)/)
 assert.match(mainSource, /provide\(THEME_CONTROLLER_KEY,\s*themeController\)/)
 assert.match(mainSource, /themeController\.dispose\(\)/)
 
+const styleSource = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+const tailwindSource = readFileSync(new URL('../tailwind.config.js', import.meta.url), 'utf8')
+const componentSources = [
+  'BrazilPixPage.vue',
+  'IndiaUpiPage.vue',
+  'KakaoPayPage.vue',
+].map(name => readFileSync(
+  new URL('../src/components/' + name, import.meta.url),
+  'utf8',
+)).join('\n')
+
+assert.match(styleSource, /html\[data-theme=['"]light['"]\]/)
+assert.match(styleSource, /--surface-base:\s*#f5f5f7/i)
+assert.match(styleSource, /--surface-window:\s*#fff(?:fff)?/i)
+assert.match(styleSource, /--text-main:\s*#1d1d1f/i)
+assert.match(styleSource, /--accent-fill:\s*#0071e3/i)
+assert.match(styleSource, /html\[data-theme=['"]dark['"]\]/)
+assert.match(styleSource, /--text-on-accent:\s*#fff(?:fff)?/i)
+assert.match(styleSource, /forced-colors:\s*active/)
+assert.match(styleSource, /prefers-reduced-motion:\s*reduce/)
+assert.doesNotMatch(styleSource, /transition\s*:\s*all/i)
+assert.doesNotMatch(styleSource, /\btransition-all\b/)
+assert.match(tailwindSource, /<alpha-value>/)
+assert.match(tailwindSource, /--tw-neutral-950/)
+assert.match(tailwindSource, /--rgb-success-text/)
+assert.doesNotMatch(componentSources, /linear-gradient\(135deg,rgba\(15,23,42,0\.96\)/)
+assert.match(componentSources, /workflow-hero-surface/)
+
 console.log('theme controller regression tests passed')

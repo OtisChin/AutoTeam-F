@@ -23,7 +23,7 @@
       </div>
     </section>
 
-    <section v-if="activePixTab === 'payment'" class="overflow-hidden rounded-2xl border border-cyan-500/20 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.13),transparent_34%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] p-5 shadow-2xl shadow-black/30 md:p-6">
+    <section v-if="activePixTab === 'payment'" class="overflow-hidden rounded-2xl border border-cyan-500/20 workflow-hero-surface p-5 shadow-2xl shadow-black/30 md:p-6">
       <div class="flex flex-col gap-4 border-b border-white/10 pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p class="text-xs font-bold uppercase tracking-[0.28em] text-cyan-300">Batch Payment Workspace</p>
