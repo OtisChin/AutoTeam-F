@@ -22,7 +22,8 @@
     "test:dashboard-account-actions": "node scripts/test-dashboard-account-actions.mjs",
     "test:kakao-pay-job-persistence": "node scripts/test-kakao-pay-job-persistence.mjs",
     "preview": "vite preview",
-    "test:notification-sounds": "node scripts/test-notification-sounds.mjs"
+    "test:notification-sounds": "node scripts/test-notification-sounds.mjs",
+    "test:operations-workspaces": "node scripts/operations-primitives-regression.mjs && node scripts/operations-dashboard-regression.mjs && node scripts/operations-mail-regression.mjs && node scripts/operations-history-regression.mjs && node scripts/operations-team-regression.mjs && node scripts/operations-browser-fixture-regression.mjs"
   },
   "dependencies": {
     "vue": "^3.5.0"
