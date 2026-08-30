@@ -25,3 +25,6 @@ export const oauthPhoneRecordStatusPresentation = value => {
   if (key.startsWith('success')) return tone('成功', 'success')
   return mapPresentation(key, { acquired: ['已获取', 'info'], cancelled: ['已取消', 'warning'], released: ['已释放', 'warning'], failed: ['失败', 'danger'], invalid: ['无效', 'danger'], cooldown: ['冷却中', 'danger'] })
 }
+
+export const credentialExportPresentation = value => mapPresentation(Boolean(value) ? 'exported' : 'pending', { exported: ['已导出', 'success'], pending: ['未导出', 'neutral'] })
+export const accountHubSyncPresentation = value => mapPresentation(Boolean(value) ? 'synced' : 'pending', { synced: ['已同步', 'success'], pending: ['未同步', 'neutral'] })

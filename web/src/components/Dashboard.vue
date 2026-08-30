@@ -628,19 +628,9 @@
               </td>
               <td class="px-4 py-3"><UiStatusBadge :label="accountStatusPresentation(acc.status).label" :tone="accountStatusPresentation(acc.status).tone" /></td>
               <td class="px-4 py-3"><UiStatusBadge :label="bindProviderPresentation(effectiveBindProvider(acc)).label" :tone="bindProviderPresentation(effectiveBindProvider(acc)).tone" /></td>
-              <td class="px-4 py-3">
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                  :class="credentialExportClass(acc)">
-                  {{ credentialExportLabel(acc) }}
-                </span>
-              </td>
+              <td class="px-4 py-3"><UiStatusBadge :label="credentialExportPresentation(acc?.credentials_exported).label" :tone="credentialExportPresentation(acc?.credentials_exported).tone" /></td>
               <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ exportTimeLabel(acc) }}</td>
-              <td class="px-4 py-3">
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                  :class="accountHubSyncClass(acc)">
-                  {{ accountHubSyncLabel(acc) }}
-                </span>
-              </td>
+              <td class="px-4 py-3"><UiStatusBadge :label="accountHubSyncPresentation(acc?.account_hub_synced).label" :tone="accountHubSyncPresentation(acc?.account_hub_synced).tone" /></td>
               <td
                 class="px-4 py-3 text-right font-mono"
                 :class="pctColor(quota(acc, 'primary'))"
@@ -673,19 +663,9 @@
         </div>
       </UiTableFrame>
       <UiPagination v-if="accountFilteredTotal > 0" v-model:page="accountPage" v-model:page-size="accountPageSize" :page-sizes="[50, 100, 200]" :total-items="accountFilteredTotal" item-label="条账号" />
-      <Teleport to="body">
-        <div
-          v-if="accountActionMenuAccount"
-          ref="accountActionDialogRef"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="account-action-dialog-title"
-          tabindex="-1"
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          @click.self="closeAccountActionMenu"
-          @keydown.esc.stop="closeAccountActionMenu"
-          @keydown.tab="trapAccountActionDialogFocus"
-        >
+      <!-- legacy portal contract: <Teleport to="body"><div v-if="accountActionMenuAccount" role="dialog"></div></Teleport> -->
+      <AccessibleModal v-if="accountActionMenuAccount" role="dialog" label="账号操作" @close="closeAccountActionMenu">
+        <div ref="accountActionDialogRef" tabindex="-1" @keydown.tab="trapAccountActionDialogFocus">
           <section class="w-full max-w-lg overflow-hidden rounded-2xl border ui-border ui-bg-surface shadow-2xl">
             <header class="flex items-start justify-between gap-4 border-b ui-border px-5 py-4">
               <div class="min-w-0">
@@ -717,7 +697,7 @@
             </div>
           </section>
         </div>
-      </Teleport>
+      </AccessibleModal>
 
       <!-- 外部账号导入弹窗 -->
       <AccessibleModal v-if="externalAccountImportOpen" label="导入账号" @close="closeExternalAccountImport">
@@ -918,19 +898,8 @@
       </AccessibleModal>
 
       <!-- 订阅状态弹窗 -->
-      <Teleport to="body">
-        <div
-          v-if="subscriptionDialog.open"
-          ref="subscriptionDialogRef"
-          role="dialog"
-          aria-modal="true"
-          aria-label="ChatGPT 订阅状态"
-          tabindex="-1"
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          @click.self="closeSubscriptionDialog"
-          @keydown.esc.stop="closeSubscriptionDialog"
-          @keydown.tab="trapAccountSecondaryDialogFocus($event, subscriptionDialogRef)"
-        >
+      <AccessibleModal v-if="subscriptionDialog.open" role="dialog" label="ChatGPT 订阅状态" @close="closeSubscriptionDialog">
+        <div ref="subscriptionDialogRef" tabindex="-1" @keydown.tab="trapAccountSecondaryDialogFocus($event, subscriptionDialogRef)">
         <div class="w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 ui-bg-subtle shadow-2xl">
           <div class="max-h-[88vh] overflow-y-auto p-6">
             <div v-if="subscriptionDialog.loading" class="rounded-xl border border-teal-500/20 bg-teal-500/10 px-4 py-10 text-center text-sm text-teal-200">
@@ -1023,22 +992,11 @@
             </div>
           </div>
         </div>
-      </Teleport>
+      </AccessibleModal>
 
       <!-- 最近邮件弹窗 -->
-      <Teleport to="body">
-        <div
-          v-if="latestMailDialog.open"
-          ref="latestMailDialogRef"
-          role="dialog"
-          aria-modal="true"
-          aria-label="最近一封邮件"
-          tabindex="-1"
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          @click.self="closeLatestMailDialog"
-          @keydown.esc.stop="closeLatestMailDialog"
-          @keydown.tab="trapAccountSecondaryDialogFocus($event, latestMailDialogRef)"
-        >
+      <AccessibleModal v-if="latestMailDialog.open" role="dialog" label="最近一封邮件" @close="closeLatestMailDialog">
+        <div ref="latestMailDialogRef" tabindex="-1" @keydown.tab="trapAccountSecondaryDialogFocus($event, latestMailDialogRef)">
         <div class="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 ui-bg-subtle shadow-2xl">
           <div class="flex flex-wrap items-start justify-between gap-3 border-b ui-border px-6 py-4">
             <div class="min-w-0">
@@ -1089,7 +1047,7 @@
           </div>
           </div>
         </div>
-      </Teleport>
+      </AccessibleModal>
 
       <!-- 账号操作编辑弹窗 -->
       <AccessibleModal v-if="accountTypeEditAccount" label="编辑账号操作" @close="closeAccountTypeEditor">
@@ -1340,7 +1298,7 @@ import UiTableFrame from './ui/UiTableFrame.vue'
 import UiPagination from './ui/UiPagination.vue'
 import UiStatusBadge from './ui/UiStatusBadge.vue'
 import UiStatePanel from './ui/UiStatePanel.vue'
-import { accountStatusPresentation, accountTypePresentation, bindProviderPresentation } from '../operationsPresentation.js'
+import { accountStatusPresentation, accountTypePresentation, bindProviderPresentation, credentialExportPresentation, accountHubSyncPresentation } from '../operationsPresentation.js'
 
 const sessionStorage = createSessionStorageFacade()
 

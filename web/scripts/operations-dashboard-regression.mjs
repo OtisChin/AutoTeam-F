@@ -16,6 +16,12 @@ assert.match(source, /state="partial"/)
 assert.match(source, /@action="retryAccounts"|@action="emit\('retry-accounts'\)"/)
 assert.doesNotMatch(template, /\b(?:bg|border)-(?:gray|slate)-(?:950|900|800)\b/)
 assert.doesNotMatch(template, /transition-all/)
+assert.match(source, /credentialExportPresentation\(acc\?\.credentials_exported\)/)
+assert.match(source, /accountHubSyncPresentation\(acc\?\.account_hub_synced\)/)
+
+assert.match(source, /<AccessibleModal v-if=\"accountActionMenuAccount\"/)
+assert.match(source, /<AccessibleModal v-if=\"subscriptionDialog.open\"/)
+assert.match(source, /<AccessibleModal v-if=\"latestMailDialog.open\"/)
 const row = source.match(/<tr v-for="\(acc, i\) in paginatedAccounts"[\s\S]*?<\/tr>/)?.[0] || ''
 assert.ok(row, 'the bounded account row should remain discoverable')
 assert.ok((row.match(/<button\b/g) || []).length <= 1, 'each account row should retain one action trigger')
