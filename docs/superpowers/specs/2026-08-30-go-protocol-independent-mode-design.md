@@ -19,6 +19,17 @@ progress, and account persistence. That orchestration boundary does not grant
 the Python protocol implementation control over Go transport, retries,
 fingerprints, Sentinel, or fallback behavior.
 
+### Verified dependency correction
+
+Implementation-time source inspection found that the released
+`github.com/bogdanfinn/tls-client` v1.15.1 contains concrete Chrome 144 and
+Chrome 146 profiles, but not Chrome 150. Chrome 150 was added by upstream
+commit `b790a311273f26051935641120de169e497e5943` on 2026-07-02. To preserve
+the approved three-profile pool without copying or inventing a profile, the Go
+module pins the reproducible pseudo-version
+`v1.15.2-0.20260702071810-b790a311273f`. This correction supersedes the
+earlier v1.15.1 reference below; the Go 1.24.1 baseline is unchanged.
+
 ## 2. Registration Modes
 
 The application exposes five mutually exclusive modes:
@@ -74,7 +85,8 @@ and duplicate valid entries are normalized.
 ## 4. Fingerprint Selection and Transport
 
 The Go module baseline moves to Go 1.24.1 and uses
-`github.com/bogdanfinn/tls-client` v1.15.1. The initial supported registry is:
+`github.com/bogdanfinn/tls-client`
+`v1.15.2-0.20260702071810-b790a311273f`. The initial supported registry is:
 
 | Name | TLS client profile | Browser major |
 | --- | --- | --- |
