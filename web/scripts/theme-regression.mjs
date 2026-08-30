@@ -198,6 +198,24 @@ assert.match(styleSource, /\.bg-teal-600[\s\S]*\.text-white/)
 assert.doesNotMatch(componentSources, /linear-gradient\(135deg,rgba\(15,23,42,0\.96\)/)
 assert.match(componentSources, /workflow-hero-surface/)
 
+const switcherSource = readFileSync(
+  new URL('../src/components/ThemeSwitcher.vue', import.meta.url),
+  'utf8',
+)
+assert.match(switcherSource, /inject\(THEME_CONTROLLER_KEY/)
+assert.match(switcherSource, /UiSegmentedControl/)
+assert.match(switcherSource, /UiSheet/)
+assert.match(switcherSource, /aria-haspopup="dialog"/)
+assert.match(switcherSource, /aria-expanded/)
+assert.match(switcherSource, /@keydown\.down/)
+assert.match(switcherSource, /pointerdown/)
+assert.match(switcherSource, /Escape/)
+assert.match(switcherSource, /triggerRef\.value\?\.focus/)
+assert.match(switcherSource, /跟随系统/)
+assert.match(switcherSource, /明亮/)
+assert.match(switcherSource, /深色/)
+assert.match(styleSource, /\.theme-switcher-trigger\s*\{[^}]*min-height:\s*44px/is)
+
 console.log('theme controller regression tests passed')
 
 const primitiveNames = [
