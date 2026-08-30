@@ -199,3 +199,37 @@ assert.doesNotMatch(componentSources, /linear-gradient\(135deg,rgba\(15,23,42,0\
 assert.match(componentSources, /workflow-hero-surface/)
 
 console.log('theme controller regression tests passed')
+
+const primitiveNames = [
+  'UiPageHeader', 'UiSurface', 'UiButton', 'UiStatusBadge',
+  'UiFormField', 'UiSegmentedControl', 'UiStatePanel', 'UiSheet',
+]
+for (const name of primitiveNames) {
+  const source = readFileSync(
+    new URL('../src/components/ui/' + name + '.vue', import.meta.url),
+    'utf8',
+  )
+  assert.ok(source.length > 0, name + ' must exist')
+}
+
+const segmentedSource = readFileSync(
+  new URL('../src/components/ui/UiSegmentedControl.vue', import.meta.url),
+  'utf8',
+)
+assert.match(segmentedSource, /role="radiogroup"/)
+assert.match(segmentedSource, /role="radio"/)
+assert.match(segmentedSource, /aria-checked/)
+assert.match(segmentedSource, /ArrowDown/)
+assert.match(segmentedSource, /ArrowUp/)
+assert.match(segmentedSource, /defineExpose\(\{\s*focusSelected\s*\}\)/)
+
+const sheetSource = readFileSync(
+  new URL('../src/components/ui/UiSheet.vue', import.meta.url),
+  'utf8',
+)
+assert.match(sheetSource, /<Teleport to="body">/)
+assert.match(sheetSource, /aria-modal="true"/)
+assert.match(sheetSource, /trapFocus/)
+assert.match(sheetSource, /restoreBackground/)
+assert.match(sheetSource, /opener/)
+assert.match(sheetSource, /@keydown\.esc/)

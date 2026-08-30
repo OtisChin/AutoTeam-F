@@ -937,6 +937,34 @@ textarea:focus-visible,
 *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); background-clip: padding-box; }
 *::-webkit-scrollbar-corner { background: transparent; }
 
+/* Shared semantic UI primitives */
+.ui-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.ui-page-header-copy { min-width: 0; }
+.ui-page-header-eyebrow { margin: 0 0 .25rem; color: var(--text-muted); font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.ui-page-header-title { margin: 0; color: var(--text-main); font-size: 1.5rem; font-weight: 720; letter-spacing: -.03em; }
+.ui-page-header-description { margin: .35rem 0 0; color: var(--text-muted); font-size: .85rem; }
+.ui-page-header-status { display: inline-block; margin-top: .5rem; color: var(--text-secondary); font-size: .75rem; }
+.ui-page-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem; }
+.ui-surface { border: 1px solid var(--surface-line); border-radius: var(--radius-panel); background: var(--surface-panel); color: var(--text-main); }
+.ui-surface-strong { background: var(--surface-panel-strong); }
+.ui-surface-inset { background: var(--surface-inset); }
+.ui-surface-padding-none { padding: 0; }.ui-surface-padding-sm { padding: .65rem; }.ui-surface-padding-md { padding: 1rem; }.ui-surface-padding-lg { padding: 1.35rem; }
+.ui-surface-header { margin: calc(-1 * 1rem) calc(-1 * 1rem) 1rem; border-bottom: 1px solid var(--surface-line); padding: .85rem 1rem; }.ui-surface-footer { margin: 1rem calc(-1 * 1rem) calc(-1 * 1rem); border-top: 1px solid var(--surface-line); padding: .85rem 1rem; }
+.ui-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: .45rem; border: 1px solid transparent; border-radius: 10px; padding: 0 1rem; font-weight: 650; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform 150ms var(--ease-out); }
+.ui-button-sm { min-height: 44px; padding-inline: .75rem; font-size: .8rem; }.ui-button-md { font-size: .86rem; }
+.ui-button-primary { background: var(--accent-fill); color: var(--text-on-accent); }.ui-button-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.ui-button-secondary { border-color: var(--surface-line-strong); background: var(--surface-panel); color: var(--text-main); }.ui-button-secondary:hover:not(:disabled), .ui-button-quiet:hover:not(:disabled) { background: var(--surface-hover); }
+.ui-button-quiet { background: transparent; color: var(--accent-text); }.ui-button-danger { background: var(--danger); color: var(--text-on-accent); }
+.ui-button:disabled { cursor: wait; opacity: .55; }.ui-button-spinner { width: 1rem; height: 1rem; border: 2px solid currentColor; border-right-color: transparent; border-radius: 999px; animation: spin .8s linear infinite; }
+.ui-status-badge { display: inline-flex; min-height: 28px; align-items: center; gap: .4rem; border-radius: 999px; padding: 0 .65rem; font-size: .72rem; font-weight: 650; }.ui-status-badge-dot { width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }.ui-status-badge-neutral { background: var(--surface-muted); color: var(--text-secondary); }.ui-status-badge-info { background: var(--info-soft); color: var(--info); }.ui-status-badge-success { background: var(--success-soft); color: var(--success); }.ui-status-badge-warning { background: var(--warning-soft); color: var(--warning); }.ui-status-badge-danger { background: var(--danger-soft); color: var(--danger); }
+.ui-form-field { display: grid; gap: .35rem; }.ui-form-field-label { color: var(--text-secondary); font-size: .78rem; font-weight: 650; }.ui-form-field-help, .ui-form-field-error { margin: 0; font-size: .72rem; }.ui-form-field-help { color: var(--text-muted); }.ui-form-field-error { color: var(--danger); }
+.ui-segmented { display: inline-flex; flex-wrap: wrap; gap: 3px; border: 1px solid var(--surface-line); border-radius: 11px; background: var(--surface-inset); padding: 3px; }.ui-segmented-option { display: inline-flex; min-height: 44px; align-items: center; gap: .65rem; border: 0; border-radius: 8px; background: transparent; padding: .4rem .85rem; color: var(--text-muted); cursor: pointer; }.ui-segmented-option-selected { background: var(--surface-window); color: var(--text-main); box-shadow: var(--shadow-panel); }.ui-segmented-copy { display: grid; text-align: left; }.ui-segmented-copy small { color: var(--text-muted); font-size: .68rem; }.ui-segmented-check { color: var(--accent-text); }
+.ui-state-panel { display: grid; justify-items: center; gap: .45rem; border: 1px solid var(--surface-line); border-radius: var(--radius-panel); background: var(--surface-panel); padding: 2rem 1rem; text-align: center; }.ui-state-panel h2 { margin: 0; font-size: 1rem; }.ui-state-panel p { margin: 0; color: var(--text-muted); font-size: .8rem; }.ui-state-panel-action { min-height: 44px; border-radius: 9px; background: var(--accent-fill); padding: 0 .8rem; color: var(--text-on-accent); }
+.ui-button, .ui-segmented-option, .ui-sheet button { min-height: 44px; }
+.ui-sheet-layer { position: fixed; z-index: 80; inset: 0; display: flex; align-items: flex-end; background: var(--scrim); }
+.ui-sheet { display: grid; width: 100%; max-height: 92dvh; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--surface-line-strong); background: var(--surface-window); box-shadow: var(--shadow-popover); }
+.ui-sheet-bottom { border-radius: 22px 22px 0 0; }.ui-sheet-right { width: min(420px, 100%); height: 100%; max-height: none; margin-left: auto; }.ui-sheet-body { overflow: auto; overscroll-behavior: contain; }.ui-sheet-enter-active, .ui-sheet-leave-active { transition: opacity 180ms ease; }.ui-sheet-enter-active .ui-sheet, .ui-sheet-leave-active .ui-sheet { transition: transform 220ms var(--ease-out); }.ui-sheet-enter-from, .ui-sheet-leave-to { opacity: 0; }.ui-sheet-enter-from .ui-sheet-bottom, .ui-sheet-leave-to .ui-sheet-bottom { transform: translate3d(0, 28px, 0); }.ui-sheet-enter-from .ui-sheet-right, .ui-sheet-leave-to .ui-sheet-right { transform: translate3d(28px, 0, 0); }
+
 .bg-gray-950,
 .bg-slate-950 { background-color: var(--surface-inset) !important; }
 .bg-gray-900,
