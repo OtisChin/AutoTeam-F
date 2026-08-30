@@ -1,5 +1,5 @@
 <template>
-  <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
+  <div class="operation-panel ui-surface ui-surface-panel mt-6 rounded-xl p-4">
     <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
       <h2 class="text-lg font-semibold text-white">{{ panelTitle }}</h2>
       <div v-if="runningTask" class="flex items-center gap-2 text-xs">

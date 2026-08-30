@@ -260,3 +260,24 @@ assert.match(sheetSource, /@after-leave="handleAfterLeave"/)
 assert.match(sheetSource, /wasOpen/)
 assert.match(sheetSource, /onBeforeUnmount/)
 assert.match(sheetSource, /sheetBehavior/)
+
+const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+const setupSource = readFileSync(
+  new URL('../src/components/SetupPage.vue', import.meta.url),
+  'utf8',
+)
+const settingsSource = readFileSync(
+  new URL('../src/components/Settings.vue', import.meta.url),
+  'utf8',
+)
+assert.equal(
+  (appSource.match(/<ThemeSwitcher\b/g) || []).length,
+  2,
+  'login and authenticated title bar each need a switcher',
+)
+assert.match(setupSource, /<ThemeSwitcher\b/)
+assert.match(settingsSource, /<ThemeSwitcher\s+mode="group"/)
+assert.match(appSource, /class="auth-theme-control"/)
+assert.match(appSource, /class="workspace-toolbar-actions"[\s\S]*?<ThemeSwitcher/)
+assert.match(setupSource, /class="setup-theme-control"/)
+assert.match(settingsSource, /外观/)

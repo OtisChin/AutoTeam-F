@@ -7,7 +7,7 @@
       :aria-label="labelledby ? undefined : label"
       :aria-labelledby="labelledby || undefined"
       tabindex="-1"
-      class="accessible-modal-layer fixed inset-0 z-50 flex justify-center bg-black/60 p-4"
+      class="accessible-modal-layer fixed inset-0 z-50 flex justify-center p-4"
       @click.self="requestClose"
       @keydown.esc.stop="requestClose"
       @keydown.tab="trapFocus"

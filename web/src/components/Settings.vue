@@ -1,5 +1,13 @@
 <template>
   <div class="mt-6 space-y-6">
+    <section class="settings-appearance" aria-labelledby="settings-appearance-title">
+      <div>
+        <span class="workspace-eyebrow">个性化</span>
+        <h2 id="settings-appearance-title">外观</h2>
+        <p>跟随设备，或为当前浏览器固定明亮/深色模式。</p>
+      </div>
+      <ThemeSwitcher mode="group" />
+    </section>
     <div v-if="message" class="rounded-lg border px-4 py-3 text-sm" :class="messageClass">
       {{ message }}
     </div>
@@ -1197,6 +1205,7 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { api } from '../api.js'
+import ThemeSwitcher from './ThemeSwitcher.vue'
 
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)

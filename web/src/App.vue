@@ -4,12 +4,14 @@
 
   <!-- 登录页 -->
   <main v-else-if="!authenticated" class="auth-shell">
-    <section class="auth-card">
-      <div class="mb-7 flex items-center gap-4">
-        <div class="nav-mark">AT</div>
+    <div class="auth-theme-control"><ThemeSwitcher /></div>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="auth-brand">
+        <div class="nav-mark" aria-hidden="true"><span>A</span></div>
         <div>
-          <h1 class="text-2xl font-semibold tracking-tight text-white">AutoToken</h1>
-          <p class="mt-1 text-sm text-gray-400">运营控制台访问验证</p>
+          <p class="workspace-eyebrow">Operations Console</p>
+          <h1 id="auth-title" class="auth-title">AutoToken</h1>
+          <p class="auth-copy">安全进入你的运营工作区</p>
         </div>
       </div>
       <div v-if="authError || startupError" class="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300" role="alert">
@@ -64,6 +66,7 @@
             <span class="workspace-description">{{ currentPageMeta.description }}</span>
           </div>
           <div class="workspace-toolbar-actions">
+            <ThemeSwitcher />
             <span class="workspace-status" :class="busyTasks.length ? 'workspace-status-busy' : ''" aria-live="polite">
               <span class="workspace-status-dot" aria-hidden="true"></span>
               {{ busyTasks.length ? `${busyTasks.length} 个任务运行中` : '系统就绪' }}
@@ -152,7 +155,7 @@
         <button
           type="button"
           title="拖动任务进度；双击恢复右上角"
-          class="task-panel-handle touch-none rounded-md border border-gray-700 bg-gray-950/95 px-2 py-1 font-mono text-xs leading-none text-gray-400 shadow-lg shadow-black/20 transition hover:border-yellow-400/40 hover:text-yellow-200"
+          class="task-panel-handle ui-surface touch-none rounded-md border px-2 py-1 font-mono text-xs leading-none shadow-lg transition"
           @pointerdown="startTaskPanelDrag"
           @lostpointercapture="stopTaskPanelDrag"
           @dblclick="resetTaskPanelPosition"
@@ -164,20 +167,20 @@
       <div
         v-for="task in busyTasks"
         :key="taskNoticeKey(task)"
-        class="rounded-lg border border-yellow-400/30 bg-gray-950/95 shadow-2xl shadow-black/40 backdrop-blur"
+        class="ui-surface ui-surface-panel rounded-lg border shadow-2xl"
       >
         <div class="px-4 py-3">
         <div class="flex items-start gap-3">
-          <span class="mt-1 animate-spin inline-block w-4 h-4 shrink-0 border-2 border-yellow-300 border-t-transparent rounded-full"></span>
+          <span class="mt-1 animate-spin inline-block w-4 h-4 shrink-0 border-2 border-[var(--warning)] border-t-transparent rounded-full"></span>
           <div class="min-w-0 flex-1">
             <div class="flex items-center justify-between gap-3">
               <div class="text-sm font-semibold text-white truncate">{{ taskNoticeTitle(task) }}</div>
-              <div class="text-xs font-mono text-yellow-200 shrink-0">{{ taskProgress(task).text }}</div>
+              <div class="text-xs font-mono text-[var(--warning)] shrink-0">{{ taskProgress(task).text }}</div>
             </div>
-            <div class="mt-1 text-xs text-gray-400 truncate">{{ taskNoticeSubtitle(task) }}</div>
-            <div class="mt-3 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+            <div class="mt-1 text-xs text-[var(--text-muted)] truncate">{{ taskNoticeSubtitle(task) }}</div>
+            <div class="mt-3 h-1.5 rounded-full bg-[var(--surface-muted)] overflow-hidden">
               <div
-                class="task-progress-fill h-full rounded-full bg-yellow-300"
+                class="task-progress-fill h-full rounded-full bg-[var(--warning)]"
                 :style="{ '--task-progress': taskProgress(task).percent / 100 }"
               ></div>
             </div>
@@ -203,6 +206,7 @@ import {
 import { NAV_ITEMS_BY_KEY, PAGE_KEYS } from './navigation.js'
 import { createRafThrottle, createSingleFlight } from './runtimePerformance.js'
 import { calculateTaskProgress } from './taskProgress.js'
+import ThemeSwitcher from './components/ThemeSwitcher.vue'
 import { clearStorageSession, prepareStorageSession, SESSION_OWNER_KEY } from './sessionStorageScope.js'
 import SetupPage from './components/SetupPage.vue'
 import Sidebar from './components/Sidebar.vue'

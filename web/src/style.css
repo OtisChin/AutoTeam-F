@@ -1017,3 +1017,39 @@ textarea:focus-visible,
 .theme-switcher-option-copy small { color: var(--text-muted); font-size: .7rem; }
 .theme-switcher-option-check { color: var(--accent-text); font-weight: 700; }
 .theme-switcher-group .ui-segmented { width: 100%; }
+
+@layer components {
+  .auth-theme-control,
+  .setup-theme-control { position: absolute; top: 1rem; right: 1rem; z-index: 2; }
+  .auth-shell, .setup-shell { position: relative; }
+  .auth-brand { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.75rem; }
+  .auth-title { color: var(--text-main); font-size: 1.5rem; font-weight: 650; letter-spacing: -0.02em; }
+  .auth-copy { margin-top: .25rem; color: var(--text-muted); font-size: .875rem; }
+  .setup-card { width: 100%; max-width: 34rem; border: 1px solid var(--surface-line-strong); border-radius: var(--radius-window); background: var(--surface-window); box-shadow: var(--shadow-window); padding: 1.75rem; }
+  .setup-heading h1 { margin-top: .35rem; color: var(--text-main); font-size: 1.5rem; font-weight: 700; }
+  .setup-heading p { margin-top: .4rem; color: var(--text-muted); font-size: .875rem; }
+  .setup-message { margin-top: 1rem; border-radius: .75rem; padding: .75rem 1rem; font-size: .875rem; }
+  .setup-form { display: grid; gap: 1.25rem; margin-top: 1.5rem; }
+  .setup-field-group { display: grid; gap: .85rem; }
+  .setup-field-group h2 { color: var(--text-secondary); font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .setup-form input, .setup-form select { width: 100%; border: 1px solid var(--surface-line-strong); border-radius: .65rem; background: var(--surface-inset); color: var(--text-main); padding: .65rem .75rem; }
+  .setup-submit { width: 100%; margin-top: 1.5rem; }
+  .settings-appearance { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border: 1px solid var(--surface-line); border-radius: var(--radius-panel); background: var(--surface-panel); padding: 1rem 1.1rem; }
+  .settings-appearance h2 { margin-top: .25rem; color: var(--text-main); font-size: 1.1rem; font-weight: 650; }
+  .settings-appearance p { margin-top: .25rem; color: var(--text-muted); font-size: .8rem; }
+  .accessible-modal-layer { background: var(--scrim); }
+  .operation-panel { background: var(--surface-panel); border-color: var(--surface-line); box-shadow: var(--shadow-panel); }
+  .nav-item-active { color: var(--accent-text); }
+  .mobile-nav, .mobile-nav-sheet { background: var(--surface-window); }
+  .mobile-nav-layer { background: var(--scrim); }
+  .workspace-toolbar { background: var(--surface-window); }
+}
+
+/* Apple blue accent token */
+:root { --accent: #0a84ff; }
+@layer components {
+  .nav-shell { background: var(--surface-sidebar); color: var(--text-main); }
+  .nav-item-active .nav-glyph { color: var(--accent-text); }
+  .mobile-nav-item-active, .mobile-sheet-item-active { color: var(--accent-text); }
+  .mobile-nav-sheet { background: var(--surface-window); }
+}
