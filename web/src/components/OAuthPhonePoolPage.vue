@@ -53,8 +53,14 @@
         </div>
       </div>
 
-      <UiTableFrame v-if="filteredItems.length" label="手机号列表" :busy="loading" min-width="980px">
+      <UiStatePanel v-if="loadError && filteredItems.length" state="partial" title="显示上次成功数据" :message="loadError" />
+      <UiTableFrame label="手机号列表" :busy="loading" :empty="!pagedItems.length" min-width="980px">
       <template #header><span class="ui-table-frame-meta">窗口 {{ pagedItems.length }} 条 / 总计 {{ filteredItems.length }} 条</span></template>
+      <template #empty>
+        <UiStatePanel v-if="loading && !items.length" state="loading" title="正在加载手机号池" message="读取号码和绑定状态…" />
+        <UiStatePanel v-else-if="loadError" state="error" title="手机号池加载失败" :message="loadError" action-label="重试" @action="loadItems" />
+        <UiStatePanel v-else state="empty" title="暂无匹配号码" message="添加号码或调整搜索条件。" />
+      </template>
       <div class="overflow-x-auto rounded-lg border border-gray-800">
         <table class="min-w-full text-sm">
           <thead class="bg-gray-950 text-left text-xs uppercase tracking-wide text-gray-500">
@@ -112,9 +118,6 @@
         </table>
       </div>
       </UiTableFrame>
-      <UiStatePanel v-else-if="loading && !items.length" state="loading" title="正在加载手机号池" message="读取号码和绑定状态…" />
-      <UiStatePanel v-else-if="loadError" state="error" title="手机号池加载失败" :message="loadError" action-label="重试" @action="loadItems" />
-      <UiStatePanel v-else state="empty" title="暂无匹配号码" message="添加号码或调整搜索条件。" />
       <UiPagination v-if="filteredItems.length" v-model:page="page" :page-size="OAUTH_PHONE_PAGE_SIZE" :page-sizes="[100]" :total-items="filteredItems.length" item-label="条手机号" />
     </section>
   </div>

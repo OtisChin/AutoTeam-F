@@ -10,6 +10,9 @@ assert.match(trade, /aria-label=.*密码|密码.*aria-label/s)
 assert.match(trade, /revokeCdk/)
 for (const primitive of ['UiPageHeader', 'UiMetricSummary', 'UiStatePanel', 'AccessibleModal']) assert.match(cpa, new RegExp(primitive))
 for (const fn of ['validateCpaFileSelection', 'inspectCpaToSub2Api', 'convertCpaToSub2Api', 'openOutputDir']) assert.match(cpa, new RegExp(fn))
+assert.match(cpa, /<UiStatePanel v-else-if="!busy && !sources\.length"/)
+assert.match(cpa, /<table v-else class="w-full text-sm">/)
+assert.doesNotMatch(cpa, /<tbody v-else>/)
 assert.match(logs, /log-console|log-workspace/)
 // LogViewer owns a completion-scheduled poll loop rather than exposing the
 // shared workflow lifecycle helper used by long-running payment pages.  Keep

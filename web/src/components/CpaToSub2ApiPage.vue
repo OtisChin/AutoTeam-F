@@ -24,9 +24,6 @@
       @change="handleFiles"
     />
 
-    <UiStatePanel v-if="busy && !sources.length" state="loading" title="正在读取文件" message="解析并校验 JSON 内容…" />
-    <UiStatePanel v-else-if="!busy && !sources.length" state="empty" title="尚未载入文件" message="选择 JSON 文件或文件夹后，会在列表中预览校验结果。" />
-
     <section class="panel" data-cpa-stage="configuration">
       <h3 class="panel-title">文件区</h3>
       <div class="flex flex-wrap items-center gap-3">
@@ -39,10 +36,12 @@
       </div>
     </section>
 
-    <section v-if="sources.length" class="panel">
+    <section class="panel">
       <h3 class="panel-title">文件列表</h3>
       <div class="overflow-x-auto rounded-xl border border-gray-800 min-h-[310px] bg-gray-950/40">
-        <table class="w-full text-sm">
+        <UiStatePanel v-if="busy && !sources.length" state="loading" title="正在读取文件" message="解析并校验 JSON 内容…" />
+        <UiStatePanel v-else-if="!busy && !sources.length" state="empty" title="尚未载入文件" message="选择 JSON 文件或文件夹后，会在列表中预览校验结果。" />
+        <table v-else class="w-full text-sm">
           <thead class="bg-gray-800/80 text-blue-100">
             <tr>
               <th class="table-head w-20">选择</th>
