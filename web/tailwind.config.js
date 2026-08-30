@@ -33,6 +33,8 @@ export default {
         amber: tone('--rgb-warning-text', '--rgb-warning-fill', '--rgb-warning-strong'),
         yellow: tone('--rgb-warning-text', '--rgb-warning-fill', '--rgb-warning-strong'),
         cyan: tone('--rgb-info-text', '--rgb-info-fill', '--rgb-info-strong'),
+        indigo: tone('--rgb-violet-text', '--rgb-violet-fill', '--rgb-violet-strong'),
+        teal: tone('--rgb-info-text', '--rgb-info-fill', '--rgb-info-strong'),
         violet: tone('--rgb-violet-text', '--rgb-violet-fill', '--rgb-violet-strong'),
         purple: tone('--rgb-violet-text', '--rgb-violet-fill', '--rgb-violet-strong'),
       },
