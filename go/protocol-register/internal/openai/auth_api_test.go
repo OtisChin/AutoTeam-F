@@ -21,9 +21,14 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 		origin           string
 		referer          string
 		userAgent        string
+		secCHUA          string
+		secCHUAMobile    string
+		secCHUAPlatform  string
 		body             string
 		navigationOrigin string
 		navigationAccept string
+		navigationUA     string
+		navigationCHUA   string
 	}
 	var captured capturedRequest
 	var srv *httptest.Server
@@ -32,18 +37,23 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 		case "/api/auth/signin/openai":
 			raw, _ := io.ReadAll(r.Body)
 			captured = capturedRequest{
-				method:      r.Method,
-				contentType: r.Header.Get("Content-Type"),
-				origin:      r.Header.Get("Origin"),
-				referer:     r.Header.Get("Referer"),
-				userAgent:   r.Header.Get("User-Agent"),
-				body:        string(raw),
+				method:          r.Method,
+				contentType:     r.Header.Get("Content-Type"),
+				origin:          r.Header.Get("Origin"),
+				referer:         r.Header.Get("Referer"),
+				userAgent:       r.Header.Get("User-Agent"),
+				secCHUA:         r.Header.Get("Sec-CH-UA"),
+				secCHUAMobile:   r.Header.Get("Sec-CH-UA-Mobile"),
+				secCHUAPlatform: r.Header.Get("Sec-CH-UA-Platform"),
+				body:            string(raw),
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"url": srv.URL + "/oauth/start"})
 		case "/oauth/start":
 			captured.navigationOrigin = r.Header.Get("Origin")
 			captured.navigationAccept = r.Header.Get("Accept")
+			captured.navigationUA = r.Header.Get("User-Agent")
+			captured.navigationCHUA = r.Header.Get("Sec-CH-UA")
 			http.SetCookie(w, &http.Cookie{Name: "oai-did", Value: "device-1", Path: "/"})
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -52,8 +62,8 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profile := ResolveTransportProfile("chrome143,chrome152")
-	client := NewClient(srv.Client(), srv.URL, srv.URL, profile.UserAgent)
+	profile := mustOpenAIProfile(t, "chrome144")
+	client := NewClient(srv.Client(), srv.URL, srv.URL, profile)
 	deviceID, err := client.InitializeOAuth(context.Background(), "csrf-1")
 	if err != nil {
 		t.Fatal(err)
@@ -75,8 +85,12 @@ func TestSigninOpenAIUsesFormContractAndChatGPTOrigin(t *testing.T) {
 	if captured.origin != srv.URL || captured.referer != srv.URL+"/auth/login" {
 		t.Fatalf("origin=%q referer=%q", captured.origin, captured.referer)
 	}
-	if strings.Contains(captured.userAgent, "Chrome/") {
-		t.Fatalf("User-Agent=%q", captured.userAgent)
+	if captured.userAgent != profile.UserAgent || captured.navigationUA != profile.UserAgent {
+		t.Fatalf("User-Agent API=%q navigation=%q", captured.userAgent, captured.navigationUA)
+	}
+	if captured.secCHUA != profile.SecCHUA || captured.navigationCHUA != profile.SecCHUA ||
+		captured.secCHUAMobile != profile.SecCHUAMobile || captured.secCHUAPlatform != profile.SecCHUAPlatform {
+		t.Fatalf("client hints=%#v", captured)
 	}
 	if captured.navigationOrigin != "" {
 		t.Fatalf("navigation Origin=%q, want empty", captured.navigationOrigin)
@@ -104,7 +118,7 @@ func TestInitializeOAuthRequiresDeviceCookie(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+	client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome146"))
 	if _, err := client.InitializeOAuth(context.Background(), "csrf-1"); !errors.Is(err, ErrInvalidAuthState) {
 		t.Fatalf("err=%v", err)
 	}
@@ -120,7 +134,7 @@ func TestFollowContinueRejectsUntrustedHostBeforeRequest(t *testing.T) {
 	trusted := httptest.NewServer(http.NotFoundHandler())
 	defer trusted.Close()
 
-	client := NewClient(http.DefaultClient, trusted.URL, trusted.URL, defaultTransportUserAgent)
+	client := NewClient(http.DefaultClient, trusted.URL, trusted.URL, mustOpenAIProfile(t, "chrome146"))
 	err := client.FollowContinue(context.Background(), untrusted.URL+"/steal-session")
 	if !errors.Is(err, ErrInvalidAuthState) {
 		t.Fatalf("err=%v", err)
@@ -147,7 +161,7 @@ func TestJSONResponsesRejectTrailingAndOversizedData(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+			client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome146"))
 			if _, err := client.GetCSRF(context.Background()); !errors.Is(err, ErrInvalidAuthState) {
 				t.Fatalf("err=%v", err)
 			}
@@ -169,7 +183,7 @@ func TestNoOutputJSONResponsesAreDrainedForConnectionReuse(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 
-	client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+	client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome146"))
 	for range 2 {
 		if err := client.SendEmailOTP(context.Background()); err != nil {
 			t.Fatal(err)
@@ -204,7 +218,7 @@ func TestClientUsesHeadersForEachEndpointBase(t *testing.T) {
 	}))
 	defer chatGPTServer.Close()
 
-	client := NewClient(http.DefaultClient, authServer.URL, chatGPTServer.URL, defaultTransportUserAgent)
+	client := NewClient(http.DefaultClient, authServer.URL, chatGPTServer.URL, mustOpenAIProfile(t, "chrome146"))
 	if _, err := client.GetCSRF(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +275,7 @@ func TestAuthorizeContinueReturnsTypedKnownStates(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+			client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome146"))
 			got, err := client.AuthorizeContinue(context.Background(), "user@example.com", "sentinel-authorize")
 			if err != nil {
 				t.Fatal(err)
@@ -316,7 +330,7 @@ func TestAuthorizeContinueRejectsInvalidAndChallengeStates(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client := NewClient(srv.Client(), srv.URL, srv.URL, defaultTransportUserAgent)
+			client := NewClient(srv.Client(), srv.URL, srv.URL, mustOpenAIProfile(t, "chrome146"))
 			_, err := client.AuthorizeContinue(context.Background(), "user@example.com", "sentinel-authorize")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err=%v, want %v", err, tt.wantErr)

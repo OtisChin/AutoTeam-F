@@ -3,7 +3,6 @@ package httpclient
 import (
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
 	"time"
 
 	"autoteam-f/protocol-register/internal/fingerprint"
@@ -40,20 +39,6 @@ func NewStandard(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	jar, _ := cookiejar.New(nil)
 	return &http.Client{Transport: transport, Jar: jar, Timeout: timeout}
-}
-
-func New(proxyURL string, timeout time.Duration) (*http.Client, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if proxyURL != "" {
-		parsed, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, err
-		}
-		transport.Proxy = http.ProxyURL(parsed)
-	}
-	jar, _ := cookiejar.New(nil)
-	timeout = normalizeTimeout(timeout)
-	return &http.Client{Transport: transport, Jar: jar, Timeout: timeout}, nil
 }
 
 func normalizeTimeout(timeout time.Duration) time.Duration {

@@ -15,10 +15,11 @@ type ErrorInfo struct {
 }
 
 type RegisterResponse struct {
-	Success     bool           `json:"success"`
-	Status      string         `json:"status"`
-	Email       string         `json:"email"`
-	SessionData map[string]any `json:"session_data,omitempty"`
-	Error       *ErrorInfo     `json:"error,omitempty"`
-	Events      []Event        `json:"events"`
+	Success     bool              `json:"success"`
+	Status      string            `json:"status"`
+	Email       string            `json:"email"`
+	SessionData map[string]any    `json:"session_data,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	Error       *ErrorInfo        `json:"error,omitempty"`
+	Events      []Event           `json:"events"`
 }

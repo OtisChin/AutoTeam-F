@@ -1,19 +1,24 @@
 package register_test
 
 import (
+	"autoteam-f/protocol-register/internal/fingerprint"
 	"autoteam-f/protocol-register/internal/model"
 	"autoteam-f/protocol-register/internal/openai"
 	"autoteam-f/protocol-register/internal/register"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestHTTPRegisterEngineEnforcesLocalAuthStateParity(t *testing.T) {
+	selectedProfile := mustRegisterProfile(t, "chrome144")
 	type requestExpectation struct {
 		method        string
 		path          string
@@ -46,8 +51,24 @@ func TestHTTPRegisterEngineEnforcesLocalAuthStateParity(t *testing.T) {
 		if r.Method != want.method || r.URL.Path != want.path {
 			t.Errorf("request=%s %s, want %s %s", r.Method, r.URL.Path, want.method, want.path)
 		}
-		if got := r.Header.Get("User-Agent"); got != "AutoToken-F protocol-registerd/go-http" {
-			t.Errorf("%s User-Agent=%q", r.URL.Path, got)
+		if got := r.Header.Get("User-Agent"); got != selectedProfile.UserAgent {
+			t.Errorf("%s User-Agent=%q want=%q", r.URL.Path, got, selectedProfile.UserAgent)
+		}
+		browserHeaders := map[string]string{
+			"Sec-CH-UA":          selectedProfile.SecCHUA,
+			"Sec-CH-UA-Mobile":   selectedProfile.SecCHUAMobile,
+			"Sec-CH-UA-Platform": selectedProfile.SecCHUAPlatform,
+			"Accept-Language":    selectedProfile.AcceptLanguage,
+		}
+		for name, value := range browserHeaders {
+			if got := r.Header.Get(name); got != value {
+				t.Errorf("%s %s=%q want=%q", r.URL.Path, name, got, value)
+			}
+		}
+		for _, name := range []string{"Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Priority"} {
+			if got := r.Header.Get(name); got == "" {
+				t.Errorf("%s %s is empty", r.URL.Path, name)
+			}
 		}
 		if got := r.Header.Get("Content-Type"); got != want.contentType {
 			t.Errorf("%s Content-Type=%q, want %q", r.URL.Path, got, want.contentType)
@@ -165,19 +186,56 @@ func TestHTTPRegisterEngineEnforcesLocalAuthStateParity(t *testing.T) {
 		if len(r.Cookies()) != 0 {
 			t.Errorf("mail request leaked auth cookies: %#v", r.Cookies())
 		}
+		for _, name := range []string{"Sec-CH-UA", "Sec-CH-UA-Mobile", "Sec-CH-UA-Platform", "Sec-Fetch-Site", "Priority"} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("mail request leaked browser header %s=%q", name, got)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"code": "123456"})
 	}))
 	defer mailSrv.Close()
 
-	provider := &staticSentinelProvider{}
+	provider := &staticSentinelProvider{sdkVersion: "sdk-fixture-1"}
+	drawCalls := 0
+	profiledClientCalls := 0
+	mailboxClientCalls := 0
+	var profiledClient *http.Client
 	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{
 		BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL, SentinelProvider: provider,
+		FingerprintPool: mustRegisterPool(t, fingerprint.DefaultPool),
+		Draw: func(max int) (int, error) {
+			drawCalls++
+			if max != 3 {
+				t.Fatalf("draw max=%d", max)
+			}
+			return 0, nil
+		},
+		ProfiledClientFactory: func(profile fingerprint.Profile, proxyURL string, timeout time.Duration) (*http.Client, error) {
+			profiledClientCalls++
+			if profile.Name != selectedProfile.Name || proxyURL != "" || timeout <= 0 {
+				t.Fatalf("profiled factory profile=%s proxy=%q timeout=%s", profile.Name, proxyURL, timeout)
+			}
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				return nil, err
+			}
+			profiledClient = openaiSrv.Client()
+			profiledClient.Jar = jar
+			profiledClient.Timeout = timeout
+			return profiledClient, nil
+		},
+		MailboxClientFactory: func(timeout time.Duration) (*http.Client, error) {
+			mailboxClientCalls++
+			client := mailSrv.Client()
+			client.Timeout = timeout
+			return client, nil
+		},
 	})
 	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
 		Email: "user@example.com", Password: "Password123$",
 		Mail:    model.MailConfig{Provider: "generic-api", ReceiveCodeURL: mailSrv.URL},
-		Options: model.RegisterOptions{TimeoutSeconds: 2},
+		Options: model.RegisterOptions{TimeoutSeconds: 2, Impersonate: "chrome999"},
 	})
 
 	if !resp.Success || resp.Status != "success" || resp.SessionData["accessToken"] != "access-1" || resp.SessionData["sessionToken"] != "session-1" {
@@ -189,12 +247,23 @@ func TestHTTPRegisterEngineEnforcesLocalAuthStateParity(t *testing.T) {
 	if gotRequestSteps != len(expected) || mailCalls != 1 {
 		t.Fatalf("request steps=%d/%d mail calls=%d", gotRequestSteps, len(expected), mailCalls)
 	}
+	if drawCalls != 1 || profiledClientCalls != 1 || mailboxClientCalls != 1 {
+		t.Fatalf("draw=%d profiled clients=%d mailbox clients=%d", drawCalls, profiledClientCalls, mailboxClientCalls)
+	}
+	if resp.Metadata["fingerprint_profile"] != selectedProfile.Name || resp.Metadata["sentinel_sdk_version"] != provider.sdkVersion || len(resp.Metadata) != 2 {
+		t.Fatalf("metadata=%v", resp.Metadata)
+	}
+	raw, ok := resp.SessionData["raw"].(map[string]any)
+	if !ok || raw["source"] != "go_protocol_register" || raw["fingerprint_profile"] != selectedProfile.Name || raw["sentinel_sdk_version"] != provider.sdkVersion {
+		t.Fatalf("session raw=%#v", resp.SessionData["raw"])
+	}
 	wantFlows := []string{"authorize_continue", "username_password_create", "create_account"}
 	if len(provider.calls) != len(wantFlows) {
 		t.Fatalf("sentinel calls=%#v", provider.calls)
 	}
 	for i, wantFlow := range wantFlows {
-		if provider.calls[i].flow != wantFlow || provider.calls[i].deviceID != "device-1" {
+		if provider.calls[i].flow != wantFlow || provider.calls[i].deviceID != "device-1" ||
+			provider.calls[i].profileName != selectedProfile.Name || provider.calls[i].client != profiledClient {
 			t.Fatalf("sentinel call[%d]=%#v", i, provider.calls[i])
 		}
 	}
@@ -223,9 +292,7 @@ func TestHTTPRegisterEngineFailsClosedBeforeAuthorizeWithoutSentinel(t *testing.
 	}))
 	defer srv.Close()
 
-	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{
-		BaseURL: srv.URL, ChatGPTBaseURL: srv.URL,
-	})
+	engine := register.NewHTTPRegisterEngine(localHTTPConfig(srv.URL))
 	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
 		Email: "user@example.com", Options: model.RegisterOptions{TimeoutSeconds: 2},
 	})
@@ -247,7 +314,7 @@ func TestHTTPRegisterEngineNormalizesNetworkFailureStatus(t *testing.T) {
 	}))
 	defer openaiSrv.Close()
 
-	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL})
+	engine := register.NewHTTPRegisterEngine(localHTTPConfig(openaiSrv.URL))
 	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
 		Email:   "user@example.com",
 		Options: model.RegisterOptions{TimeoutSeconds: 2},
@@ -279,7 +346,7 @@ func TestHTTPRegisterEngineRejectsFailedOpenAIOAuthSignin(t *testing.T) {
 	}))
 	defer openaiSrv.Close()
 
-	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL})
+	engine := register.NewHTTPRegisterEngine(localHTTPConfig(openaiSrv.URL))
 	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
 		Email:   "user@example.com",
 		Options: model.RegisterOptions{TimeoutSeconds: 2},
@@ -311,12 +378,69 @@ func TestHTTPRegisterEngineSanitizesOAuthURLErrors(t *testing.T) {
 	}))
 	defer openaiSrv.Close()
 
-	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{BaseURL: openaiSrv.URL, ChatGPTBaseURL: openaiSrv.URL})
+	engine := register.NewHTTPRegisterEngine(localHTTPConfig(openaiSrv.URL))
 	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
 		Email:   "user@example.com",
 		Options: model.RegisterOptions{TimeoutSeconds: 2},
 	})
 	assertSanitizedFailure(t, resp, "signin_openai", secret, "invalid_auth_state", "invalid_auth_state")
+}
+
+func TestHTTPRegisterEngineDoesNotReselectProfileAfterRetryableNetworkFailure(t *testing.T) {
+	drawCalls := 0
+	profiledClientCalls := 0
+	mailboxClientCalls := 0
+	selectedProfile := mustRegisterProfile(t, "chrome144")
+	engine := register.NewHTTPRegisterEngine(register.HTTPRegisterEngineConfig{
+		BaseURL: "https://auth.example.test", ChatGPTBaseURL: "https://chatgpt.example.test",
+		FingerprintPool: mustRegisterPool(t, fingerprint.DefaultPool),
+		Draw: func(max int) (int, error) {
+			drawCalls++
+			if max != 3 {
+				t.Fatalf("draw max=%d", max)
+			}
+			return 0, nil
+		},
+		ProfiledClientFactory: func(profile fingerprint.Profile, _ string, timeout time.Duration) (*http.Client, error) {
+			profiledClientCalls++
+			if profile.Name != selectedProfile.Name {
+				t.Fatalf("profile=%s", profile.Name)
+			}
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return nil, errors.New("dial failed")
+				}),
+				Jar:     jar,
+				Timeout: timeout,
+			}, nil
+		},
+		MailboxClientFactory: func(time.Duration) (*http.Client, error) {
+			mailboxClientCalls++
+			return http.DefaultClient, nil
+		},
+	})
+
+	resp := engine.Register(httptest.NewRequest(http.MethodPost, "/v1/register", nil), model.RegisterRequest{
+		Email: "user@example.com",
+		Options: model.RegisterOptions{
+			TimeoutSeconds: 2,
+			Impersonate:    "chrome999",
+		},
+	})
+
+	if resp.Status != "register_failed" || resp.Error == nil || resp.Error.Code != "network_error" || !resp.Error.Retryable || resp.Error.Step != "csrf" {
+		t.Fatalf("response=%#v", resp)
+	}
+	if drawCalls != 1 || profiledClientCalls != 1 || mailboxClientCalls != 0 {
+		t.Fatalf("draw=%d profiled clients=%d mailbox clients=%d", drawCalls, profiledClientCalls, mailboxClientCalls)
+	}
+	if resp.Metadata["fingerprint_profile"] != selectedProfile.Name || len(resp.Metadata) != 1 {
+		t.Fatalf("metadata=%v", resp.Metadata)
+	}
 }
 
 func TestHTTPRegisterEngineSanitizesProxyURLErrors(t *testing.T) {
@@ -331,17 +455,20 @@ func TestHTTPRegisterEngineSanitizesProxyURLErrors(t *testing.T) {
 }
 
 type sentinelCall struct {
-	deviceID string
-	flow     string
+	client      *http.Client
+	profileName string
+	deviceID    string
+	flow        string
 }
 
 type staticSentinelProvider struct {
-	calls []sentinelCall
+	calls      []sentinelCall
+	sdkVersion string
 }
 
-func (p *staticSentinelProvider) Token(_ context.Context, _ *http.Client, deviceID, flow string) (string, error) {
-	p.calls = append(p.calls, sentinelCall{deviceID: deviceID, flow: flow})
-	return "mock-" + flow, nil
+func (p *staticSentinelProvider) Token(_ context.Context, client *http.Client, profile fingerprint.Profile, deviceID, flow string) (openai.SentinelResult, error) {
+	p.calls = append(p.calls, sentinelCall{client: client, profileName: profile.Name, deviceID: deviceID, flow: flow})
+	return openai.SentinelResult{Token: "mock-" + flow, SDKVersion: p.sdkVersion}, nil
 }
 
 var _ openai.SentinelProvider = (*staticSentinelProvider)(nil)
@@ -355,4 +482,57 @@ func assertSanitizedFailure(t *testing.T, resp model.RegisterResponse, step, sec
 	if strings.Contains(string(raw), secret) {
 		t.Fatalf("response leaked secret %q: %s", secret, raw)
 	}
+}
+
+func localHTTPConfig(baseURL string) register.HTTPRegisterEngineConfig {
+	return register.HTTPRegisterEngineConfig{
+		BaseURL: baseURL, ChatGPTBaseURL: baseURL,
+		Draw: func(int) (int, error) { return 0, nil },
+		ProfiledClientFactory: func(_ fingerprint.Profile, _ string, timeout time.Duration) (*http.Client, error) {
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Client{
+				Transport: http.DefaultTransport.(*http.Transport).Clone(),
+				Jar:       jar,
+				Timeout:   timeout,
+			}, nil
+		},
+		MailboxClientFactory: func(timeout time.Duration) (*http.Client, error) {
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Client{
+				Transport: http.DefaultTransport.(*http.Transport).Clone(),
+				Jar:       jar,
+				Timeout:   timeout,
+			}, nil
+		},
+	}
+}
+
+func mustRegisterProfile(t *testing.T, name string) fingerprint.Profile {
+	t.Helper()
+	profile, ok := fingerprint.Lookup(name)
+	if !ok {
+		t.Fatalf("profile %q was not found", name)
+	}
+	return profile
+}
+
+func mustRegisterPool(t *testing.T, raw string) fingerprint.Pool {
+	t.Helper()
+	pool, err := fingerprint.ParsePool(raw)
+	if err != nil {
+		t.Fatalf("ParsePool(%q) error=%v", raw, err)
+	}
+	return pool
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

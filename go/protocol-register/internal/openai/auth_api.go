@@ -12,6 +12,8 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+
+	"autoteam-f/protocol-register/internal/fingerprint"
 )
 
 var ErrInvalidAuthState = errors.New("invalid auth state")
@@ -50,10 +52,10 @@ type Client struct {
 	HTTP           *http.Client
 	BaseURL        string
 	ChatGPTBaseURL string
-	UserAgent      string
+	Profile        fingerprint.Profile
 }
 
-func NewClient(httpClient *http.Client, baseURL, chatGPTBaseURL, userAgent string) *Client {
+func NewClient(httpClient *http.Client, baseURL, chatGPTBaseURL string, profile fingerprint.Profile) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
@@ -68,14 +70,11 @@ func NewClient(httpClient *http.Client, baseURL, chatGPTBaseURL, userAgent strin
 	if chatGPTBaseURL == "" {
 		chatGPTBaseURL = "https://chatgpt.com"
 	}
-	if userAgent == "" {
-		userAgent = defaultTransportUserAgent
-	}
 	return &Client{
 		HTTP:           httpClient,
 		BaseURL:        strings.TrimRight(baseURL, "/"),
 		ChatGPTBaseURL: strings.TrimRight(chatGPTBaseURL, "/"),
-		UserAgent:      userAgent,
+		Profile:        profile,
 	}
 }
 
@@ -261,11 +260,11 @@ func (c *Client) do(ctx context.Context, method, targetURL string, body io.Reade
 }
 
 func (c *Client) chatGPTAPIHeaders(referer string) http.Header {
-	return APIHeaders(baseOrigin(c.ChatGPTBaseURL), referer, c.UserAgent)
+	return APIHeaders(baseOrigin(c.ChatGPTBaseURL), referer, c.Profile)
 }
 
 func (c *Client) authAPIHeaders(referer string) http.Header {
-	return APIHeaders(baseOrigin(c.BaseURL), referer, c.UserAgent)
+	return APIHeaders(baseOrigin(c.BaseURL), referer, c.Profile)
 }
 
 func (c *Client) DeviceID() string {
@@ -316,7 +315,7 @@ func (c *Client) navigate(ctx context.Context, target *url.URL, referer string) 
 	if err != nil {
 		return fmt.Errorf("%w: navigation request invalid", ErrInvalidAuthState)
 	}
-	for key, values := range NavigationHeaders(referer, c.UserAgent) {
+	for key, values := range NavigationHeaders(target.String(), referer, c.Profile) {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
@@ -329,6 +328,7 @@ func (c *Client) navigate(ctx context.Context, target *url.URL, referer string) 
 		}
 		if len(via) > 0 {
 			next.Header.Set("Referer", redirectReferer(via[len(via)-1].URL, next.URL))
+			next.Header.Set("Sec-Fetch-Site", navigationFetchSite(next.URL.String(), via[len(via)-1].URL.String()))
 		}
 		if previousCheckRedirect != nil {
 			return previousCheckRedirect(next, via)
