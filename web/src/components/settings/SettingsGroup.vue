@@ -40,4 +40,3 @@ defineEmits(['update:open'])
 const headingId = computed(() => `settings-group-${props.id}-heading`)
 const contentId = computed(() => `settings-group-${props.id}-content`)
 </script>
-

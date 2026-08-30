@@ -42,4 +42,3 @@ watch(() => props.open, async open => {
 })
 onBeforeUnmount(() => { restoreBackground(); if (props.open && opener?.isConnected && typeof opener.focus === 'function') opener.focus() })
 </script>
-

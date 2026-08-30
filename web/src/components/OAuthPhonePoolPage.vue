@@ -12,10 +12,6 @@
     </UiBatchBar>
 
     <div v-if="message" class="ui-inline-message" :class="messageOk ? 'ui-inline-message-success' : 'ui-inline-message-error'" role="status">{{ message }}</div>
-    <UiStatePanel v-if="loading && !items.length" state="loading" title="正在加载手机号池" message="读取号码和绑定状态…" />
-    <UiStatePanel v-else-if="!loading && loadError" state="error" title="手机号池加载失败" :message="loadError" action-label="重试" @action="loadItems" />
-    <UiStatePanel v-else-if="!loading && !filteredItems.length" state="empty" title="暂无匹配号码" message="添加号码或调整搜索条件。" />
-
     <section class="rounded-xl border border-gray-800 bg-gray-900 p-4">
       <div class="mb-4 flex items-center justify-between gap-3">
         <div>
@@ -57,7 +53,8 @@
         </div>
       </div>
 
-      <UiTableFrame label="手机号列表" :busy="loading" :empty="!pagedItems.length" min-width="980px">
+      <UiTableFrame v-if="filteredItems.length" label="手机号列表" :busy="loading" min-width="980px">
+      <template #header><span class="ui-table-frame-meta">窗口 {{ pagedItems.length }} 条 / 总计 {{ filteredItems.length }} 条</span></template>
       <div class="overflow-x-auto rounded-lg border border-gray-800">
         <table class="min-w-full text-sm">
           <thead class="bg-gray-950 text-left text-xs uppercase tracking-wide text-gray-500">
@@ -72,9 +69,6 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-800">
-            <tr v-if="!filteredItems.length">
-              <td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无手机号</td>
-            </tr>
             <tr v-for="item in pagedItems" :key="item.id" class="align-top hover:bg-gray-800/30">
               <td class="px-3 py-3"><input v-model="selectedIds" type="checkbox" class="accent-blue-500" :aria-label="`选择手机号 ${item.phone_number || item.id}`" :value="item.id" /></td>
               <td class="px-3 py-3">
@@ -118,6 +112,9 @@
         </table>
       </div>
       </UiTableFrame>
+      <UiStatePanel v-else-if="loading && !items.length" state="loading" title="正在加载手机号池" message="读取号码和绑定状态…" />
+      <UiStatePanel v-else-if="loadError" state="error" title="手机号池加载失败" :message="loadError" action-label="重试" @action="loadItems" />
+      <UiStatePanel v-else state="empty" title="暂无匹配号码" message="添加号码或调整搜索条件。" />
       <UiPagination v-if="filteredItems.length" v-model:page="page" :page-size="OAUTH_PHONE_PAGE_SIZE" :page-sizes="[100]" :total-items="filteredItems.length" item-label="条手机号" />
     </section>
   </div>

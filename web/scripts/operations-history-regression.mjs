@@ -20,4 +20,3 @@ assert.match(logs, /<UiSurface\b/)
 assert.match(logs, /const LOG_KEEP_LIMIT = 1000\b/)
 assert.doesNotMatch(logs, /setInterval\s*\(/)
 console.log('operations task/history UI contracts passed')
-

@@ -228,4 +228,3 @@ The 20,000-account fixture additionally measures repeated theme switching and co
 - All frontend regression, theme, build, bundle, browser, accessibility, and performance gates pass.
 - Required screenshots and transaction artifacts are generated and reopened.
 - The branch remains isolated from the unrelated dirty main worktree until integration is explicitly requested.
-

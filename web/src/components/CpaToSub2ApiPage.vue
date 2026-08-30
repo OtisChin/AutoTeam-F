@@ -39,7 +39,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section v-if="sources.length" class="panel">
       <h3 class="panel-title">文件列表</h3>
       <div class="overflow-x-auto rounded-xl border border-gray-800 min-h-[310px] bg-gray-950/40">
         <table class="w-full text-sm">
@@ -54,7 +54,7 @@
               <th class="table-head">校验结果</th>
             </tr>
           </thead>
-          <tbody v-if="sources.length" class="divide-y divide-gray-800">
+          <tbody class="divide-y divide-gray-800">
             <tr v-for="source in sources" :key="source.key" class="hover:bg-gray-800/40">
               <td class="px-4 py-3">
                 <input
@@ -78,11 +78,6 @@
                   {{ source.status_text || '-' }}
                 </span>
               </td>
-            </tr>
-          </tbody>
-          <tbody v-else>
-            <tr>
-              <td colspan="7" class="h-[255px] text-center text-gray-500">尚未载入文件。</td>
             </tr>
           </tbody>
         </table>

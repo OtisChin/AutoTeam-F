@@ -36,7 +36,3 @@ function handleKeydown(event) { const next = keyboardIndex(props.options, select
 function focusSelected() { optionRefs[selectedIndex(props.options, props.modelValue)]?.focus() }
 defineExpose({ focusSelected })
 </script>
-
-
-
-
