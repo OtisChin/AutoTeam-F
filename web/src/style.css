@@ -19,22 +19,25 @@ html[data-theme="light"] {
   --text-main: #1d1d1f;
   --text-secondary: #424245;
   --text-muted: #6e6e73;
-  --text-faint: #7d7d82;
-  --text-placeholder: #7d7d82;
+  /* Small utility text still needs WCAG AA contrast on the sidebar and
+     inset canvas.  Keep it restrained, but darker than the large-text
+     secondary token so 10–12px labels remain readable. */
+  --text-faint: #66666b;
+  --text-placeholder: #66666b;
   --text-on-accent: #ffffff;
   --accent-fill: #0071e3;
   --accent-hover: #0077ed;
   --accent-strong: #0066cc;
-  --accent-text: #0066cc;
+  --accent-text: #005bb5;
   --accent-soft: rgba(0, 113, 227, 0.11);
   --accent-ring: rgba(0, 113, 227, 0.46);
-  --success: #197a32;
+  --success: #146b2b;
   --success-soft: rgba(25, 122, 50, 0.11);
-  --warning: #8a4b00;
+  --warning: #7a4200;
   --warning-soft: rgba(138, 75, 0, 0.11);
   --danger: #d70015;
   --danger-soft: rgba(215, 0, 21, 0.09);
-  --info: #00667a;
+  --info: #00566a;
   --info-soft: rgba(0, 102, 122, 0.1);
   --shadow-window: 0 18px 48px rgba(0, 0, 0, 0.09);
   --shadow-panel: 0 6px 20px rgba(0, 0, 0, 0.07);
@@ -1142,3 +1145,51 @@ textarea:focus-visible,
 .log-entry > span { overflow-wrap: anywhere; color: var(--text-secondary); }
 @media (max-width: 767px) { .ui-form-grid, .ui-detail-grid { grid-template-columns: 1fr; }.ui-data-table { min-width: 960px; }.log-entry { grid-template-columns: 4.5rem 4.5rem minmax(14rem, 1fr); }.ui-modal-card { max-height: 92dvh; }.ui-inline-field { min-width: 100%; } }
 .ui-workflow-surface { background: var(--surface-inset); }
+
+/* Grouped settings workspace: a stable navigation rail on wide screens and a
+   native, touch-friendly selector on narrow screens.  Content stays mounted
+   so unfinished form edits survive section changes. */
+.settings-workspace { display: grid; grid-template-columns: minmax(11rem, 15rem) minmax(0, 1fr); gap: 1.25rem; min-width: 0; }
+.settings-workspace-nav { display: grid; align-content: start; gap: .25rem; position: sticky; top: 1rem; height: max-content; }
+.settings-workspace-nav-item { display: grid; gap: .18rem; min-height: 3.25rem; border: 1px solid transparent; border-radius: .8rem; background: transparent; color: var(--text-secondary); padding: .7rem .8rem; text-align: left; cursor: pointer; transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease; }
+.settings-workspace-nav-item:hover { background: var(--surface-hover); color: var(--text-main); }
+.settings-workspace-nav-item:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; }
+.settings-workspace-nav-item-active { border-color: var(--accent-ring); background: var(--accent-soft); color: var(--accent-text); }
+.settings-workspace-nav-label { font-size: .82rem; font-weight: 700; }
+.settings-workspace-nav-description { color: var(--text-muted); font-size: .68rem; line-height: 1.35; }
+.settings-workspace-nav-item-active .settings-workspace-nav-description { color: var(--text-secondary); }
+.settings-workspace-select-label { display: none; gap: .35rem; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
+.settings-workspace-select-label select { min-height: 2.75rem; border: 1px solid var(--surface-line-strong); border-radius: .7rem; background: var(--surface-window); color: var(--text-main); padding: .5rem .7rem; }
+.settings-workspace-content { display: grid; gap: 1rem; min-width: 0; }
+.settings-group { min-width: 0; border: 1px solid var(--surface-line); border-radius: var(--radius-panel); background: var(--surface-panel); box-shadow: var(--shadow-panel); padding: 1rem 1.1rem; }
+.settings-group-warning { border-color: color-mix(in srgb, var(--warning) 35%, var(--surface-line)); }
+.settings-group-danger { border-color: color-mix(in srgb, var(--danger) 35%, var(--surface-line)); }
+.settings-group-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.settings-group-copy { min-width: 0; }
+.settings-group-title { margin: 0; color: var(--text-main); font-size: 1rem; font-weight: 700; }
+.settings-group-description { margin: .3rem 0 0; color: var(--text-muted); font-size: .78rem; line-height: 1.5; }
+.settings-group-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem; }
+.settings-group-disclosure { min-height: 2.75rem; border: 1px solid var(--surface-line-strong); border-radius: .6rem; background: var(--surface-window); color: var(--accent-text); padding: 0 .75rem; cursor: pointer; }
+.settings-group-content { min-width: 0; margin-top: 1rem; }
+.settings-group-content[hidden] { display: none; }
+@media (max-width: 767px) {
+  .settings-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: .85rem; }
+  .settings-workspace-nav { display: none; }
+  .settings-workspace-select-label { display: grid; }
+  .settings-group { padding: .9rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-workspace-nav-item { transition: none; }
+}
+
+.trade-workspace { display: grid; gap: 1rem; min-width: 0; }
+.trade-layout { display: grid; grid-template-columns: minmax(18rem, .45fr) minmax(0, 1.55fr); gap: 1rem; align-items: start; }
+.ui-surface-heading { margin: 0; color: var(--text-main); font-size: 1.05rem; font-weight: 700; }
+.ui-surface-subtitle { margin: .3rem 0 0; color: var(--text-muted); font-size: .78rem; }
+.trade-created-code { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .6rem; margin-top: 1rem; border: 1px solid var(--surface-line); border-radius: .7rem; background: var(--success-soft); padding: .7rem; }
+.trade-created-code code { min-width: 0; overflow: hidden; color: var(--text-main); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.ui-table-frame-meta { margin-inline-start: auto; color: var(--text-muted); font-size: .72rem; }
+.oauth-workspace, .oauth-records-workspace { display: grid; gap: 1rem; min-width: 0; }
+.cpa-workspace { display: grid; gap: 1rem; min-width: 0; }
+.cpa-workspace .panel { box-shadow: var(--shadow-panel); }
+@media (max-width: 900px) { .trade-layout { grid-template-columns: minmax(0, 1fr); } }

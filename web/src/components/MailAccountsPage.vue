@@ -30,7 +30,7 @@
       </template>
     </UiDataToolbar>
 
-    <UiBatchBar :count="selectedEmails.length" :busy="busy" @clear="clearSelection">
+    <UiBatchBar v-if="selectedEmails.length" :count="selectedEmails.length" :busy="busy" @clear="clearSelection">
       <UiButton variant="secondary" size="sm" :disabled="!selectedEmails.length || busy" @click="openStatusDialog">批量状态</UiButton>
       <UiButton variant="secondary" size="sm" :disabled="!selectedEmails.length || busy" @click="openNoteDialog">批量备注</UiButton>
       <UiButton variant="secondary" size="sm" :disabled="!selectedEmails.length || busy" @click="openPasswordDialog(selectedEmails)">批量改密</UiButton>

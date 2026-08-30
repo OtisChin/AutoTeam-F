@@ -84,7 +84,7 @@
             </button>
           </div>
         </header>
-        <div class="workspace-main">
+        <div class="workspace-main" :data-page-key="currentPage">
           <!-- 页面内容 -->
           <Dashboard v-if="currentPage === 'dashboard'"
             :status="status" :loading="loading" :running-task="busyTask"
@@ -143,7 +143,7 @@
 
           <Settings v-else-if="currentPage === 'settings'"
             :admin-status="adminStatus" :codex-status="codexStatus"
-            @refresh="refresh" @admin-progress="onAdminProgress" />
+            @refresh="refresh" @admin-progress="onAdminProgress" @navigate="navigateTo" />
 
           <SyncPage v-else-if="currentPage === 'sync'"
             :running-task="runningTask" :admin-status="adminStatus"
