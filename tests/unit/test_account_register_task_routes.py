@@ -40,6 +40,50 @@ def _routes(started, progress=None, *, oauth_env=None, proxy_meta=None, proxy_se
     return {route.endpoint.__name__: route.endpoint for route in router.routes}
 
 
+def _stub_register_dependencies(monkeypatch):
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+
+def test_manual_register_params_accepts_camel_case_go_protocol():
+    params = ManualRegisterParams.model_validate({"goProtocolRegister": True})
+
+    assert params.go_protocol_register is True
+
+
+def test_post_add_normalizes_go_protocol_and_prioritizes_it_over_python_protocol(monkeypatch):
+    started = []
+    _stub_register_dependencies(monkeypatch)
+
+    routes = _routes(started)
+    result = routes["post_add"](
+        ManualRegisterParams(go_protocol_register=True, protocol_register=True)
+    )
+
+    assert result["params"]["register_mode"] == "go_protocol"
+    assert started[0]["kwargs"]["register_mode"] == "go_protocol"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"registration_flow": "phone_cpa", "go_protocol_register": True},
+        {"phone_only": True, "go_protocol_register": True},
+    ],
+)
+def test_post_add_rejects_phone_flow_for_go_protocol(monkeypatch, payload):
+    _stub_register_dependencies(monkeypatch)
+
+    routes = _routes([])
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(**payload))
+
+    assert exc_info.value.status_code == 400
+    assert "Go 协议注册不支持手机号注册流程" in exc_info.value.detail
+
+
 def test_post_add_single_uses_default_domain_and_random_password(monkeypatch):
     started = []
     calls = []
@@ -175,7 +219,12 @@ def test_post_add_passes_use_cloakbrowser_to_register_worker_and_makes_it_exclus
 
     routes = _routes(started)
     result = routes["post_add"](
-        ManualRegisterParams(use_cloakbrowser=True, use_roxybrowser=True, protocol_register=True)
+        ManualRegisterParams(
+            use_cloakbrowser=True,
+            use_roxybrowser=True,
+            go_protocol_register=True,
+            protocol_register=True,
+        )
     )
 
     assert result["params"]["register_mode"] == "cloak"
@@ -404,9 +453,11 @@ def test_post_add_passes_use_roxybrowser_and_enable_totp_to_register_worker(monk
     monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", AvailableRoxyClient)
 
     routes = _routes(started)
-    result = routes["post_add"](ManualRegisterParams(useRoxyBrowser=True, enable2FA=True))
+    result = routes["post_add"](
+        ManualRegisterParams(useRoxyBrowser=True, goProtocolRegister=True, enable2FA=True)
+    )
 
-    assert result["params"]["register_mode"] == "browser"
+    assert result["params"]["register_mode"] == "roxy"
     assert result["params"]["use_roxybrowser"] is True
     assert result["params"]["enable_totp_mfa"] is True
     assert started[0]["kwargs"]["use_roxybrowser"] is True
