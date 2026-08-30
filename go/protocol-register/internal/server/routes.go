@@ -5,8 +5,13 @@ import (
 	"net/http"
 
 	"autoteam-f/protocol-register/internal/model"
+	"autoteam-f/protocol-register/internal/readiness"
 	"autoteam-f/protocol-register/internal/register"
 )
+
+type HealthSource interface {
+	Snapshot() readiness.Snapshot
+}
 
 type Handler struct {
 	cfg    Config
@@ -17,7 +22,7 @@ type Handler struct {
 type Config struct {
 	MaxConcurrency  int
 	AuthConcurrency int
-	ProtocolReady   bool
+	HealthSource    HealthSource
 }
 
 func normalizeConfig(cfg Config) Config {
@@ -41,19 +46,28 @@ func NewHandler(cfg Config, engine register.Engine) http.Handler {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+		snapshot := h.healthSnapshot()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":               true,
-			"protocol_ready":   h.cfg.ProtocolReady,
-			"service":          "protocol-registerd",
-			"version":          "dev",
-			"max_concurrency":  h.cfg.MaxConcurrency,
-			"auth_concurrency": h.cfg.AuthConcurrency,
-			"inflight":         len(h.sem),
+			"ok":                   true,
+			"protocol_ready":       snapshot.ProtocolReady,
+			"fingerprint_pool":     snapshot.FingerprintPool,
+			"sentinel_ready":       snapshot.SentinelReady,
+			"sentinel_sdk_version": snapshot.SentinelSDKVersion,
+			"ready_reason":         snapshot.ReadyReason,
+			"service":              "protocol-registerd",
+			"version":              "dev",
+			"max_concurrency":      h.cfg.MaxConcurrency,
+			"auth_concurrency":     h.cfg.AuthConcurrency,
+			"inflight":             len(h.sem),
 		})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/register":
-		if !h.cfg.ProtocolReady {
+		snapshot := h.healthSnapshot()
+		if !snapshot.ProtocolReady {
 			w.Header().Set("Retry-After", "30")
-			writeJSON(w, http.StatusServiceUnavailable, register.ServiceNotReadyResponse(""))
+			response := register.ServiceNotReadyResponse("")
+			response.Metadata = map[string]string{"ready_reason": snapshot.ReadyReason}
+			response.Error.Message += ": " + snapshot.ReadyReason
+			writeJSON(w, http.StatusServiceUnavailable, response)
 			return
 		}
 		var req model.RegisterRequest
@@ -73,6 +87,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
 	}
+}
+
+func (h *Handler) healthSnapshot() readiness.Snapshot {
+	if h.cfg.HealthSource == nil {
+		return readiness.Snapshot{
+			FingerprintPool: []string{},
+			ReadyReason:     readiness.ReasonFingerprintPoolInvalid,
+		}
+	}
+	snapshot := h.cfg.HealthSource.Snapshot()
+	snapshot.FingerprintPool = append([]string(nil), snapshot.FingerprintPool...)
+	snapshot.ReadyReason = readiness.SanitizeReason(snapshot.ReadyReason)
+	if !snapshot.ProtocolReady && snapshot.ReadyReason == "" {
+		snapshot.ReadyReason = readiness.ReasonSentinelUnavailable
+	}
+	if snapshot.ProtocolReady {
+		snapshot.ReadyReason = ""
+	}
+	return snapshot
 }
 
 var allowedFailureStatuses = map[string]struct{}{
