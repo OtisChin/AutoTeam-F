@@ -36,6 +36,7 @@ body,
 body {
   min-height: 100vh;
   min-height: 100dvh;
+  overflow: hidden;
   background: var(--surface-base);
   color: var(--text-main);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -96,18 +97,6 @@ textarea:focus-visible,
     background: var(--surface-base);
     color: var(--text-main);
   }
-
-  .setup-shell {
-    display: grid;
-    height: 100vh;
-    height: 100dvh;
-    min-height: 0;
-    overflow-y: auto;
-    place-items: safe center;
-    padding: 1rem;
-  }
-
-  .setup-card { min-width: 0; }
 
   .workspace-shell {
     min-width: 0;
@@ -257,7 +246,7 @@ textarea:focus-visible,
     overflow: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
-    contain: style;
+    contain: layout paint style;
     padding: 1.25rem;
   }
 
@@ -546,91 +535,7 @@ textarea:focus-visible,
   .task-panel-handle { cursor: grab; }
   .task-panel-handle:active { cursor: grabbing; }
 
-  .task-progress-fill {
-    width: 100%;
-    transform: scaleX(var(--task-progress, 0));
-    transform-origin: left center;
-    transition: transform 300ms var(--ease-out);
-    will-change: transform;
-  }
-
-  .dashboard-stale-warning {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 0.9rem;
-    border: 1px solid rgba(255, 159, 10, 0.28);
-    border-radius: var(--radius-panel);
-    background: rgba(255, 159, 10, 0.08);
-    padding: 0.8rem 0.95rem;
-    color: #ffd08a;
-  }
-
-  .dashboard-stale-warning div { display: grid; gap: 0.18rem; min-width: 0; }
-  .dashboard-stale-warning strong { color: #ffe0ad; font-size: 0.82rem; }
-  .dashboard-stale-warning span { color: #c5a778; font-size: 0.74rem; }
-  .dashboard-stale-warning button,
-  .dashboard-load-error button {
-    flex: none;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 9px;
-    background: rgba(255, 255, 255, 0.07);
-    padding: 0.48rem 0.72rem;
-    color: var(--text-main);
-    font-size: 0.76rem;
-    font-weight: 650;
-    transition: background-color 150ms ease, transform 150ms var(--ease-out);
-  }
-  .dashboard-stale-warning button:hover,
-  .dashboard-load-error button:hover { background: rgba(255, 255, 255, 0.12); }
-  .dashboard-stale-warning button:active,
-  .dashboard-load-error button:active { transform: scale(0.97); }
-  .dashboard-stale-warning button:disabled { cursor: wait; opacity: 0.55; }
-
-  .dashboard-load-error {
-    display: grid;
-    min-height: min(54vh, 520px);
-    place-content: center;
-    justify-items: center;
-    gap: 0.8rem;
-    border: 1px solid rgba(255, 69, 58, 0.2);
-    border-radius: var(--radius-panel);
-    background: rgba(255, 69, 58, 0.045);
-    padding: 2rem;
-    text-align: center;
-  }
-
-  .dashboard-load-error-icon {
-    display: grid;
-    width: 36px;
-    height: 36px;
-    place-content: center;
-    border: 1px solid rgba(255, 105, 97, 0.35);
-    border-radius: 50%;
-    background: rgba(255, 69, 58, 0.1);
-    color: #ff8d86;
-    font-weight: 750;
-  }
-  .dashboard-load-error h2 { color: var(--text-main); font-size: 1rem; font-weight: 700; }
-  .dashboard-load-error p { max-width: 34rem; margin-top: 0.32rem; color: #d98984; font-size: 0.8rem; overflow-wrap: anywhere; }
-  .dashboard-load-error .dashboard-load-error-hint { color: var(--text-faint); font-size: 0.72rem; }
-
-  .account-action-choice {
-    min-height: 42px;
-    border: 1px solid var(--surface-line);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.035);
-    padding: 0.65rem 0.7rem;
-    font-size: 0.76rem;
-    font-weight: 650;
-    transition: background-color 150ms ease, border-color 150ms ease, transform 150ms var(--ease-out);
-  }
-  .account-action-choice:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.15); background: rgba(255, 255, 255, 0.075); }
-  .account-action-choice:active:not(:disabled) { transform: scale(0.98); }
-  .account-action-choice:disabled { cursor: wait; opacity: 0.45; }
-
-.dashboard-tabs {
+  .dashboard-tabs {
     display: inline-flex;
     flex-wrap: wrap;
     gap: 3px;
@@ -712,6 +617,8 @@ textarea:focus-visible,
 .mobile-sheet-leave-to .mobile-nav-sheet { transform: translate3d(0, 28px, 0); }
 
 @media (max-width: 767px) {
+  body { overflow: hidden; }
+
   .app-shell { display: block; }
 
   .workspace-shell {
@@ -735,7 +642,6 @@ textarea:focus-visible,
   .auth-card { padding: 1.35rem; }
 
   .dashboard-tabs { display: flex; width: 100%; }
-  .dashboard-stale-warning { align-items: flex-start; flex-direction: column; }
   .dashboard-tab { flex: 1; }
   .dashboard-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-table-header,

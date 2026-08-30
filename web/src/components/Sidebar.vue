@@ -78,58 +78,55 @@
     </button>
   </nav>
 
-  <Teleport to="body">
-    <Transition name="mobile-sheet">
-      <div ref="sheetLayerRef" v-if="mobileMenuOpen" class="mobile-nav-layer md:hidden" @click.self="closeMobileMenu">
-        <section
-          id="mobile-navigation-sheet"
-          ref="sheetRef"
-          class="mobile-nav-sheet"
-          role="dialog"
-          aria-modal="true"
-          aria-label="全部工作区"
-          tabindex="-1"
-          @keydown.esc="closeMobileMenu"
-          @keydown.tab="trapMobileMenuFocus"
-        >
-          <header class="mobile-sheet-header">
-            <div>
-              <span class="workspace-eyebrow">导航</span>
-              <h2>全部工作区</h2>
-            </div>
-            <button type="button" class="mobile-sheet-close" aria-label="关闭导航" @click="closeMobileMenu">完成</button>
-          </header>
-          <div class="mobile-sheet-scroll">
-            <section v-for="group in groupedItems" :key="group.label" class="mobile-sheet-group">
-              <h3 class="section-label">{{ group.label }}</h3>
-              <div class="mobile-sheet-grid">
-                <button
-                  v-for="item in group.items"
-                  :key="item.key"
-                  type="button"
-                  class="mobile-sheet-item"
-                  :class="active === item.key ? 'mobile-sheet-item-active' : ''"
-                  :aria-current="active === item.key ? 'page' : undefined"
-                  @click="navigate(item.key)"
-                  @focus="emit('prefetch', item.key)"
-                >
-                  <span class="nav-glyph"><NavIcon :name="item.icon" /></span>
-                  <span class="min-w-0 text-left">
-                    <strong>{{ item.label }}</strong>
-                    <small>{{ item.description }}</small>
-                  </span>
-                </button>
-              </div>
-            </section>
+  <Transition name="mobile-sheet">
+    <div v-if="mobileMenuOpen" class="mobile-nav-layer md:hidden" @click.self="closeMobileMenu">
+      <section
+        id="mobile-navigation-sheet"
+        ref="sheetRef"
+        class="mobile-nav-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="全部工作区"
+        tabindex="-1"
+        @keydown.esc="closeMobileMenu"
+      >
+        <header class="mobile-sheet-header">
+          <div>
+            <span class="workspace-eyebrow">导航</span>
+            <h2>全部工作区</h2>
           </div>
-        </section>
-      </div>
-    </Transition>
-  </Teleport>
+          <button type="button" class="mobile-sheet-close" aria-label="关闭导航" @click="closeMobileMenu">完成</button>
+        </header>
+        <div class="mobile-sheet-scroll">
+          <section v-for="group in groupedItems" :key="group.label" class="mobile-sheet-group">
+            <h3 class="section-label">{{ group.label }}</h3>
+            <div class="mobile-sheet-grid">
+              <button
+                v-for="item in group.items"
+                :key="item.key"
+                type="button"
+                class="mobile-sheet-item"
+                :class="active === item.key ? 'mobile-sheet-item-active' : ''"
+                :aria-current="active === item.key ? 'page' : undefined"
+                @click="navigate(item.key)"
+                @focus="emit('prefetch', item.key)"
+              >
+                <span class="nav-glyph"><NavIcon :name="item.icon" /></span>
+                <span class="min-w-0 text-left">
+                  <strong>{{ item.label }}</strong>
+                  <small>{{ item.description }}</small>
+                </span>
+              </button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  </Transition>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { NAV_GROUPS, NAV_ITEMS } from '../navigation.js'
 import NavIcon from './NavIcon.vue'
 
@@ -142,101 +139,27 @@ const emit = defineEmits(['navigate', 'prefetch', 'refresh', 'logout'])
 
 const mobileMenuOpen = ref(false)
 const sheetRef = ref(null)
-const sheetLayerRef = ref(null)
 const moreButtonRef = ref(null)
-let mobileMenuBackgroundInertState = []
-let mobileMenuBodyOverflow = null
-let desktopMediaQuery = null
 const mobilePrimaryItems = NAV_ITEMS.filter(item => item.mobilePrimary)
 const mobileSecondaryKeys = new Set(NAV_ITEMS.filter(item => !item.mobilePrimary).map(item => item.key))
-const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 const groupedItems = computed(() => NAV_GROUPS
   .map(label => ({ label, items: NAV_ITEMS.filter(item => item.group === label) }))
   .filter(group => group.items.length))
 
 function navigate(key) {
   emit('navigate', key)
-  if (mobileMenuOpen.value) void closeMobileMenu()
+  mobileMenuOpen.value = false
 }
 
 async function openMobileMenu() {
   mobileMenuOpen.value = true
   await nextTick()
-  setMobileMenuBackgroundInert(sheetLayerRef.value)
   sheetRef.value?.focus()
 }
 
-async function closeMobileMenu(restoreFocus = true) {
+async function closeMobileMenu() {
   mobileMenuOpen.value = false
-  restoreMobileMenuBackgroundInert()
   await nextTick()
-  if (restoreFocus !== false) moreButtonRef.value?.focus()
+  moreButtonRef.value?.focus()
 }
-
-function setMobileMenuBackgroundInert(layer) {
-  restoreMobileMenuBackgroundInert()
-  if (!layer || typeof document === 'undefined') return
-  mobileMenuBackgroundInertState = [...document.body.children]
-    .filter(element => element !== layer && !element.contains(layer))
-    .map(element => ({ element, inert: Boolean(element.inert) }))
-  for (const { element } of mobileMenuBackgroundInertState) element.inert = true
-  mobileMenuBodyOverflow = document.body.style.overflow
-  document.body.style.overflow = 'hidden'
-}
-
-function restoreMobileMenuBackgroundInert() {
-  for (const { element, inert } of mobileMenuBackgroundInertState) {
-    if (element?.isConnected) element.inert = inert
-  }
-  mobileMenuBackgroundInertState = []
-  if (mobileMenuBodyOverflow !== null && typeof document !== 'undefined') {
-    document.body.style.overflow = mobileMenuBodyOverflow
-    mobileMenuBodyOverflow = null
-  }
-}
-
-function trapMobileMenuFocus(event) {
-  const sheet = sheetRef.value
-  if (!sheet) return
-  const focusable = [...sheet.querySelectorAll(FOCUSABLE_SELECTOR)]
-    .filter(element => element.getClientRects().length > 0 && element.getAttribute('aria-hidden') !== 'true')
-  if (!focusable.length) {
-    event.preventDefault()
-    sheet.focus()
-    return
-  }
-  const first = focusable[0]
-  const last = focusable.at(-1)
-  const current = document.activeElement
-  const focusOutsideCycle = current === sheet || !sheet.contains(current)
-  if (event.shiftKey && (focusOutsideCycle || current === first)) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && (focusOutsideCycle || current === last)) {
-    event.preventDefault()
-    first.focus()
-  }
-}
-
-async function handleDesktopBreakpointChange(event) {
-  if (!event.matches || !mobileMenuOpen.value) return
-  await closeMobileMenu(false)
-  if (typeof document === 'undefined') return
-  const visibleActiveItem = document.querySelector('.nav-shell .nav-item[aria-current="page"]')
-    || document.querySelector('.nav-shell .nav-item')
-  visibleActiveItem?.focus()
-}
-
-onMounted(() => {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-  desktopMediaQuery = window.matchMedia('(min-width: 768px)')
-  desktopMediaQuery.addEventListener('change', handleDesktopBreakpointChange)
-  if (desktopMediaQuery.matches) void handleDesktopBreakpointChange(desktopMediaQuery)
-})
-
-onBeforeUnmount(() => {
-  desktopMediaQuery?.removeEventListener('change', handleDesktopBreakpointChange)
-  desktopMediaQuery = null
-  restoreMobileMenuBackgroundInert()
-})
 </script>
