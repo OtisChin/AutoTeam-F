@@ -1,5 +1,5 @@
 <template>
-  <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
+  <div class="operation-panel ui-surface ui-surface-panel mt-6 rounded-xl p-4">
     <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
       <h2 class="text-lg font-semibold text-white">{{ panelTitle }}</h2>
       <div v-if="runningTask" class="flex items-center gap-2 text-xs">
@@ -69,8 +69,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { createMessageClearScheduler } from '../messageLifecycle.js'
 
 const props = defineProps({
   runningTask: Object,
@@ -105,6 +106,8 @@ const pendingAction = ref(null)
 const cancelling = ref(false)
 const cancelRequested = ref(false)
 const executingAction = ref('')
+const messageClearScheduler = createMessageClearScheduler()
+const domainMessageClearScheduler = createMessageClearScheduler()
 
 // 监听 task_id 变化,而非 runningTask 对象本身:
 // - null → null    : 无变化,忽略
@@ -141,7 +144,11 @@ async function cancelTask() {
     messageClass.value = 'bg-red-500/10 text-red-400 border border-red-500/20'
   } finally {
     cancelling.value = false
-    setTimeout(() => { if (messageClass.value.includes('amber')) message.value = '' }, 10000)
+    messageClearScheduler.schedule(10000, {
+      read: () => message.value,
+      when: () => messageClass.value.includes('amber'),
+      clear: () => { message.value = '' },
+    })
   }
 }
 
@@ -177,7 +184,10 @@ async function saveDomain() {
     domainMsgOk.value = false
   } finally {
     domainBusy.value = false
-    setTimeout(() => { domainMsg.value = '' }, 8000)
+    domainMessageClearScheduler.schedule(8000, {
+      read: () => domainMsg.value,
+      clear: () => { domainMsg.value = '' },
+    })
   }
 }
 
@@ -261,6 +271,14 @@ async function doExecute(action, param) {
   } finally {
     executingAction.value = ''
   }
-  setTimeout(() => { message.value = '' }, 8000)
+  messageClearScheduler.schedule(8000, {
+    read: () => message.value,
+    clear: () => { message.value = '' },
+  })
 }
+
+onBeforeUnmount(() => {
+  messageClearScheduler.dispose()
+  domainMessageClearScheduler.dispose()
+})
 </script>

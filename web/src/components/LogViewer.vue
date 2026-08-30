@@ -1,45 +1,24 @@
 <template>
-  <div>
-    <div class="flex items-center justify-between mb-6">
-      <h2 class="text-xl font-bold text-white">日志</h2>
-      <div class="flex items-center gap-3">
-        <label class="flex items-center gap-2 text-sm text-gray-400">
-          <input type="checkbox" v-model="autoScroll" class="rounded bg-gray-800 border-gray-700" />
-          自动滚动
-        </label>
-        <button @click="fetchLogs" :disabled="loading"
-          class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm rounded-lg border border-gray-700 transition disabled:opacity-50">
-          刷新
-        </button>
-        <button @click="clearLogs"
-          class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
-          清空
-        </button>
+  <section class="log-workspace">
+    <UiPageHeader title="日志" eyebrow="系统 / Diagnostics" description="实时查看运行日志并保留最近 1,000 条记录">
+      <template #actions><div class="ui-toolbar-actions"><label class="ui-check-label"><input type="checkbox" v-model="autoScroll" /> 自动滚动</label><UiButton variant="quiet" size="sm" :loading="loading" @click="fetchLogs">刷新</UiButton><UiButton variant="quiet" size="sm" @click="clearLogs">清空视图</UiButton></div></template>
+    </UiPageHeader>
+    <UiSurface variant="strong" padding="none" class="log-console-surface" aria-label="运行日志">
+      <div ref="logContainer" class="log-console" aria-live="polite">
+        <UiStatePanel v-if="logs.length === 0" state="empty" title="暂无日志" message="新的运行事件会自动出现在这里。" />
+        <div v-for="log in logs" :key="log._key" class="log-entry"><time>{{ formatTime(log.time) }}</time><strong :data-level="log.level">{{ log.level }}</strong><span>{{ log.message }}</span></div>
       </div>
-    </div>
-
-    <div ref="logContainer"
-      class="bg-gray-950 border border-gray-800 rounded-xl p-3 md:p-4 font-mono text-xs leading-relaxed h-[calc(100vh-200px)] md:h-[600px] overflow-y-auto">
-      <div v-if="logs.length === 0" class="text-gray-600 text-center py-8">暂无日志</div>
-      <div v-for="log in logs" :key="log._key"
-        class="py-0.5 flex gap-3 hover:bg-gray-900/50">
-        <span class="text-gray-600 shrink-0">{{ formatTime(log.time) }}</span>
-        <span class="shrink-0 w-16"
-          :class="{
-            'text-red-400': log.level === 'ERROR',
-            'text-yellow-400': log.level === 'WARNING',
-            'text-blue-400': log.level === 'INFO',
-            'text-gray-500': log.level === 'DEBUG',
-          }">{{ log.level }}</span>
-        <span class="text-gray-300 break-all">{{ log.message }}</span>
-      </div>
-    </div>
-  </div>
+    </UiSurface>
+  </section>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { api } from '../api.js'
+import UiButton from './ui/UiButton.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
+import UiStatePanel from './ui/UiStatePanel.vue'
+import UiSurface from './ui/UiSurface.vue'
 
 const logs = ref([])
 const loading = ref(false)

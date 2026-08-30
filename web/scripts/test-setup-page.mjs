@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../src/components/SetupPage.vue', import.meta.url), 'utf8')
+const formField = readFileSync(new URL('../src/components/ui/UiFormField.vue', import.meta.url), 'utf8')
 
 assert.match(
   source,
@@ -27,8 +28,11 @@ assert.match(source, /if \(configured\.value \|\| saving\.value\) return/, 'setu
 assert.match(source, /configured\.value = true[\s\S]*emit\('configured', result\.api_key\)/, 'setup should synchronously emit the generated key exactly once')
 assert.doesNotMatch(source, /setTimeout\([\s\S]*emit\('configured'/, 'setup completion should not leave a duplicate-submit timer window')
 assert.match(source, /:disabled="saving \|\| configured"/, 'the setup submit button should remain disabled after a successful save')
-assert.match(source, /for="setup-mail-provider"[\s\S]*id="setup-mail-provider"/, 'the provider label should identify its select control')
-assert.match(source, /:for="fieldInputId\(field\)"[\s\S]*:id="fieldInputId\(field\)"/, 'schema labels should identify their generated input controls')
+assert.match(source, /<UiFormField\s+id="setup-mail-provider"[\s\S]*label="Mail Provider"/, 'the provider control should use UiFormField labelling')
+assert.match(source, /<UiFormField\s+v-for="field in providerFields"[\s\S]*:id="fieldInputId\(field\)"/, 'provider schema fields should use UiFormField ids')
+assert.match(source, /<UiFormField\s+v-for="field in commonFields"[\s\S]*:id="fieldInputId\(field\)"/, 'common schema fields should use UiFormField ids')
+assert.match(formField, /<label[^>]*:for="id"/, 'UiFormField should render the accessible label association')
+assert.doesNotMatch(source, /class="sr-only"[^>]*\bfor=/, 'setup should not duplicate UiFormField labels')
 assert.ok((source.match(/:required="!field\.optional"/g) || []).length >= 2, 'both provider and common required inputs should expose native required semantics')
 assert.ok((source.match(/:aria-required="!field\.optional"/g) || []).length >= 2, 'both provider and common required inputs should announce required semantics')
 assert.match(source, /:role="messageRole"[\s\S]*aria-live="polite"/, 'setup success and failure feedback should be announced')

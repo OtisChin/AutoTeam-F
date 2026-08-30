@@ -1,9 +1,9 @@
 <template>
-  <div class="space-y-5">
-    <header>
-      <h2 class="text-xl font-bold text-white mb-2">OpenAI 账号 JSON 批量转换</h2>
-      <p class="text-sm text-gray-400">批量载入源文件，筛选需要的账号，统一导出成一个目标 JSON。</p>
-    </header>
+  <div class="cpa-workspace">
+    <UiPageHeader title="OpenAI 账号 JSON 批量转换" eyebrow="维护 / CPA" description="批量载入源文件，筛选需要的账号，统一导出成一个目标 JSON。">
+      <template #actions><UiStatusBadge :label="busy ? '处理中' : (hasConverted ? '已完成' : '待处理')" :tone="busy ? 'info' : (hasConverted ? 'success' : 'neutral')" /></template>
+    </UiPageHeader>
+    <UiMetricSummary label="转换指标" :items="metricItems" />
 
     <input
       ref="fileInput"
@@ -24,7 +24,7 @@
       @change="handleFiles"
     />
 
-    <section class="panel">
+    <section class="panel" data-cpa-stage="configuration">
       <h3 class="panel-title">文件区</h3>
       <div class="flex flex-wrap items-center gap-3">
         <button class="btn" :disabled="busy" @click="pickFiles">添加文件</button>
@@ -39,7 +39,9 @@
     <section class="panel">
       <h3 class="panel-title">文件列表</h3>
       <div class="overflow-x-auto rounded-xl border border-gray-800 min-h-[310px] bg-gray-950/40">
-        <table class="w-full text-sm">
+        <UiStatePanel v-if="busy && !sources.length" state="loading" title="正在读取文件" message="解析并校验 JSON 内容…" />
+        <UiStatePanel v-else-if="!busy && !sources.length" state="empty" title="尚未载入文件" message="选择 JSON 文件或文件夹后，会在列表中预览校验结果。" />
+        <table v-else class="w-full text-sm">
           <thead class="bg-gray-800/80 text-blue-100">
             <tr>
               <th class="table-head w-20">选择</th>
@@ -51,11 +53,12 @@
               <th class="table-head">校验结果</th>
             </tr>
           </thead>
-          <tbody v-if="sources.length" class="divide-y divide-gray-800">
+          <tbody class="divide-y divide-gray-800">
             <tr v-for="source in sources" :key="source.key" class="hover:bg-gray-800/40">
               <td class="px-4 py-3">
                 <input
                   type="checkbox"
+                  :aria-label="`选择文件 ${source.file_name}`"
                   :checked="source.selected"
                   :disabled="!source.is_valid || busy"
                   class="rounded bg-gray-900 border-gray-700 text-blue-500 focus:ring-blue-500"
@@ -74,11 +77,6 @@
                   {{ source.status_text || '-' }}
                 </span>
               </td>
-            </tr>
-          </tbody>
-          <tbody v-else>
-            <tr>
-              <td colspan="7" class="h-[255px] text-center text-gray-500">尚未载入文件。</td>
             </tr>
           </tbody>
         </table>
@@ -119,12 +117,12 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-cpa-stage="result" aria-live="polite">
         <h3 class="panel-title">执行结果</h3>
         <div class="text-sm font-semibold text-blue-300 mb-3">
           成功 {{ resultSuccess }} 个，失败 {{ resultFailed }} 个。
         </div>
-        <input readonly class="result-path" :value="resultPath" />
+        <input readonly aria-label="导出结果路径" class="result-path" :value="resultPath" />
         <div class="result-log">
           <template v-if="resultLines.length">
             <div v-for="(line, index) in resultLines" :key="index" :class="line.type === 'error' ? 'text-red-400' : 'text-gray-300'">
@@ -136,7 +134,7 @@
       </section>
     </div>
 
-    <div v-if="settingsDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+    <AccessibleModal v-if="settingsDialogOpen" label="导出设置" @close="settingsDialogOpen = false">
       <div class="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-2xl">
         <div class="mb-4">
           <h3 class="text-lg font-bold text-white">导出设置</h3>
@@ -176,6 +174,7 @@
                 <input
                   v-model="draftSettings.auto_pause_on_expired"
                   type="checkbox"
+                  aria-label="到期后自动暂停"
                   class="rounded bg-gray-950 border-gray-700 text-blue-500 focus:ring-blue-500"
                 />
                 到期后自动暂停
@@ -189,6 +188,7 @@
               <input
                 v-model="draftSettings.proxy.enabled"
                 type="checkbox"
+                aria-label="启用代理"
                 class="rounded bg-gray-950 border-gray-700 text-blue-500 focus:ring-blue-500"
               />
               启用代理
@@ -239,7 +239,7 @@
           <button class="btn-primary" @click="saveSettings">保存设置</button>
         </div>
       </div>
-    </div>
+    </AccessibleModal>
   </div>
 </template>
 
@@ -247,6 +247,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api.js'
 import { validateCpaFileSelection } from '../cpaFileLimits.js'
+import AccessibleModal from './AccessibleModal.vue'
+import UiMetricSummary from './ui/UiMetricSummary.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
+import UiStatePanel from './ui/UiStatePanel.vue'
+import UiStatusBadge from './ui/UiStatusBadge.vue'
 
 const fileInput = ref(null)
 const folderInput = ref(null)
@@ -270,6 +275,7 @@ const invalidCount = computed(() => sources.value.filter((item) => !item.is_vali
 const selectedCount = computed(() => sources.value.filter((item) => item.is_valid && item.selected).length)
 const resultSuccess = computed(() => (hasConverted.value ? lastResultSuccess.value : selectedCount.value))
 const resultFailed = computed(() => (hasConverted.value ? lastResultFailed.value : invalidCount.value))
+const metricItems = computed(() => [{ key: 'files', label: '文件', value: totalCount.value, tone: 'neutral' }, { key: 'valid', label: '有效', value: validCount.value, tone: 'success' }, { key: 'selected', label: '已选择', value: selectedCount.value, tone: 'info' }, { key: 'invalid', label: '无效', value: invalidCount.value, tone: 'danger' }, { key: 'converted', label: '已转换', value: resultSuccess.value, tone: 'success' }])
 const canOpenOutputDir = computed(() => Boolean(settings.output_dir && resultPath.value))
 const proxySummary = computed(() => {
   const proxy = settings.proxy

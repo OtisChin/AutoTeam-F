@@ -4,16 +4,18 @@
 
   <!-- 登录页 -->
   <main v-else-if="!authenticated" class="auth-shell">
-    <section class="auth-card">
-      <div class="mb-7 flex items-center gap-4">
-        <div class="nav-mark">AT</div>
+    <div class="auth-theme-control"><ThemeSwitcher /></div>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="auth-brand">
+        <div class="nav-mark" aria-hidden="true"><span>A</span></div>
         <div>
-          <h1 class="text-2xl font-semibold tracking-tight text-white">AutoToken</h1>
-          <p class="mt-1 text-sm text-gray-400">运营控制台访问验证</p>
+          <p class="workspace-eyebrow">Operations Console</p>
+          <h1 id="auth-title" class="auth-title">AutoToken</h1>
+          <p class="auth-copy">安全进入你的运营工作区</p>
         </div>
       </div>
-      <div v-if="authError" class="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-        {{ authError }}
+      <div v-if="authError || startupError" class="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300" role="alert">
+        {{ authError || startupError }}
       </div>
       <label class="block">
         <span class="mb-2 block text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">API Key</span>
@@ -30,6 +32,15 @@
         :disabled="!inputKey || authLoading"
         class="mt-5 w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50">
         {{ authLoading ? '验证中...' : '进入控制台' }}
+      </button>
+      <button
+        v-if="startupError"
+        type="button"
+        :disabled="authLoading"
+        class="mt-3 w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:cursor-wait disabled:opacity-50"
+        @click="initializeApp"
+      >
+        {{ authLoading ? '正在重连...' : '重新连接' }}
       </button>
     </section>
   </main>
@@ -55,6 +66,7 @@
             <span class="workspace-description">{{ currentPageMeta.description }}</span>
           </div>
           <div class="workspace-toolbar-actions">
+            <ThemeSwitcher />
             <span class="workspace-status" :class="busyTasks.length ? 'workspace-status-busy' : ''" aria-live="polite">
               <span class="workspace-status-dot" aria-hidden="true"></span>
               {{ busyTasks.length ? `${busyTasks.length} 个任务运行中` : '系统就绪' }}
@@ -72,17 +84,20 @@
             </button>
           </div>
         </header>
-        <div class="workspace-main">
+        <div class="workspace-main" :data-page-key="currentPage">
           <!-- 页面内容 -->
           <Dashboard v-if="currentPage === 'dashboard'"
             :status="status" :loading="loading" :running-task="busyTask"
+            :accounts-error="accountsError" :last-successful-at="lastSuccessfulAt"
             :refresh-quota-result-task="lastDashboardRefreshQuotaTask"
             :admin-status="adminStatus"
-            @task-started="onTaskStarted" @refresh="refresh" />
+            @task-started="onTaskStarted" @refresh="refresh" @retry-accounts="refreshDashboardAccounts" />
 
           <RegisterAccountPage v-else-if="currentPage === 'register'"
             :running-task="registerRunningTask" :admin-status="adminStatus"
             @task-started="onTaskStarted" @refresh="refresh" />
+
+          <TeamMembers v-else-if="currentPage === 'team'" />
 
           <BindCardPool v-else-if="currentPage === 'cardpool'" />
 
@@ -110,6 +125,10 @@
 
           <MailAccountsPage v-else-if="currentPage === 'mailAccounts'" @task-started="onTaskStarted" />
 
+          <PoolPage v-else-if="currentPage === 'pool'"
+            :running-task="runningTask" :admin-status="adminStatus"
+            @task-started="onTaskStarted" @refresh="refresh" />
+
           <TradeManagerPage v-else-if="currentPage === 'trade'" />
 
           <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
@@ -124,7 +143,11 @@
 
           <Settings v-else-if="currentPage === 'settings'"
             :admin-status="adminStatus" :codex-status="codexStatus"
-            @refresh="refresh" @admin-progress="onAdminProgress" />
+            @refresh="refresh" @admin-progress="onAdminProgress" @navigate="navigateTo" />
+
+          <SyncPage v-else-if="currentPage === 'sync'"
+            :running-task="runningTask" :admin-status="adminStatus"
+            @task-started="onTaskStarted" @refresh="refresh" />
         </div>
       </div>
     </main>
@@ -142,7 +165,7 @@
         <button
           type="button"
           title="拖动任务进度；双击恢复右上角"
-          class="task-panel-handle touch-none rounded-md border border-gray-700 bg-gray-950/95 px-2 py-1 font-mono text-xs leading-none text-gray-400 shadow-lg shadow-black/20 transition hover:border-yellow-400/40 hover:text-yellow-200"
+          class="task-panel-handle ui-surface touch-none rounded-md border px-2 py-1 font-mono text-xs leading-none shadow-lg transition"
           @pointerdown="startTaskPanelDrag"
           @lostpointercapture="stopTaskPanelDrag"
           @dblclick="resetTaskPanelPosition"
@@ -154,21 +177,21 @@
       <div
         v-for="task in busyTasks"
         :key="taskNoticeKey(task)"
-        class="rounded-lg border border-yellow-400/30 bg-gray-950/95 shadow-2xl shadow-black/40 backdrop-blur"
+        class="ui-surface ui-surface-panel rounded-lg border shadow-2xl"
       >
         <div class="px-4 py-3">
         <div class="flex items-start gap-3">
-          <span class="mt-1 animate-spin inline-block w-4 h-4 shrink-0 border-2 border-yellow-300 border-t-transparent rounded-full"></span>
+          <span class="mt-1 animate-spin inline-block w-4 h-4 shrink-0 border-2 border-[var(--warning)] border-t-transparent rounded-full"></span>
           <div class="min-w-0 flex-1">
             <div class="flex items-center justify-between gap-3">
               <div class="text-sm font-semibold text-white truncate">{{ taskNoticeTitle(task) }}</div>
-              <div class="text-xs font-mono text-yellow-200 shrink-0">{{ taskProgress(task).text }}</div>
+              <div class="text-xs font-mono text-[var(--warning)] shrink-0">{{ taskProgress(task).text }}</div>
             </div>
-            <div class="mt-1 text-xs text-gray-400 truncate">{{ taskNoticeSubtitle(task) }}</div>
-            <div class="mt-3 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+            <div class="mt-1 text-xs text-[var(--text-muted)] truncate">{{ taskNoticeSubtitle(task) }}</div>
+            <div class="mt-3 h-1.5 rounded-full bg-[var(--surface-muted)] overflow-hidden">
               <div
-                class="h-full rounded-full bg-yellow-300 transition-all duration-300"
-                :style="{ width: `${taskProgress(task).percent}%` }"
+                class="task-progress-fill h-full rounded-full bg-[var(--warning)]"
+                :style="{ '--task-progress': taskProgress(task).percent / 100 }"
               ></div>
             </div>
           </div>
@@ -181,11 +204,20 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, ref, onMounted, onUnmounted } from 'vue'
-import { api, setApiKey, clearApiKey } from './api.js'
+import { computed, defineAsyncComponent, h, shallowRef, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ACCOUNT_DATA_NOT_MODIFIED, api, getApiKey, setApiKey, clearApiKey, invalidateApiKeyMemory } from './api.js'
+import { buildDashboardStatusFromAccounts } from './accountData.js'
+import {
+  createAccountLoadAbortError,
+  createAccountLoadLifecycle,
+  isAccountLoadAbortError,
+  shouldLoadDashboardAccounts,
+} from './accountLoadPolicy.js'
 import { NAV_ITEMS_BY_KEY, PAGE_KEYS } from './navigation.js'
 import { createRafThrottle, createSingleFlight } from './runtimePerformance.js'
 import { calculateTaskProgress } from './taskProgress.js'
+import ThemeSwitcher from './components/ThemeSwitcher.vue'
+import { clearStorageSession, prepareStorageSession, SESSION_OWNER_KEY } from './sessionStorageScope.js'
 import SetupPage from './components/SetupPage.vue'
 import Sidebar from './components/Sidebar.vue'
 import PageLoading from './components/PageLoading.vue'
@@ -194,6 +226,7 @@ import PageLoadError from './components/PageLoadError.vue'
 const pageLoaders = {
   dashboard: () => import('./components/Dashboard.vue'),
   register: () => import('./components/RegisterAccountPage.vue'),
+  team: () => import('./components/TeamMembers.vue'),
   cardpool: () => import('./components/BindCardPool.vue'),
   bindcard: () => import('./components/BindCard.vue'),
   gopay: () => import('./components/BindCard.vue'),
@@ -207,19 +240,29 @@ const pageLoaders = {
   oauthPhones: () => import('./components/OAuthPhonePoolPage.vue'),
   oauthPhoneRecords: () => import('./components/OAuthPhoneRecordsPage.vue'),
   mailAccounts: () => import('./components/MailAccountsPage.vue'),
+  pool: () => import('./components/PoolPage.vue'),
   trade: () => import('./components/TradeManagerPage.vue'),
   cpa2sub: () => import('./components/CpaToSub2ApiPage.vue'),
   oauth: () => import('./components/OAuthPage.vue'),
   tasks: () => import('./components/TaskHistoryPage.vue'),
   logs: () => import('./components/LogViewer.vue'),
   settings: () => import('./components/Settings.vue'),
+  sync: () => import('./components/SyncPage.vue'),
 }
 
 function asyncPage(key) {
   return defineAsyncComponent({
     loader: pageLoaders[key],
     loadingComponent: PageLoading,
-    errorComponent: PageLoadError,
+    errorComponent: {
+      props: { error: { type: Error, default: null } },
+      setup(props) {
+        return () => h(PageLoadError, {
+          error: props.error,
+          onRetry: () => retryPageLoad(key),
+        })
+      },
+    },
     delay: 120,
     timeout: 30_000,
     onError(_error, retry, fail, attempts) {
@@ -229,49 +272,108 @@ function asyncPage(key) {
   })
 }
 
-const Dashboard = asyncPage('dashboard')
-const RegisterAccountPage = asyncPage('register')
-const BindCardPool = asyncPage('cardpool')
-const BindCard = asyncPage('bindcard')
-const UsPaypalPage = asyncPage('paypal')
-const IdealLinkPage = asyncPage('ideal')
-const BrazilPixPage = asyncPage('brazilPix')
-const IndiaUpiPage = asyncPage('indiaUpi')
-const KakaoPayPage = asyncPage('kakaoPay')
-const MomoPage = asyncPage('momoVn')
-const GCashPhPage = asyncPage('gcashPh')
-const OAuthPhonePoolPage = asyncPage('oauthPhones')
-const OAuthPhoneRecordsPage = asyncPage('oauthPhoneRecords')
-const MailAccountsPage = asyncPage('mailAccounts')
-const TradeManagerPage = asyncPage('trade')
-const CpaToSub2ApiPage = asyncPage('cpa2sub')
-const OAuthPage = asyncPage('oauth')
-const TaskHistoryPage = asyncPage('tasks')
-const LogViewer = asyncPage('logs')
-const Settings = asyncPage('settings')
+const Dashboard = shallowRef(asyncPage('dashboard'))
+const RegisterAccountPage = shallowRef(asyncPage('register'))
+const TeamMembers = shallowRef(asyncPage('team'))
+const BindCardPool = shallowRef(asyncPage('cardpool'))
+const BindCard = shallowRef(asyncPage('bindcard'))
+const UsPaypalPage = shallowRef(asyncPage('paypal'))
+const IdealLinkPage = shallowRef(asyncPage('ideal'))
+const BrazilPixPage = shallowRef(asyncPage('brazilPix'))
+const IndiaUpiPage = shallowRef(asyncPage('indiaUpi'))
+const KakaoPayPage = shallowRef(asyncPage('kakaoPay'))
+const MomoPage = shallowRef(asyncPage('momoVn'))
+const GCashPhPage = shallowRef(asyncPage('gcashPh'))
+const OAuthPhonePoolPage = shallowRef(asyncPage('oauthPhones'))
+const OAuthPhoneRecordsPage = shallowRef(asyncPage('oauthPhoneRecords'))
+const MailAccountsPage = shallowRef(asyncPage('mailAccounts'))
+const PoolPage = shallowRef(asyncPage('pool'))
+const TradeManagerPage = shallowRef(asyncPage('trade'))
+const CpaToSub2ApiPage = shallowRef(asyncPage('cpa2sub'))
+const OAuthPage = shallowRef(asyncPage('oauth'))
+const TaskHistoryPage = shallowRef(asyncPage('tasks'))
+const LogViewer = shallowRef(asyncPage('logs'))
+const Settings = shallowRef(asyncPage('settings'))
+const SyncPage = shallowRef(asyncPage('sync'))
+
+const retryablePages = {
+  dashboard: Dashboard,
+  register: RegisterAccountPage,
+  team: TeamMembers,
+  cardpool: BindCardPool,
+  bindcard: BindCard,
+  gopay: BindCard,
+  paypal: UsPaypalPage,
+  ideal: IdealLinkPage,
+  brazilPix: BrazilPixPage,
+  indiaUpi: IndiaUpiPage,
+  kakaoPay: KakaoPayPage,
+  momoVn: MomoPage,
+  gcashPh: GCashPhPage,
+  oauthPhones: OAuthPhonePoolPage,
+  oauthPhoneRecords: OAuthPhoneRecordsPage,
+  mailAccounts: MailAccountsPage,
+  pool: PoolPage,
+  trade: TradeManagerPage,
+  cpa2sub: CpaToSub2ApiPage,
+  oauth: OAuthPage,
+  tasks: TaskHistoryPage,
+  logs: LogViewer,
+  settings: Settings,
+  sync: SyncPage,
+}
+
+function retryPageLoad(key) {
+  const target = retryablePages[key]
+  if (target) target.value = asyncPage(key)
+}
 
 const needSetup = ref(false)
 const authenticated = ref(false)
 const authRequired = ref(false)
 const authLoading = ref(false)
 const authError = ref('')
+const startupError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
-const ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS = 10000
 const IDLE_POLLING_ENABLED = false
 const TASK_PANEL_POSITION_KEY = 'autotoken_task_panel_position'
-const savedPage = localStorage.getItem(CURRENT_PAGE_KEY)
+const savedPage = (() => {
+  try {
+    return localStorage.getItem(CURRENT_PAGE_KEY)
+  } catch {
+    return null
+  }
+})()
 const currentPage = ref(PAGE_KEYS.has(savedPage) ? savedPage : 'dashboard')
 const currentPageMeta = computed(() => NAV_ITEMS_BY_KEY[currentPage.value] || NAV_ITEMS_BY_KEY.dashboard)
-const status = ref(null)
+const status = shallowRef(null)
+const accountsError = ref('')
+const lastSuccessfulAt = ref(null)
 const adminStatus = ref(null)
 const codexStatus = ref(null)
 const manualAccountStatus = ref(null)
 const tasks = ref([])
 const loading = ref(false)
 const runningTask = ref(null)
+const accountLoadLifecycle = createAccountLoadLifecycle({
+  load: ({ signal }) => api.getAccounts({
+    includeSessionStubs: true,
+    view: 'dashboard',
+    timeoutMs: 20_000,
+    signal,
+  }),
+  prepare: buildDashboardStatusFromAccounts,
+  isNotModified: value => value === ACCOUNT_DATA_NOT_MODIFIED,
+  onChange(nextState) {
+    status.value = nextState.snapshot
+    loading.value = nextState.loading
+    accountsError.value = nextState.error
+    lastSuccessfulAt.value = nextState.lastSuccessfulAt
+  },
+})
 const taskPanelRef = ref(null)
 const taskPanelPosition = ref(loadTaskPanelPosition())
 const taskPanelDrag = ref(null)
@@ -412,8 +514,28 @@ function taskNoticeSubtitle(task) {
 
 let pollTimer = null
 let pollIntervalMs = null
-let lastDashboardStatusRefreshAt = 0
-let dashboardStatusRequestId = 0
+let pollingEpoch = null
+let authEpoch = 0
+
+function resetSessionState() {
+  accountLoadLifecycle.reset()
+  tasks.value = []
+  adminStatus.value = null
+  codexStatus.value = null
+  manualAccountStatus.value = null
+  runningTask.value = null
+}
+
+function advanceAuthEpoch() {
+  accountLoadLifecycle.abort(createAccountLoadAbortError('认证会话已变更'))
+  authEpoch += 1
+  resetSessionState()
+  return authEpoch
+}
+
+function isCurrentAuthEpoch(epoch) {
+  return epoch === authEpoch
+}
 
 function taskCommandLabel(command) {
   const value = String(command || '')
@@ -466,60 +588,24 @@ function taskStageLabel(stage) {
 
 const taskProgress = calculateTaskProgress
 
-function buildDashboardStatusFromAccounts(payload) {
-  const rows = (Array.isArray(payload) ? payload : []).map(acc => {
-    const status = String(acc?.status || '').trim().toLowerCase()
-    const normalized = ['personal', 'plus'].includes(status) ? 'active' : status
-    const lastBindProvider = String(acc?.last_bind_provider || '').trim().toLowerCase()
-    return {
-      ...acc,
-      raw_status: acc?.raw_status || status,
-      status: normalized,
-      last_bind_provider: lastBindProvider,
+async function refreshDashboardAccounts(epoch = authEpoch) {
+  if (!isCurrentAuthEpoch(epoch) || !shouldLoadDashboardAccounts(currentPage.value)) return
+  try {
+    const nextStatus = await accountLoadLifecycle.load(epoch)
+    if (nextStatus === undefined || !isCurrentAuthEpoch(epoch)) return
+  } catch (error) {
+    if (!isCurrentAuthEpoch(epoch) || isAccountLoadAbortError(error)) return
+    if (error?.status === 401) {
+      authenticated.value = false
+      stopPolling()
+      return
     }
-  })
-  const computedSummary = {
-    active: 0,
-    standby: 0,
-    stashed: 0,
-    exhausted: 0,
-    pending: 0,
-    auth_invalid: 0,
-    auth_revoked: 0,
-    orphan: 0,
-    fail: 0,
-    free: 0,
-    team: 0,
-    plus: 0,
-    pro: 0,
-    total: rows.length,
-  }
-  for (const acc of rows) {
-    const statusKey = String(acc?.status || 'pending').toLowerCase()
-    if (Object.prototype.hasOwnProperty.call(computedSummary, statusKey)) {
-      computedSummary[statusKey] += 1
-    }
-    const typeKey = String(acc?.account_type || acc?.seat_type || 'free').toLowerCase()
-    if (['free', 'team', 'plus', 'pro'].includes(typeKey)) {
-      computedSummary[typeKey] += 1
-    }
-  }
-  return {
-    accounts: rows,
-    summary: computedSummary,
-    quota_cache: {},
-    fallback: true,
+    console.warn('账号池刷新失败，保留旧值:', error)
   }
 }
 
-async function loadDashboardStatus() {
-  const accounts = await api.getAccounts({ timeoutMs: 5000 })
-  return buildDashboardStatusFromAccounts(accounts)
-}
-
-const loadDashboardStatusOnce = createSingleFlight(loadDashboardStatus)
-
-async function refreshAuxiliaryState() {
+async function refreshAuxiliaryState(epoch = authEpoch) {
+  if (!isCurrentAuthEpoch(epoch)) return
   try {
     const [t, admin, codex, manualAccount] = await Promise.all([
       loadOrFallback(api.getTasks(false, { timeoutMs: 10000 }), tasks.value || [], 'tasks'),
@@ -527,6 +613,7 @@ async function refreshAuxiliaryState() {
       loadOrFallback(api.getMainCodexStatus({ timeoutMs: 10000 }), codexStatus.value || null, 'main-codex-status'),
       loadOrFallback(api.getManualAccountStatus({ timeoutMs: 10000 }), manualAccountStatus.value || null, 'manual-account-status'),
     ])
+    if (!isCurrentAuthEpoch(epoch)) return
     tasks.value = t
     adminStatus.value = admin
     codexStatus.value = codex
@@ -536,17 +623,19 @@ async function refreshAuxiliaryState() {
     ) || t.find(task =>
       (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
     ) || null
-    syncPollingWithTasks()
+    syncPollingWithTasks(epoch)
   } catch (e) {
+    if (!isCurrentAuthEpoch(epoch)) return
     if (e.status === 401) {
       authenticated.value = false
+      stopPolling()
     } else {
       console.warn('辅助状态刷新失败:', e)
     }
   }
 }
 
-const refreshAuxiliaryStateOnce = createSingleFlight(refreshAuxiliaryState)
+const refreshAuxiliaryStateOnce = createSingleFlight(refreshAuxiliaryState, { key: epoch => epoch })
 
 async function loadOrFallback(promise, fallbackValue, label) {
   try {
@@ -558,112 +647,130 @@ async function loadOrFallback(promise, fallbackValue, label) {
   }
 }
 
-async function checkAuth() {
+async function checkAuth(epoch = authEpoch, apiKey, commit = true) {
   try {
-    const result = await api.checkAuth()
+    const result = await api.checkAuth(apiKey)
+    if (!isCurrentAuthEpoch(epoch)) return commit ? false : null
+    if (!commit) return result
     authenticated.value = result.authenticated
     authRequired.value = result.auth_required
+    startupError.value = ''
     return result.authenticated
   } catch (e) {
+    if (!isCurrentAuthEpoch(epoch)) return false
     if (e.status === 401) {
+      if (!commit) return { authenticated: false, auth_required: true }
       authenticated.value = false
       authRequired.value = true
+      startupError.value = ''
       return false
     }
-    authenticated.value = true
-    authRequired.value = false
-    return true
+    startupError.value = e?.timeout
+      ? '连接服务超时，请检查后端状态后重试'
+      : '暂时无法连接服务，请稍后重试'
+    throw e
   }
 }
 
 async function doLogin() {
+  if (authLoading.value) return
+  const submittedKey = String(inputKey.value || '')
+  if (!submittedKey) return
   authError.value = ''
+  startupError.value = ''
   authLoading.value = true
+  const loginEpoch = advanceAuthEpoch()
+  stopPolling()
   try {
-    setApiKey(inputKey.value)
-    const ok = await checkAuth()
-    if (!ok) {
-      clearApiKey()
+    const authProbe = await checkAuth(loginEpoch, submittedKey, false)
+    if (!isCurrentAuthEpoch(loginEpoch)) return
+    if (!authProbe?.authenticated) {
+      if (getApiKey() === submittedKey) clearApiKey()
       authError.value = 'API Key 无效'
-    } else {
-      inputKey.value = ''
-      await refresh()
-      syncPollingWithTasks()
+      return
     }
+    const session = await prepareStorageSession(submittedKey, { rotate: true })
+    if (!isCurrentAuthEpoch(loginEpoch)) return
+    if (!session?.owner) {
+      authenticated.value = false
+      authError.value = '浏览器存储不可用，请允许此站点使用本地存储后重试'
+      return
+    }
+    setApiKey(submittedKey)
+    authenticated.value = true
+    authRequired.value = Boolean(authProbe.auth_required)
+    startupError.value = ''
+    inputKey.value = ''
+    await refresh()
+    if (!isCurrentAuthEpoch(loginEpoch) || !authenticated.value) return
+    syncPollingWithTasks()
   } catch (e) {
-    clearApiKey()
-    authError.value = e.message
+    if (!isCurrentAuthEpoch(loginEpoch)) return
+    startupError.value = ''
+    authError.value = e?.timeout
+      ? '连接服务超时，请检查后端状态后重试'
+      : '暂时无法连接服务，请稍后重试'
   } finally {
-    authLoading.value = false
+    if (isCurrentAuthEpoch(loginEpoch)) authLoading.value = false
   }
 }
 
-function doLogout() {
+async function doLogout() {
+  advanceAuthEpoch()
   clearApiKey()
   authenticated.value = false
   stopPolling()
+  await nextTick()
+  clearStorageSession()
 }
 
 function navigateTo(page) {
-  currentPage.value = PAGE_KEYS.has(page) ? page : 'dashboard'
+  const previousPage = currentPage.value
+  const nextPage = PAGE_KEYS.has(page) ? page : 'dashboard'
+  currentPage.value = nextPage
   try {
     localStorage.setItem(CURRENT_PAGE_KEY, currentPage.value)
   } catch {}
+  if (previousPage === 'dashboard' && nextPage !== 'dashboard') {
+    accountLoadLifecycle.abort(createAccountLoadAbortError('已离开账号仪表盘'))
+  } else if (previousPage !== 'dashboard' && shouldLoadDashboardAccounts(currentPage.value) && authenticated.value) {
+    void refreshDashboardAccounts(authEpoch)
+  }
 }
 
 function prefetchPage(page) {
-  if (PAGE_KEYS.has(page)) void pageLoaders[page]?.()
+  if (!PAGE_KEYS.has(page) || !navigator.onLine) return
+  void pageLoaders[page]().catch(() => {})
 }
 
-async function performRefresh() {
-  loading.value = true
-  const requestId = ++dashboardStatusRequestId
-  const auxiliaryPromise = refreshAuxiliaryStateOnce()
-  try {
-    const nextStatus = await loadDashboardStatusOnce()
-    if (requestId !== dashboardStatusRequestId) return
-    status.value = nextStatus
-    lastDashboardStatusRefreshAt = Date.now()
-  } catch (e) {
-    if (e.status === 401) {
-      authenticated.value = false
-      return
-    }
-    console.error('刷新失败:', e)
-  } finally {
-    loading.value = false
+async function performRefresh(epoch = authEpoch) {
+  if (!isCurrentAuthEpoch(epoch)) return
+  const auxiliaryPromise = refreshAuxiliaryStateOnce(epoch)
+  if (shouldLoadDashboardAccounts(currentPage.value)) {
+    await Promise.all([auxiliaryPromise, refreshDashboardAccounts(epoch)])
+  } else {
+    await auxiliaryPromise
   }
-
-  void auxiliaryPromise
 }
 
-const refresh = createSingleFlight(performRefresh)
+const refreshOnce = createSingleFlight(performRefresh, { key: epoch => epoch })
 
-async function refreshTaskStateOnly() {
+function refresh() {
+  return refreshOnce(authEpoch)
+}
+
+async function refreshTaskStateOnly(epoch = authEpoch) {
+  if (!isCurrentAuthEpoch(epoch)) return
   const hadBusyTasks = busyTasks.value.length > 0
-  await refreshAuxiliaryStateOnce()
+  await refreshAuxiliaryStateOnce(epoch)
+  if (!isCurrentAuthEpoch(epoch)) return
   if (hadBusyTasks && !busyTasks.value.length) {
-    await refresh()
+    if (shouldLoadDashboardAccounts(currentPage.value)) await refreshDashboardAccounts(epoch)
     return
   }
-  if (busyTasks.value.length && Date.now() - lastDashboardStatusRefreshAt >= ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS) {
-    const requestId = ++dashboardStatusRequestId
-    try {
-      const nextStatus = await loadDashboardStatusOnce()
-      if (requestId !== dashboardStatusRequestId) return
-      status.value = nextStatus
-      lastDashboardStatusRefreshAt = Date.now()
-    } catch (e) {
-      if (e.status === 401) {
-        authenticated.value = false
-      } else {
-        console.warn('账号池刷新失败，保留旧值:', e)
-      }
-    }
-  }
 }
 
-const refreshTaskStateOnlyOnce = createSingleFlight(refreshTaskStateOnly)
+const refreshTaskStateOnlyOnce = createSingleFlight(refreshTaskStateOnly, { key: epoch => epoch })
 
 function onTaskStarted() {
   startPolling(ACTIVE_POLL_INTERVAL_MS)
@@ -675,29 +782,33 @@ function onAdminProgress() {
   refresh()
 }
 
-function startPolling(interval = IDLE_POLL_INTERVAL_MS) {
-  if (pollIntervalMs === interval) return
+function startPolling(interval = IDLE_POLL_INTERVAL_MS, epoch = authEpoch) {
+  if (!isCurrentAuthEpoch(epoch)) return
+  if (pollIntervalMs === interval && pollingEpoch === epoch) return
   stopPolling()
   if (interval >= IDLE_POLL_INTERVAL_MS && !IDLE_POLLING_ENABLED && !busyTask.value) {
     return
   }
   pollIntervalMs = interval
-  scheduleNextPoll(interval)
+  pollingEpoch = epoch
+  scheduleNextPoll(interval, epoch)
 }
 
-function scheduleNextPoll(delay = pollIntervalMs) {
-  if (!pollIntervalMs) return
+function scheduleNextPoll(delay = pollIntervalMs, epoch = pollingEpoch) {
+  if (!pollIntervalMs || pollingEpoch !== epoch || !isCurrentAuthEpoch(epoch)) return
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = setTimeout(async () => {
     pollTimer = null
+    if (pollingEpoch !== epoch || !isCurrentAuthEpoch(epoch)) return
     if (document.visibilityState === 'hidden' || !navigator.onLine) {
-      scheduleNextPoll(pollIntervalMs)
       return
     }
     try {
-      await refreshTaskStateOnlyOnce()
+      await refreshTaskStateOnlyOnce(epoch)
     } finally {
-      scheduleNextPoll(pollIntervalMs)
+      if (pollingEpoch === epoch && isCurrentAuthEpoch(epoch)) {
+        scheduleNextPoll(pollIntervalMs, epoch)
+      }
     }
   }, delay)
 }
@@ -708,19 +819,27 @@ function stopPolling() {
     pollTimer = null
   }
   pollIntervalMs = null
+  pollingEpoch = null
 }
 
 function resumePollingWhenAvailable() {
-  if (document.visibilityState !== 'hidden' && navigator.onLine && pollIntervalMs) {
-    scheduleNextPoll(0)
+  if (
+    document.visibilityState !== 'hidden'
+    && navigator.onLine
+    && pollIntervalMs
+    && pollingEpoch !== null
+    && isCurrentAuthEpoch(pollingEpoch)
+  ) {
+    scheduleNextPoll(0, pollingEpoch)
   }
 }
 
-function syncPollingWithTasks() {
+function syncPollingWithTasks(epoch = authEpoch) {
+  if (!isCurrentAuthEpoch(epoch)) return
   if (busyTasks.value.length) {
-    startPolling(ACTIVE_POLL_INTERVAL_MS)
+    startPolling(ACTIVE_POLL_INTERVAL_MS, epoch)
   } else {
-    startPolling(IDLE_POLL_INTERVAL_MS)
+    startPolling(IDLE_POLL_INTERVAL_MS, epoch)
   }
 }
 
@@ -728,44 +847,107 @@ async function checkSetup() {
   try {
     const result = await api.getSetupStatus()
     return result.configured
-  } catch {
-    return true // 接口不存在说明是旧版本，跳过
+  } catch (e) {
+    if (e.status === 404) return true // 旧版本没有 setup 接口
+    throw e
   }
 }
 
-function onSetupDone() {
-  needSetup.value = false
-  checkAuth().then(async ok => {
+async function initializeApp() {
+  const epoch = authEpoch
+  startupError.value = ''
+  authLoading.value = true
+  try {
+    const session = await prepareStorageSession(getApiKey())
+    if (!isCurrentAuthEpoch(epoch)) return
+    if (!session?.owner) {
+      authenticated.value = false
+      startupError.value = '浏览器存储不可用，请允许此站点使用本地存储后重试'
+      return
+    }
+    const setupOk = await checkSetup()
+    if (!isCurrentAuthEpoch(epoch)) return
+    if (!setupOk) {
+      needSetup.value = true
+      return
+    }
+    const ok = await checkAuth(epoch)
+    if (!isCurrentAuthEpoch(epoch)) return
     if (ok) {
       await refresh()
-      syncPollingWithTasks()
+      if (isCurrentAuthEpoch(epoch) && authenticated.value) syncPollingWithTasks(epoch)
     }
-  })
+  } catch (e) {
+    if (!isCurrentAuthEpoch(epoch)) return
+    authenticated.value = false
+    startupError.value = e?.timeout
+      ? '连接服务超时，请检查后端状态后重试'
+      : '初始化失败，请确认服务已启动后重试'
+  } finally {
+    if (isCurrentAuthEpoch(epoch)) authLoading.value = false
+  }
+}
+
+async function onSetupDone(configuredKey = '') {
+  if (authLoading.value) return
+  const epoch = authEpoch
+  authLoading.value = true
+  startupError.value = ''
+  try {
+    const setupKey = String(configuredKey || getApiKey() || '')
+    const session = await prepareStorageSession(setupKey, { rotate: true })
+    if (!isCurrentAuthEpoch(epoch)) return
+    needSetup.value = false
+    if (!session?.owner) {
+      authenticated.value = false
+      startupError.value = '浏览器存储不可用，请允许此站点使用本地存储后重试'
+      return
+    }
+    const ok = await checkAuth(epoch)
+    if (!isCurrentAuthEpoch(epoch)) return
+    if (ok) {
+      await refresh()
+      if (isCurrentAuthEpoch(epoch) && authenticated.value) syncPollingWithTasks(epoch)
+    }
+  } catch (e) {
+    if (!isCurrentAuthEpoch(epoch)) return
+    startupError.value = e?.timeout
+      ? '连接服务超时，请检查后端状态后重试'
+      : '暂时无法连接服务，请稍后重试'
+  } finally {
+    if (isCurrentAuthEpoch(epoch)) authLoading.value = false
+  }
+}
+
+function handleExternalStorageChange(event) {
+  if (event?.key !== 'autotoken_api_key' && event?.key !== SESSION_OWNER_KEY) return
+  advanceAuthEpoch()
+  invalidateApiKeyMemory()
+  authenticated.value = false
+  authRequired.value = true
+  needSetup.value = false
+  authError.value = ''
+  startupError.value = '登录状态已在其他标签页变更，请重新进入控制台'
+  stopPolling()
 }
 
 onMounted(async () => {
   window.addEventListener('resize', keepTaskPanelInViewport)
   window.addEventListener('online', resumePollingWhenAvailable)
   document.addEventListener('visibilitychange', resumePollingWhenAvailable)
-  const setupOk = await checkSetup()
-  if (!setupOk) {
-    needSetup.value = true
-    return
-  }
-  const ok = await checkAuth()
-  if (ok) {
-    await refresh()
-    syncPollingWithTasks()
-  }
+  window.addEventListener('storage', handleExternalStorageChange)
+  await initializeApp()
 })
 
 onUnmounted(() => {
+  accountLoadLifecycle.abort(createAccountLoadAbortError('应用已卸载'))
   window.removeEventListener('resize', keepTaskPanelInViewport)
   window.removeEventListener('online', resumePollingWhenAvailable)
   window.removeEventListener('pointermove', moveTaskPanel)
   window.removeEventListener('pointerup', stopTaskPanelDrag)
   window.removeEventListener('pointercancel', stopTaskPanelDrag)
   document.removeEventListener('visibilitychange', resumePollingWhenAvailable)
+  window.removeEventListener('storage', handleExternalStorageChange)
   applyTaskPanelMove.cancel()
   stopPolling()
 })

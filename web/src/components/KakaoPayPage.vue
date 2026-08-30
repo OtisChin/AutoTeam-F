@@ -1,5 +1,17 @@
 <template>
-  <div class="space-y-5">
+  <div class="space-y-5 workflow-hero-surface">
+    <WorkflowWorkspace title="Kakao Pay" eyebrow="支付 / Korea" description="按配置、启动、进度和结果组织业务操作" :status-label="workflowStatusPresentation(busy ? 'running' : 'success').label" :status-tone="workflowStatusPresentation(busy ? 'running' : 'success').tone">
+    <UiSegmentedControl v-model="activeKakaoTab" :options="[{ value: 'extract', label: '提链' },{ value: 'tempExtract', label: '临时提链' },{ value: 'payment', label: '支付' }]" aria-label="Kakao Pay模式" />
+      <template #configuration>
+        <WorkflowStage name="configuration" title="配置" description="确认账号、代理和运行参数" state="idle">
+          <WorkflowStage name="launch" title="启动" description="提交后会保留当前任务状态" state="idle"><UiButton variant="primary">开始任务</UiButton></WorkflowStage>
+        </WorkflowStage>
+      </template>
+      <template #progress><WorkflowStage name="progress" title="进度" description="实时状态与可恢复任务" state="idle"><UiStatusBadge label="等待操作" tone="neutral" /></WorkflowStage></template>
+      <template #result><WorkflowStage name="result" title="结果" description="完成后查看链接、订单或错误" state="idle"><UiStatePanel state="empty" title="暂无结果" message="启动任务后结果会显示在这里。" /></WorkflowStage></template>
+      <template #resources><WorkflowStage name="resources" title="资源" description="账号池、链接和日志" state="idle"><UiStatusBadge label="资源列表由当前页面管理" tone="info" /></WorkflowStage></template>
+    </WorkflowWorkspace>
+
     <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-2">
       <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div class="inline-flex w-fit rounded-xl border border-gray-800 bg-gray-900/80 p-1">
@@ -388,7 +400,7 @@
     </section>
     </template>
 
-    <section v-else class="overflow-hidden rounded-2xl border border-blue-500/20 bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.13),transparent_34%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] p-5 shadow-2xl shadow-black/30 md:p-6">
+    <section v-else class="overflow-hidden rounded-2xl border border-blue-500/20 ui-workflow-surface p-5 shadow-2xl shadow-black/30 md:p-6">
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 md:flex-row md:items-start md:justify-between">
         <div>
           <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-300/80">Masa Plus 支付 API</p>
@@ -540,6 +552,15 @@
 </template>
 
 <script setup>
+import { paypalStatusPresentation as workflowStatusPresentation } from '../operationsPresentation.js'
+
+import WorkflowWorkspace from './workflow/WorkflowWorkspace.vue'
+import WorkflowStage from './workflow/WorkflowStage.vue'
+import UiButton from './ui/UiButton.vue'
+import UiSegmentedControl from './ui/UiSegmentedControl.vue'
+import UiStatePanel from './ui/UiStatePanel.vue'
+import UiStatusBadge from './ui/UiStatusBadge.vue'
+
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { createDeferredStorageWriter } from '../deferredStorage.js'

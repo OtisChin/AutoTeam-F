@@ -1,7 +1,9 @@
 export const NAV_ITEMS = [
   { key: 'dashboard', group: '控制台', icon: 'dashboard', label: '仪表盘', description: '账号池概览与核心操作', mobilePrimary: true },
   { key: 'register', group: '账号', icon: 'user-plus', label: '注册账号', description: '批量注册与账号生产', mobilePrimary: true },
+  { key: 'team', group: '账号', icon: 'team', label: 'Team 成员', description: '成员、邀请和本地账号状态' },
   { key: 'mailAccounts', group: '账号', icon: 'mail', label: '邮箱管理', description: '邮箱账号与授权状态' },
+  { key: 'pool', group: '账号', icon: 'cards', label: '账号池操作', description: '轮转、检查、补位与清理' },
   { key: 'cardpool', group: '支付', icon: 'cards', label: '卡池', description: '支付卡资源管理', mobilePrimary: true },
   { key: 'bindcard', group: '支付', icon: 'link', label: '自动绑卡服务', description: '账号与支付卡绑定' },
   { key: 'gopay', group: '支付', icon: 'wallet', label: 'GoPay', description: 'GoPay 支付工作流' },
@@ -20,6 +22,7 @@ export const NAV_ITEMS = [
   { key: 'tasks', group: '系统', icon: 'history', label: '任务历史', description: '后台任务与执行记录', mobilePrimary: true },
   { key: 'logs', group: '系统', icon: 'logs', label: '日志', description: '运行日志与诊断信息' },
   { key: 'settings', group: '系统', icon: 'settings', label: '设置', description: '服务与自动化配置' },
+  { key: 'sync', group: '系统', icon: 'refresh', label: '同步中心', description: '本地、CPA 与账号凭据对账' },
 ]
 
 export const NAV_GROUPS = [...new Set(NAV_ITEMS.map(item => item.group))]
