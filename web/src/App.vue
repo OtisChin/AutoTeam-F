@@ -97,6 +97,8 @@
             :running-task="registerRunningTask" :admin-status="adminStatus"
             @task-started="onTaskStarted" @refresh="refresh" />
 
+          <TeamMembers v-else-if="currentPage === 'team'" />
+
           <BindCardPool v-else-if="currentPage === 'cardpool'" />
 
           <BindCard v-else-if="currentPage === 'bindcard'" key="bindcard" @refresh="refresh" />
@@ -216,6 +218,7 @@ import PageLoadError from './components/PageLoadError.vue'
 const pageLoaders = {
   dashboard: () => import('./components/Dashboard.vue'),
   register: () => import('./components/RegisterAccountPage.vue'),
+  team: () => import('./components/TeamMembers.vue'),
   cardpool: () => import('./components/BindCardPool.vue'),
   bindcard: () => import('./components/BindCard.vue'),
   gopay: () => import('./components/BindCard.vue'),
@@ -261,6 +264,7 @@ function asyncPage(key) {
 
 const Dashboard = shallowRef(asyncPage('dashboard'))
 const RegisterAccountPage = shallowRef(asyncPage('register'))
+const TeamMembers = shallowRef(asyncPage('team'))
 const BindCardPool = shallowRef(asyncPage('cardpool'))
 const BindCard = shallowRef(asyncPage('bindcard'))
 const UsPaypalPage = shallowRef(asyncPage('paypal'))
@@ -283,6 +287,7 @@ const Settings = shallowRef(asyncPage('settings'))
 const retryablePages = {
   dashboard: Dashboard,
   register: RegisterAccountPage,
+  team: TeamMembers,
   cardpool: BindCardPool,
   bindcard: BindCard,
   gopay: BindCard,

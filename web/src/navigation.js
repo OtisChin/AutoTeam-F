@@ -1,6 +1,7 @@
 export const NAV_ITEMS = [
   { key: 'dashboard', group: '控制台', icon: 'dashboard', label: '仪表盘', description: '账号池概览与核心操作', mobilePrimary: true },
   { key: 'register', group: '账号', icon: 'user-plus', label: '注册账号', description: '批量注册与账号生产', mobilePrimary: true },
+  { key: 'team', group: '账号', icon: 'team', label: 'Team 成员', description: '成员、邀请和本地账号状态' },
   { key: 'mailAccounts', group: '账号', icon: 'mail', label: '邮箱管理', description: '邮箱账号与授权状态' },
   { key: 'cardpool', group: '支付', icon: 'cards', label: '卡池', description: '支付卡资源管理', mobilePrimary: true },
   { key: 'bindcard', group: '支付', icon: 'link', label: '自动绑卡服务', description: '账号与支付卡绑定' },
