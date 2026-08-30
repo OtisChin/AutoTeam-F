@@ -125,6 +125,10 @@
 
           <MailAccountsPage v-else-if="currentPage === 'mailAccounts'" @task-started="onTaskStarted" />
 
+          <PoolPage v-else-if="currentPage === 'pool'"
+            :running-task="runningTask" :admin-status="adminStatus"
+            @task-started="onTaskStarted" @refresh="refresh" />
+
           <TradeManagerPage v-else-if="currentPage === 'trade'" />
 
           <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
@@ -140,6 +144,10 @@
           <Settings v-else-if="currentPage === 'settings'"
             :admin-status="adminStatus" :codex-status="codexStatus"
             @refresh="refresh" @admin-progress="onAdminProgress" />
+
+          <SyncPage v-else-if="currentPage === 'sync'"
+            :running-task="runningTask" :admin-status="adminStatus"
+            @task-started="onTaskStarted" @refresh="refresh" />
         </div>
       </div>
     </main>
@@ -232,12 +240,14 @@ const pageLoaders = {
   oauthPhones: () => import('./components/OAuthPhonePoolPage.vue'),
   oauthPhoneRecords: () => import('./components/OAuthPhoneRecordsPage.vue'),
   mailAccounts: () => import('./components/MailAccountsPage.vue'),
+  pool: () => import('./components/PoolPage.vue'),
   trade: () => import('./components/TradeManagerPage.vue'),
   cpa2sub: () => import('./components/CpaToSub2ApiPage.vue'),
   oauth: () => import('./components/OAuthPage.vue'),
   tasks: () => import('./components/TaskHistoryPage.vue'),
   logs: () => import('./components/LogViewer.vue'),
   settings: () => import('./components/Settings.vue'),
+  sync: () => import('./components/SyncPage.vue'),
 }
 
 function asyncPage(key) {
@@ -277,12 +287,14 @@ const GCashPhPage = shallowRef(asyncPage('gcashPh'))
 const OAuthPhonePoolPage = shallowRef(asyncPage('oauthPhones'))
 const OAuthPhoneRecordsPage = shallowRef(asyncPage('oauthPhoneRecords'))
 const MailAccountsPage = shallowRef(asyncPage('mailAccounts'))
+const PoolPage = shallowRef(asyncPage('pool'))
 const TradeManagerPage = shallowRef(asyncPage('trade'))
 const CpaToSub2ApiPage = shallowRef(asyncPage('cpa2sub'))
 const OAuthPage = shallowRef(asyncPage('oauth'))
 const TaskHistoryPage = shallowRef(asyncPage('tasks'))
 const LogViewer = shallowRef(asyncPage('logs'))
 const Settings = shallowRef(asyncPage('settings'))
+const SyncPage = shallowRef(asyncPage('sync'))
 
 const retryablePages = {
   dashboard: Dashboard,
@@ -301,12 +313,14 @@ const retryablePages = {
   oauthPhones: OAuthPhonePoolPage,
   oauthPhoneRecords: OAuthPhoneRecordsPage,
   mailAccounts: MailAccountsPage,
+  pool: PoolPage,
   trade: TradeManagerPage,
   cpa2sub: CpaToSub2ApiPage,
   oauth: OAuthPage,
   tasks: TaskHistoryPage,
   logs: LogViewer,
   settings: Settings,
+  sync: SyncPage,
 }
 
 function retryPageLoad(key) {
