@@ -215,6 +215,10 @@ assert.match(switcherSource, /跟随系统/)
 assert.match(switcherSource, /明亮/)
 assert.match(switcherSource, /深色/)
 assert.match(styleSource, /\.theme-switcher-trigger\s*\{[^}]*min-height:\s*44px/is)
+assert.match(switcherSource, /function updatePreference\(value, \{ close = true \} = \{\}\)/)
+assert.match(switcherSource, /updatePreference\(options\[nextIndex\]\.value, \{ close: false \}\)/)
+assert.match(switcherSource, /watch\(\[open, isMobile, \(\) => props\.mode\]/)
+assert.match(switcherSource, /mode === 'compact'/)
 
 console.log('theme controller regression tests passed')
 

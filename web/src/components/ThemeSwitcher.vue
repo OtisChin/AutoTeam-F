@@ -5,7 +5,7 @@
         :model-value="preference"
         :options="options"
         aria-label="外观主题"
-        @update:model-value="selectOption"
+        @update:model-value="updatePreference"
       />
     </template>
 
@@ -48,7 +48,7 @@
               role="radio"
               :aria-checked="option.value === preference"
               :tabindex="option.value === preference ? 0 : -1"
-              @click="selectOption(option.value)"
+              @click="updatePreference(option.value)"
             >
               <span class="theme-switcher-option-icon" aria-hidden="true">{{ option.icon }}</span>
               <span class="theme-switcher-option-copy"><strong>{{ option.label }}</strong><small>{{ option.description }}</small></span>
@@ -76,7 +76,7 @@
             role="radio"
             :aria-checked="option.value === preference"
             :tabindex="option.value === preference ? 0 : -1"
-            @click="selectOption(option.value)"
+            @click="updatePreference(option.value)"
             @keydown="handleOptionKeydown($event, index)"
           >
             <span class="theme-switcher-option-icon" aria-hidden="true">{{ option.icon }}</span>
@@ -132,9 +132,9 @@ function closeSelector() {
   void nextTick(() => triggerRef.value?.focus())
 }
 function toggleSelector() { if (open.value) closeSelector(); else openSelector() }
-function selectOption(value) {
+function updatePreference(value, { close = true } = {}) {
   controller.setPreference(value)
-  if (props.mode === 'compact') closeSelector()
+  if (props.mode === 'compact' && close) closeSelector()
 }
 function handleOptionKeydown(event, index) {
   if (event.key === 'Escape') { event.preventDefault(); closeSelector(); return }
@@ -142,10 +142,10 @@ function handleOptionKeydown(event, index) {
   if (delta) {
     event.preventDefault()
     const nextIndex = (index + delta + options.length) % options.length
-    selectOption(options[nextIndex].value)
+    updatePreference(options[nextIndex].value, { close: false })
     void nextTick(() => optionRefs[nextIndex]?.focus())
   }
-  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectOption(options[index].value) }
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); updatePreference(options[index].value) }
 }
 function handlePopoverKeydown(event) {
   if (event.key === 'Escape') { event.preventDefault(); closeSelector(); return }
@@ -175,8 +175,9 @@ onBeforeUnmount(() => {
 })
 
 import { watch } from 'vue'
-watch([open, isMobile], ([isOpen, mobile]) => {
-  if (isOpen && !mobile) document.addEventListener('pointerdown', handlePointerdown)
+watch([open, isMobile, () => props.mode], ([isOpen, mobile, mode]) => {
+  if (typeof document === 'undefined') return
+  if (isOpen && !mobile && mode === 'compact') document.addEventListener('pointerdown', handlePointerdown)
   else document.removeEventListener('pointerdown', handlePointerdown)
 })
 </script>
