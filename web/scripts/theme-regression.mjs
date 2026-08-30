@@ -1,0 +1,122 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import {
+  THEME_CONTROLLER_KEY,
+  THEME_STORAGE_KEY,
+  createThemeController,
+  normalizeThemePreference,
+  resolveThemePreference,
+} from '../src/themePreference.js'
+
+class FakeEventTarget {
+  constructor() { this.listeners = new Map() }
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || new Set()
+    listeners.add(listener)
+    this.listeners.set(type, listeners)
+  }
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener)
+  }
+  dispatch(type, event = {}) {
+    for (const listener of this.listeners.get(type) || []) listener(event)
+  }
+  listenerCount(type) {
+    return this.listeners.get(type)?.size || 0
+  }
+}
+
+function createStorage(seed = {}, blocked = false) {
+  const values = new Map(Object.entries(seed))
+  return {
+    getItem(key) {
+      if (blocked) throw new DOMException('blocked', 'SecurityError')
+      return values.has(key) ? values.get(key) : null
+    },
+    setItem(key, value) {
+      if (blocked) throw new DOMException('blocked', 'SecurityError')
+      values.set(key, String(value))
+    },
+    removeItem(key) {
+      if (blocked) throw new DOMException('blocked', 'SecurityError')
+      values.delete(key)
+    },
+    value(key) { return values.get(key) },
+  }
+}
+
+const createRoot = () => ({ dataset: {}, style: {} })
+
+assert.equal(typeof THEME_CONTROLLER_KEY, 'symbol')
+assert.equal(THEME_STORAGE_KEY, 'autotoken_theme')
+assert.equal(normalizeThemePreference('system'), 'system')
+assert.equal(normalizeThemePreference('light'), 'light')
+assert.equal(normalizeThemePreference('dark'), 'dark')
+assert.equal(normalizeThemePreference('sepia'), 'system')
+assert.equal(resolveThemePreference('system', false), 'light')
+assert.equal(resolveThemePreference('system', true), 'dark')
+assert.equal(resolveThemePreference('light', true), 'light')
+assert.equal(resolveThemePreference('dark', false), 'dark')
+
+const storage = createStorage({ [THEME_STORAGE_KEY]: 'invalid' })
+const media = new FakeEventTarget()
+media.matches = true
+const events = new FakeEventTarget()
+const root = createRoot()
+const meta = { content: '' }
+const controller = createThemeController({
+  root,
+  storage,
+  mediaQueryList: media,
+  eventTarget: events,
+  themeColorMeta: meta,
+})
+
+assert.deepEqual(controller.getSnapshot(), { preference: 'system', resolvedTheme: 'dark' })
+assert.equal(root.dataset.themePreference, 'system')
+assert.equal(root.dataset.theme, 'dark')
+assert.equal(root.style.colorScheme, 'dark')
+assert.equal(meta.content, '#151517')
+assert.equal(media.listenerCount('change'), 1)
+assert.equal(events.listenerCount('storage'), 1)
+
+const snapshots = []
+const unsubscribe = controller.subscribe(snapshot => snapshots.push(snapshot))
+controller.setPreference('light')
+assert.deepEqual(controller.getSnapshot(), { preference: 'light', resolvedTheme: 'light' })
+assert.equal(storage.value(THEME_STORAGE_KEY), 'light')
+assert.equal(meta.content, '#f5f5f7')
+
+media.matches = false
+media.dispatch('change', { matches: false })
+assert.equal(controller.getSnapshot().resolvedTheme, 'light')
+
+controller.setPreference('system')
+media.matches = true
+media.dispatch('change', { matches: true })
+assert.equal(controller.getSnapshot().resolvedTheme, 'dark')
+
+events.dispatch('storage', { key: THEME_STORAGE_KEY, newValue: 'light' })
+assert.deepEqual(controller.getSnapshot(), { preference: 'light', resolvedTheme: 'light' })
+assert.ok(snapshots.length >= 3)
+
+unsubscribe()
+controller.dispose()
+assert.equal(media.listenerCount('change'), 0)
+assert.equal(events.listenerCount('storage'), 0)
+
+const blockedController = createThemeController({
+  root: createRoot(),
+  storage: createStorage({}, true),
+  mediaQueryList: Object.assign(new FakeEventTarget(), { matches: false }),
+  eventTarget: new FakeEventTarget(),
+  themeColorMeta: { content: '' },
+})
+assert.doesNotThrow(() => blockedController.setPreference('dark'))
+assert.deepEqual(blockedController.getSnapshot(), { preference: 'dark', resolvedTheme: 'dark' })
+blockedController.dispose()
+
+const controllerSource = readFileSync(new URL('../src/themePreference.js', import.meta.url), 'utf8')
+assert.doesNotMatch(controllerSource, /querySelectorAll|getElementsByClassName|getElementsByTagName|TreeWalker/, 'theme changes must not traverse the page DOM')
+
+console.log('theme controller regression tests passed')
