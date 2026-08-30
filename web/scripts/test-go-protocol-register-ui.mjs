@@ -19,6 +19,11 @@ assert.match(
 assert.match(saveForm, /registerEngine:\s*registerForm\.value\.registerEngine/, 'saved form persists the engine')
 assert.doesNotMatch(saveForm, /protocolRegister:|useRoxyBrowser:|useCloakBrowser:/, 'saved form drops legacy booleans')
 assert.doesNotMatch(page, /v-model="registerForm\.(?:goProtocolRegister|protocolRegister|useRoxyBrowser|useCloakBrowser)"/, 'mode is not represented by independent checkboxes')
+assert.doesNotMatch(
+  page,
+  /registerForm(?:\.value)?\.(?:goProtocolRegister|protocolRegister|useRoxyBrowser|useCloakBrowser)/,
+  'rendered behavior never reads removed mode fields',
+)
 
 const migrationPrecedence = [
   'REGISTER_ENGINE_VALUES.includes',

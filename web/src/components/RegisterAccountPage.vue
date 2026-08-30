@@ -1544,9 +1544,13 @@ const luckmailPurchaseLabel = computed(() => {
 })
 const registerBehaviorLabel = computed(() => {
   if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
-  const registerMode = registerForm.value.useRoxyBrowser
-    ? 'Roxy Browser注册'
-    : registerForm.value.useCloakBrowser ? 'Cloak 无头注册' : registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
+  const registerMode = {
+    browser: '浏览器注册',
+    protocol: 'Python 协议注册',
+    go_protocol: 'Go 协议注册',
+    roxy: 'Roxy Browser注册',
+    cloak: 'Cloak 无头注册',
+  }[registerForm.value.registerEngine] || '浏览器注册'
   const flowDesc = registerForm.value.phoneOnly && isPhoneCpaFlow.value
     ? '仅手机注册，不绑定邮箱、不 OAuth'
     : registerForm.value.postRegisterOauth
