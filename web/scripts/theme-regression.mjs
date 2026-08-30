@@ -119,4 +119,49 @@ blockedController.dispose()
 const controllerSource = readFileSync(new URL('../src/themePreference.js', import.meta.url), 'utf8')
 assert.doesNotMatch(controllerSource, /querySelectorAll|getElementsByClassName|getElementsByTagName|TreeWalker/, 'theme changes must not traverse the page DOM')
 
+import vm from 'node:vm'
+
+const htmlSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+const bootstrapSource = htmlSource.match(
+  /<script data-theme-bootstrap>([\s\S]*?)<\/script>/,
+)?.[1]
+assert.ok(bootstrapSource, 'index.html must contain the synchronous theme bootstrap')
+
+function runBootstrap({ stored = null, systemDark = false, blocked = false } = {}) {
+  const root = { dataset: {}, style: {} }
+  const meta = { content: '' }
+  vm.runInNewContext(bootstrapSource, {
+    document: {
+      documentElement: root,
+      querySelector(selector) {
+        return selector === 'meta[name="theme-color"]' ? meta : null
+      },
+    },
+    localStorage: {
+      getItem(key) {
+        assert.equal(key, THEME_STORAGE_KEY)
+        if (blocked) throw new DOMException('blocked', 'SecurityError')
+        return stored
+      },
+    },
+    matchMedia(query) {
+      assert.equal(query, '(prefers-color-scheme: dark)')
+      return { matches: systemDark }
+    },
+  })
+  return { root, meta }
+}
+
+assert.equal(runBootstrap().root.dataset.theme, 'light')
+assert.equal(runBootstrap({ systemDark: true }).root.dataset.theme, 'dark')
+assert.equal(runBootstrap({ stored: 'light', systemDark: true }).root.dataset.theme, 'light')
+assert.equal(runBootstrap({ stored: 'dark' }).root.dataset.theme, 'dark')
+assert.equal(runBootstrap({ stored: 'invalid' }).root.dataset.themePreference, 'system')
+assert.doesNotThrow(() => runBootstrap({ blocked: true }))
+
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
+assert.match(mainSource, /createThemeController\(\)/)
+assert.match(mainSource, /provide\(THEME_CONTROLLER_KEY,\s*themeController\)/)
+assert.match(mainSource, /themeController\.dispose\(\)/)
+
 console.log('theme controller regression tests passed')
