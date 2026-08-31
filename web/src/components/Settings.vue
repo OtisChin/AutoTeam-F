@@ -4,6 +4,14 @@
       {{ message }}
     </div>
 
+    <section class="theme-settings-section" aria-labelledby="appearance-heading">
+      <div>
+        <h2 id="appearance-heading" class="text-lg font-semibold text-white">外观</h2>
+        <p class="mt-1 text-sm text-gray-400">选择工作区的颜色模式，偏好会保存在当前浏览器。</p>
+      </div>
+      <ThemeSwitcher mode="group" />
+    </section>
+
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
@@ -1197,6 +1205,7 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { api } from '../api.js'
+import ThemeSwitcher from './ThemeSwitcher.vue'
 
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)

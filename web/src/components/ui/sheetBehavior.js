@@ -1,0 +1,9 @@
+export const FOCUSABLE_SELECTOR = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+export function isFocusableCandidate(element) { return Boolean(element && !element.disabled && element.getAttribute?.('aria-hidden') !== 'true' && element.getClientRects?.().length > 0) }
+export function getFocusableElements(root, selector = FOCUSABLE_SELECTOR) { return [...(root?.querySelectorAll(selector) || [])].filter(isFocusableCandidate) }
+export function chooseInitialFocus(explicit, focusable, sheet) { return explicit && isFocusableCandidate(explicit) && focusable.includes(explicit) ? explicit : (focusable[0] || sheet) }
+export function focusTarget(focusable, current, container, shiftKey) { if (!focusable.length) return null; const first = focusable[0]; const last = focusable.at(-1); const outside = current === container || !container?.contains(current); if (shiftKey && (outside || current === first)) return last; if (!shiftKey && (outside || current === last)) return first; return null }
+export function inertSnapshot(children, layer, overflow) { return { elements: [...children].filter(element => element !== layer && !element.contains?.(layer)).map(element => ({ element, inert: Boolean(element.inert) })), overflow } }
+export function applyInert(snapshot) { for (const { element } of snapshot.elements) element.inert = true }
+export function restoreInert(snapshot, body) { for (const { element, inert } of snapshot.elements) if (element?.isConnected !== false) element.inert = inert; if (body) body.style.overflow = snapshot.overflow }
+export function closeLifecycle(wasOpen, open, phase = 'watch') { if (phase === 'watch') return open ? true : wasOpen; if (phase === 'after-leave') return Boolean(wasOpen && !open) }

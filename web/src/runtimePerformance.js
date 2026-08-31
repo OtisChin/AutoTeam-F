@@ -1,8 +1,11 @@
-export function createSingleFlight(run) {
+export function createSingleFlight(run, { key: getKey = null } = {}) {
   let active = null
+  const activeByKey = typeof getKey === 'function' ? new Map() : null
 
   return function singleFlight(...args) {
-    if (active) return active
+    const flightKey = activeByKey ? getKey(...args) : null
+    const existing = activeByKey ? activeByKey.get(flightKey) : active
+    if (existing) return existing
 
     let result
     try {
@@ -12,9 +15,14 @@ export function createSingleFlight(run) {
     }
 
     const current = Promise.resolve(result).finally(() => {
-      if (active === current) active = null
+      if (activeByKey) {
+        if (activeByKey.get(flightKey) === current) activeByKey.delete(flightKey)
+      } else if (active === current) {
+        active = null
+      }
     })
-    active = current
+    if (activeByKey) activeByKey.set(flightKey, current)
+    else active = current
     return current
   }
 }

@@ -32,7 +32,7 @@
       </div>
     </section>
 
-    <section v-if="activeUpiTab === 'payment'" class="overflow-hidden rounded-2xl border border-cyan-500/20 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.13),transparent_34%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] p-5 shadow-2xl shadow-black/30 md:p-6">
+    <section v-if="activeUpiTab === 'payment'" class="overflow-hidden rounded-2xl border border-cyan-500/20 workflow-hero-surface p-5 shadow-2xl shadow-black/30 md:p-6">
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 md:flex-row md:items-start md:justify-between">
         <div>
           <p class="text-xs font-black uppercase tracking-[0.22em] text-cyan-300/80">UPI Payment Desk</p>
@@ -1848,4 +1848,4 @@ onBeforeUnmount(() => {
   expiryClockToken = null
   storageWriter.dispose()
 })
-</script>
+</script>\n

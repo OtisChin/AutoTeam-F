@@ -1,5 +1,6 @@
 <template>
   <div class="setup-shell">
+    <div class="setup-theme-control"><ThemeSwitcher /></div>
     <div class="setup-card bg-gray-900 border border-gray-800 rounded-xl p-6 w-full max-w-lg">
       <h1 class="text-xl font-bold text-white text-center mb-2">AutoPro 初始配置</h1>
       <p class="text-sm text-gray-400 text-center mb-6">首次使用请填写以下配置项</p>
@@ -82,6 +83,7 @@
 <script setup>
 import { computed, ref, onMounted, reactive, watch } from 'vue'
 import { api, setApiKey } from '../api.js'
+import ThemeSwitcher from './ThemeSwitcher.vue'
 
 const emit = defineEmits(['configured'])
 

@@ -9,6 +9,7 @@
     "test:frontend-runtime": "node scripts/test-frontend-runtime.mjs",
     "test:frontend-shell": "node scripts/test-frontend-shell.mjs",
     "test:frontend-bundle": "node scripts/test-frontend-bundle.mjs",
+    "test:theme": "node scripts/theme-regression.mjs",
     "test:frontend-regressions": "node scripts/run-frontend-tests.mjs",
     "test:account-loading": "node scripts/test-account-loading-performance.mjs",
     "test:frontend": "npm run build && npm run test:frontend-regressions",
