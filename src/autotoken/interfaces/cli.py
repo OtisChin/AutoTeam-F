@@ -54,11 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
     api_p.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0）")
     api_p.add_argument("--port", type=int, default=8787, help="监听端口（默认 8787）")
     api_p.add_argument("--build", "-b", action="store_true", help="启动前重新编译前端")
+    worker_p = sub.add_parser("setup-2fa-worker", help=argparse.SUPPRESS)
+    worker_p.add_argument("--emails-json", required=True)
+    worker_p.add_argument("--source", default="cli")
     return parser
 
 
 def run_startup_checks(command: str) -> None:
-    if command not in ("api",):
+    if command not in ("api", "setup-2fa-worker"):
         from autotoken.settings.setup_wizard import check_and_setup
 
         check_and_setup(interactive=True)
@@ -106,6 +109,10 @@ def dispatch(args: argparse.Namespace):
         from autotoken.interfaces.api import start_server
 
         return start_server(host=args.host, port=args.port, build=getattr(args, "build", False))
+    if args.command == "setup-2fa-worker":
+        from autotoken.services.account_two_factor_process import run_account_two_factor_worker_from_cli
+
+        return run_account_two_factor_worker_from_cli(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

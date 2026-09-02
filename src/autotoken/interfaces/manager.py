@@ -32,7 +32,6 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin
 
-from autotoken import accounts
 from autotoken.auth.auth_prompts import dismiss_passkey_prompt
 from autotoken.auth.codex_auth import (
     CodexOAuthPhoneRequired,
@@ -64,7 +63,6 @@ from autotoken.mail import TemporaryEmailClient
 from autotoken.services import account_presentation as account_presentation_service
 from autotoken.services import reconcile as reconcile_service
 from autotoken.services import registration, rotation, team_cleanup
-from autotoken.services.chatgpt_2fa_protocol import ChatGPT2FAProtocolSetupExecutor
 from autotoken.settings.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autotoken.settings.config import get_playwright_launch_options
 from autotoken.storage.account_ops import delete_managed_account, fetch_team_state
@@ -1987,15 +1985,45 @@ def _enable_totp_mfa_after_auth_session(
         if callable(progress_callback):
             progress_callback(event)
 
-    # 注册完成后的 2FA 设置统一使用仪表盘同款协议链路。
-    # Roxy / Cloak 浏览器注册只负责拿到可复用 auth_session，不再点击设置页 UI。
-    executor = ChatGPT2FAProtocolSetupExecutor(
-        save_metadata=accounts.save_totp_metadata,
-        email_code_provider=email_code_provider,
-        proxy_url=proxy_url,
+    logger.info("[2FA] 进入2FA设置流程（注册后独立进程）: %s", target_email)
+    _progress(
+        {
+            "stage": "totp_setup_process_starting",
+            "email": target_email,
+            "message": f"进入2FA设置流程，正在启动独立进程: {target_email}",
+        }
     )
-    setup_result = executor.enable(target_email, session_data or {}, progress=_progress)
-    result["two_factor"] = setup_result.to_public_dict()
+    try:
+        from autotoken.services.account_two_factor_process import launch_account_two_factor_process
+
+        launch_result = launch_account_two_factor_process([target_email], source="register")
+        pid = launch_result.get("pid")
+        result["two_factor"] = {
+            "status": "queued",
+            "email": target_email,
+            "enabled": False,
+            "ok": False,
+            "process_id": pid,
+            "mode": "protocol_process",
+            "reason": "2FA 设置已交给独立进程执行",
+        }
+        _progress(
+            {
+                "stage": "totp_setup_process_started",
+                "email": target_email,
+                "process_id": pid,
+                "message": f"2FA 设置独立进程已启动: {target_email}",
+            }
+        )
+    except Exception as exc:
+        logger.exception("[2FA] 注册后独立2FA设置进程启动失败: %s", target_email)
+        result["two_factor"] = {
+            "status": "error",
+            "email": target_email,
+            "enabled": False,
+            "ok": False,
+            "reason": str(exc),
+        }
     return result
 
 
@@ -2109,16 +2137,6 @@ def _save_auth_from_session_page(
         cloudmail_account_id=cloudmail_account_id,
         mail_provider=mail_provider,
     )
-    if enable_totp_mfa:
-        _enable_totp_mfa_after_auth_session(
-            result,
-            page=page,
-            email=email,
-            email_code_provider=email_code_provider,
-            session_data=data,
-            progress_callback=progress_callback,
-            proxy_url=proxy_url,
-        )
     return result
 
 
@@ -4281,22 +4299,6 @@ def _register_direct_once(
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
 
-        def _recent_auth_email_code_provider(target_email: str, *, issued_after=None, exclude_codes=None) -> str:
-            excluded = set(used_email_codes)
-            excluded.update(str(code or "").strip() for code in (exclude_codes or set()) if str(code or "").strip())
-            code = _wait_for_direct_verification_code(
-                mail_client,
-                email=target_email,
-                account_id=cloudmail_account_id,
-                timeout=_direct_register_code_timeout(mail_client, target_email),
-                issued_after=issued_after,
-                exclude_codes=excluded,
-                strict_issued_after=True,
-            )
-            if code:
-                used_email_codes.add(code)
-            return code
-
         def _finish(success, session_data=None):
             try:
                 browser.close()
@@ -4726,22 +4728,6 @@ def _register_direct_once(
         session_data = None
         if success and return_session:
             session_data = _fetch_auth_session_from_page(page, context, auth_context_state)
-            if enable_totp_mfa and isinstance(session_data, dict):
-                saved_auth = _save_auth_from_session_page(
-                    email,
-                    password,
-                    cloudmail_account_id,
-                    session_data,
-                    out_outcome=out_outcome,
-                    mail_provider=_mail_client_provider_name(mail_client) or None,
-                    page=page,
-                    enable_totp_mfa=True,
-                    email_code_provider=_recent_auth_email_code_provider,
-                    proxy_url=proxy_url,
-                    progress_callback=progress_callback,
-                )
-                if saved_auth:
-                    session_data["_saved_auth_result"] = saved_auth
 
         return _finish(success, session_data)
 
@@ -5332,16 +5318,26 @@ def create_account_direct(
                             session_data,
                             out_outcome=out_outcome,
                             mail_provider=_mail_client_provider_name(mail_client) or None,
-                            enable_totp_mfa=enable_totp_mfa,
+                            enable_totp_mfa=False,
                             email_code_provider=_protocol_totp_email_code_provider,
                             progress_callback=progress_callback,
                             proxy_url=proxy_url,
                         )
                     if session_auth:
+                        def _queue_totp_if_requested(auth_result, target_email=email):
+                            if enable_totp_mfa and isinstance(auth_result, dict):
+                                return _enable_totp_mfa_after_auth_session(
+                                    auth_result,
+                                    email=target_email,
+                                    progress_callback=progress_callback,
+                                    proxy_url=proxy_url,
+                                )
+                            return auth_result
+
                         if not post_register_oauth_enabled:
                             logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
                             _progress("register_auth_session_saved", f"auth_session 已保存: {email}", email=email)
-                            return session_auth
+                            return _queue_totp_if_requested(session_auth)
                         logger.info("[注册] auth_session 已保存，开始重新登录执行 Codex OAuth: %s", email)
                         _progress(
                             "register_relogin_oauth",
@@ -5362,7 +5358,7 @@ def create_account_direct(
                         if oauth_auth:
                             logger.info("[注册] 重新登录 Codex OAuth 已完成: %s", email)
                             _progress("register_oauth_saved", f"重新登录 OAuth 已完成: {email}", email=email)
-                            return oauth_auth
+                            return _queue_totp_if_requested(oauth_auth)
                         if out_outcome is not None and out_outcome.get("status") == "phone_blocked":
                             logger.info(
                                 "[注册] OAuth 需要手机号验证，但注册已完成，保留 auth_session 供补登录: %s", email
@@ -5373,12 +5369,12 @@ def create_account_direct(
                                 email=email,
                                 level="warn",
                             )
-                            return session_auth
+                            return _queue_totp_if_requested(session_auth)
                         logger.info("[注册] auth_session 已保存，重新登录 OAuth 未完成，等待手动补登录: %s", email)
                         _progress(
                             "register_auth_session_saved", f"auth_session 已保存，等待手动补登录: {email}", email=email
                         )
-                        return session_auth
+                        return _queue_totp_if_requested(session_auth)
                     last_failure_reason = "注册未完成：未生成可用 auth_session，无法确认 Platform organization"
                     logger.warning("[注册] %s: %s", email, last_failure_reason)
                     _discard_email("auth_session_missing")

@@ -68,6 +68,7 @@ def create_task_actions_router(
 
         def _run(task_id: str):
             log_2fa("[2FA] 任务 {} 开始：{} 个账号", task_id[:8], len(emails))
+            log_2fa("[2FA] 进入2FA设置流程：{} 个账号", len(emails))
 
             def _progress(event: dict[str, Any]) -> None:
                 if append_task_progress:

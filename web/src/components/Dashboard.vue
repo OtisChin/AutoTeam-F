@@ -942,8 +942,8 @@
                     :class="accountDisplayOrder === 'desc'
                       ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
                       : 'border-gray-700 bg-gray-800/70 text-gray-400 hover:border-gray-600 hover:text-gray-200'"
-                    :title="accountDisplayOrder === 'desc' ? '当前倒序显示，点击切换正序' : '当前正序显示，点击切换倒序'"
-                    :aria-label="accountDisplayOrder === 'desc' ? '切换为账号正序显示' : '切换为账号倒序显示'">
+                    :title="accountDisplayOrder === 'desc' ? '当前按更新时间倒序显示，点击切换正序' : '当前按更新时间正序显示，点击切换倒序'"
+                    :aria-label="accountDisplayOrder === 'desc' ? '切换为更新时间正序显示' : '切换为更新时间倒序显示'">
                     ↑↓
                   </button>
                 </div>
@@ -1849,7 +1849,7 @@ const ACCOUNT_PAGE_SIZE_OPTIONS = [
 const ACCOUNT_PAGE_SIZE_VALUES = ACCOUNT_PAGE_SIZE_OPTIONS.map(option => option.value)
 const ACCOUNT_PAGE_SIZE_STORAGE_KEY = 'autotoken.dashboard.accountPageSize'
 const activeDashboardTab = ref('chatgpt')
-const accountDisplayOrder = ref('asc')
+const accountDisplayOrder = ref('desc')
 const accountPage = ref(1)
 const accountPageSize = ref(loadAccountPageSize())
 const actionEmail = ref('')

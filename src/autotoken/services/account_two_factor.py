@@ -180,6 +180,7 @@ def setup_accounts_two_factor_protocol(
                     _used_codes.add(code)
                 return code
 
+            logger.info("[2FA] 进入2FA设置流程：{}", email)
             executor = create_executor(email_code_provider=email_code_provider, save_metadata=persist_metadata)
             result = executor.enable(email, session_data, progress=emit_progress)
             public_result = result.to_public_dict()

@@ -9,6 +9,8 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
 
+from loguru import logger
+
 from autotoken._protocol_register.http_client import USER_AGENT, create_http_session
 from autotoken.core.redaction import safe_email_summary
 from autotoken.services.chatgpt_2fa_setup import (
@@ -64,6 +66,7 @@ class ChatGPT2FAProtocolSetupExecutor:
             if not target_email:
                 raise RuntimeError("account email is required for protocol 2FA setup")
 
+            logger.info("[2FA] 进入2FA设置流程: email={} mode=protocol", target_email)
             emit({"stage": "totp_setup_started", "email": safe_email_summary(target_email)})
             http, device_id, user_agent = self._build_session(payload, session_token, cookie_header)
             reauth_started_at = time.time()
@@ -420,4 +423,3 @@ def _response_ok(response: Any) -> bool:
 def _require_ok(response: Any, action: str) -> None:
     if not _response_ok(response):
         raise RuntimeError(f"OpenAI {action} failed (HTTP {_status_code(response)})")
-

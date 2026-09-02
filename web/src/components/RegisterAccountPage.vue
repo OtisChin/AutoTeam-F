@@ -156,46 +156,6 @@
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label
                 class="flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm transition"
-                :class="registerForm.registerEngine === 'browser'
-                  ? 'border-blue-500/40 bg-blue-600/10 text-blue-100'
-                  : 'border-gray-800 bg-gray-900/50 text-gray-300 hover:bg-gray-800/50'"
-              >
-                <input
-                  v-model="registerForm.registerEngine"
-                  value="browser"
-                  type="radio"
-                  name="register-engine"
-                  :disabled="registeringBusy"
-                  class="mt-1 border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500"
-                />
-                <span>
-                  <span class="text-gray-100">本地浏览器</span>
-                  <span class="block text-xs text-gray-500">使用本机 Playwright Chromium 完成注册。</span>
-                </span>
-              </label>
-
-              <label
-                class="flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm transition"
-                :class="registerForm.registerEngine === 'protocol'
-                  ? 'border-blue-500/40 bg-blue-600/10 text-blue-100'
-                  : 'border-gray-800 bg-gray-900/50 text-gray-300 hover:bg-gray-800/50'"
-              >
-                <input
-                  v-model="registerForm.registerEngine"
-                  value="protocol"
-                  type="radio"
-                  name="register-engine"
-                  :disabled="registeringBusy"
-                  class="mt-1 border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500"
-                />
-                <span>
-                  <span class="text-gray-100">Python 协议注册</span>
-                  <span class="block text-xs text-gray-500">使用现有 Python 协议注册链路。</span>
-                </span>
-              </label>
-
-              <label
-                class="flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm transition"
                 :class="registerForm.registerEngine === 'go_protocol'
                   ? 'border-emerald-500/40 bg-emerald-600/10 text-emerald-100'
                   : 'border-gray-800 bg-gray-900/50 text-gray-300 hover:bg-gray-800/50'"
@@ -1320,7 +1280,7 @@ const registerStats = ref({
   today: { total: 0, ok: 0, failed: 0, successRate: 0 },
 })
 const statsMode = ref('task')
-const REGISTER_ENGINE_VALUES = Object.freeze(['browser', 'protocol', 'go_protocol', 'roxy', 'cloak'])
+const REGISTER_ENGINE_VALUES = Object.freeze(['go_protocol', 'roxy', 'cloak'])
 const registerForm = ref({
   mode: 'single',
   registrationFlow: 'standard',
@@ -1338,7 +1298,7 @@ const registerForm = ref({
   luckmailPreferredDomains: [],
   prefix: '',
   password: '',
-  registerEngine: 'browser',
+  registerEngine: 'go_protocol',
   postRegisterOauth: false,
   enableTotpMfa: false,
   phoneOnly: false,
@@ -1573,12 +1533,10 @@ const luckmailPurchaseLabel = computed(() => {
 const registerBehaviorLabel = computed(() => {
   if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
   const registerMode = {
-    browser: '浏览器注册',
-    protocol: 'Python 协议注册',
     go_protocol: 'Go 协议注册',
     roxy: 'Roxy Browser注册',
     cloak: 'Cloak 无头注册',
-  }[registerForm.value.registerEngine] || '浏览器注册'
+  }[registerForm.value.registerEngine] || 'Go 协议注册'
   const flowDesc = registerForm.value.phoneOnly && isPhoneCpaFlow.value
     ? '仅手机注册，不绑定邮箱、不 OAuth'
     : registerForm.value.postRegisterOauth
@@ -2197,11 +2155,7 @@ function loadSavedRegisterForm() {
         ? 'cloak'
         : Boolean(saved.useRoxyBrowser)
           ? 'roxy'
-          : Boolean(saved.goProtocolRegister)
-            ? 'go_protocol'
-            : Boolean(saved.protocolRegister)
-              ? 'protocol'
-              : 'browser'
+          : 'go_protocol'
     registerForm.value = {
       ...registerForm.value,
       mode: saved.mode === 'batch' ? 'batch' : 'single',
@@ -2641,7 +2595,7 @@ async function submitManualRegister() {
       luckmail_preferred_domains: isLuckMailProvider.value && registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
-      protocol_register: isPhoneCpaFlow.value || registerForm.value.registerEngine === 'protocol',
+      protocol_register: isPhoneCpaFlow.value,
       go_protocol_register: !isPhoneCpaFlow.value && registerForm.value.registerEngine === 'go_protocol',
       use_roxybrowser: !isPhoneCpaFlow.value && registerForm.value.registerEngine === 'roxy',
       use_cloakbrowser: !isPhoneCpaFlow.value && registerForm.value.registerEngine === 'cloak',

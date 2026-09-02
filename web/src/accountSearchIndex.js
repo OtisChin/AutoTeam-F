@@ -8,8 +8,11 @@ function normalizedText(value) {
 }
 
 function numericTimestamp(value) {
-  const timestamp = Number(value || 0)
-  return Number.isFinite(timestamp) ? timestamp : 0
+  if (value === null || value === undefined || value === '') return 0
+  const timestamp = Number(value)
+  if (Number.isFinite(timestamp)) return timestamp
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
 }
 
 function displayEmail(account) {
@@ -52,6 +55,18 @@ export function buildAccountSearchIndex(accounts) {
       trialEligible: Boolean(account?.trial_eligible),
       bindProvider: normalizedText(account?.last_bind_provider) || '__none__',
       registerTimestamp: numericTimestamp(account?.created_at || account?.registered_at || account?.register_at),
+      updateTimestamp: numericTimestamp(
+        account?.updated_at
+        ?? account?.updatedAt
+        ?? account?.last_updated_at
+        ?? account?.lastUpdatedAt
+        ?? account?.modified_at
+        ?? account?.modifiedAt
+        ?? account?.last_active_at
+        ?? account?.lastActiveAt
+        ?? account?.created_at
+        ?? account?.createdAt
+      ),
       exportStatus: account?.credentials_exported ? 'exported' : 'unexported',
       exportTimestamp: numericTimestamp(account?.credentials_exported_at),
       hubSyncStatus: account?.account_hub_synced ? 'synced' : 'unsynced',
@@ -63,18 +78,15 @@ export function buildAccountSearchIndex(accounts) {
   }
 
   index.sort((left, right) => {
-    if (left.plus && right.plus) {
-      const boundAtDifference = right.bindTimestamp - left.bindTimestamp
-      if (boundAtDifference) return boundAtDifference
-    }
-    if (left.plus !== right.plus) return left.plus ? -1 : 1
+    const updateDifference = right.updateTimestamp - left.updateTimestamp
+    if (updateDifference) return updateDifference
     return left.position - right.position
   })
 
   return index
 }
 
-export function filterAccountSearchIndex(index, filters = {}, order = 'asc') {
+export function filterAccountSearchIndex(index, filters = {}, order = 'desc') {
   const source = Array.isArray(index) ? index : []
   const email = normalizedText(filters.email)
   const status = String(filters.status || '')
@@ -85,11 +97,11 @@ export function filterAccountSearchIndex(index, filters = {}, order = 'asc') {
   const hubSync = String(filters.hubSync || '')
   const authCredential = String(filters.authCredential || '')
   const twoFactor = String(filters.twoFactor || '')
-  const descending = order === 'desc'
+  const ascending = order === 'asc'
   const matches = []
 
   for (let offset = 0; offset < source.length; offset += 1) {
-    const entry = source[descending ? source.length - 1 - offset : offset]
+    const entry = source[ascending ? source.length - 1 - offset : offset]
     if (email && !entry.email.includes(email)) continue
     if (status && entry.status !== status) continue
     if (accountType && entry.accountType !== accountType) continue

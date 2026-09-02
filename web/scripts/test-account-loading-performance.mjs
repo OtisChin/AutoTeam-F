@@ -169,14 +169,14 @@ assert.deepEqual(facets.bindableFreeAccounts.map(account => account.email), ['fi
 assert.deepEqual(facets.invalidCredentialAccounts.map(account => account.email), ['second@example.com'])
 
 const indexedAccounts = buildAccountSearchIndex([
-  { email: 'free@example.com', display_email: 'Visible Alias', account_type: 'free', status: 'active' },
-  { email: 'older-plus@example.com', account_type: 'plus', status: 'personal', plus_bound_at: 100 },
-  { email: 'newer-plus@example.com', account_type: 'plus', status: 'active', plus_bound_at: 200 },
+  { email: 'free@example.com', display_email: 'Visible Alias', account_type: 'free', status: 'active', updated_at: 300 },
+  { email: 'older-plus@example.com', account_type: 'plus', status: 'personal', plus_bound_at: 100, updated_at: 100 },
+  { email: 'newer-plus@example.com', account_type: 'plus', status: 'active', plus_bound_at: 200, updated_at: 200 },
 ])
 assert.deepEqual(
   indexedAccounts.map(entry => entry.account.email),
-  ['newer-plus@example.com', 'older-plus@example.com', 'free@example.com'],
-  'the expensive plus-first ordering should be built once per account snapshot',
+  ['free@example.com', 'newer-plus@example.com', 'older-plus@example.com'],
+  'the expensive update-time ordering should be built once per account snapshot',
 )
 assert.deepEqual(
   filterAccountSearchIndex(indexedAccounts, { email: 'VISIBLE alias' }).map(account => account.email),
@@ -185,8 +185,8 @@ assert.deepEqual(
 )
 assert.deepEqual(
   filterAccountSearchIndex(indexedAccounts, { accountType: 'plus' }, 'desc').map(account => account.email),
-  ['older-plus@example.com', 'newer-plus@example.com'],
-  'descending display should traverse the stable index without re-sorting the account pool',
+  ['newer-plus@example.com', 'older-plus@example.com'],
+  'descending display should traverse the stable update-time index without re-sorting the account pool',
 )
 
 const malformedEmailAccount = { email: null, status: 'active' }
