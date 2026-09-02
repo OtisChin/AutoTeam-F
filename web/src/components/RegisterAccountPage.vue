@@ -282,11 +282,9 @@
               class="mt-1 rounded border-gray-600 bg-gray-800"
             />
             <span>
-              <span :class="isPhoneCpaFlow ? 'text-gray-400' : 'text-cyan-100'">注册后启用官方 2FA / TOTP</span>
-              <span class="block text-xs" :class="isPhoneCpaFlow ? 'text-gray-500' : 'text-cyan-200/80'">
-                {{ isPhoneCpaFlow
-                  ? '当前手机号注册链路暂不支持自动启用 2FA；切回“邮箱注册”后可勾选。'
-                  : '通过 ChatGPT 官方安全设置启用 Authenticator app，并只在本地保存 masked 状态；raw secret 默认不导出。' }}
+              <span :class="isPhoneCpaFlow ? 'text-gray-400' : 'text-cyan-100'">注册后启用 2FA / TOTP</span>
+              <span v-if="isPhoneCpaFlow" class="block text-xs text-gray-500">
+                当前手机号注册链路暂不支持自动启用 2FA；切回“邮箱注册”后可勾选。
               </span>
             </span>
           </label>

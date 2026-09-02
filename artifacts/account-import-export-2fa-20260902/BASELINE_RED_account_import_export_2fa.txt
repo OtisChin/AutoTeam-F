@@ -1,0 +1,63 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+___ test_export_credentials_uses_three_part_2fa_format_for_enabled_accounts ___
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000000006086EA0>
+tmp_path = WindowsPath('C:/Users/Oops/AppData/Local/Temp/pytest-of-Oops/pytest-2052/test_export_credentials_uses_t0')
+
+    def test_export_credentials_uses_three_part_2fa_format_for_enabled_accounts(monkeypatch, tmp_path):
+        _isolate_accounts(monkeypatch, tmp_path)
+        account_store.add_account("Pro2x-0906@nbclas.com", "EaD5zylT23wAJv")
+        account_store.save_totp_metadata(
+            "Pro2x-0906@nbclas.com",
+            secret="MSRVASZAW32OYTLQOUXK625IXPCMKPAW",
+        )
+    
+        router = create_account_exports_router(
+            normalize_email=_normalize,
+            is_main_account_email=_is_main,
+            sanitize_account=_sanitize,
+        )
+        response = _endpoint(router, "/api/accounts/export-credentials")(
+            AccountCredentialExportParams(emails=["Pro2x-0906@nbclas.com"])
+        )
+    
+>       assert response["content"] == "pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+E       AssertionError: assert 'pro2x-0906@n...ternal.cc.cd/' == 'pro2x-0906@n...K625IXPCMKPAW'
+E         
+E         - pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW
+E         + pro2x-0906@nbclas.com-----EaD5zylT23wAJv-----https://gptcode.external.cc.cd/
+
+tests\unit\test_account_import_export_2fa.py:58: AssertionError
+_ test_import_external_accounts_accepts_password_2fa_format_and_marks_enabled _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000000006616EA0>
+tmp_path = WindowsPath('C:/Users/Oops/AppData/Local/Temp/pytest-of-Oops/pytest-2052/test_import_external_accounts_0')
+
+    def test_import_external_accounts_accepts_password_2fa_format_and_marks_enabled(monkeypatch, tmp_path):
+        _isolate_accounts(monkeypatch, tmp_path)
+        router = create_account_management_router(
+            playwright_lock=_NoopLock(),
+            playwright_executor=_NoopExecutor(),
+            current_busy_detail=lambda _email: None,
+            is_main_account_email=_is_main,
+            sanitize_account=_sanitize,
+        )
+    
+        response = _endpoint(router, "/api/accounts/import-external")(
+            AccountExternalImportParams(
+                text="Pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+            )
+        )
+    
+        assert response["imported"] == 1
+>       assert response["totp_imported"] == 1
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'totp_imported'
+
+tests\unit\test_account_import_export_2fa.py:80: KeyError
+=========================== short test summary info ===========================
+FAILED tests/unit/test_account_import_export_2fa.py::test_export_credentials_uses_three_part_2fa_format_for_enabled_accounts
+FAILED tests/unit/test_account_import_export_2fa.py::test_import_external_accounts_accepts_password_2fa_format_and_marks_enabled
+2 failed in 0.70s
+EXIT_STATUS=1

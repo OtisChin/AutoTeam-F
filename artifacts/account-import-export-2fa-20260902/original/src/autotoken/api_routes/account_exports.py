@@ -89,24 +89,18 @@ def create_account_exports_router(
         icloud_accounts = icloud_accounts_by_email()
         generic_api_accounts = generic_api_accounts_by_email()
         include_totp_secret = bool(params.include_totp_secret)
-        exported_totp_count = 0
         lines = []
         for account in export_rows:
-            credentials = get_totp_credentials(normalize_email(account.get("email"))) or {}
-            totp_secret = str(credentials.get("secret") or "").strip()
-            if totp_secret:
-                exported_totp_count += 1
-                line = f"{normalize_email(account.get('email'))}----{account.get('password') or ''}----{totp_secret}"
-            else:
-                line = credential_export_line_for_account(
-                    account,
-                    outlook_mailapi_urls=outlook_mailapi_urls,
-                    outlook_accounts=outlook_accounts,
-                    icloud_accounts=icloud_accounts,
-                    generic_api_accounts=generic_api_accounts,
-                )
-                if include_totp_secret:
-                    line = f"{line}-----"
+            line = credential_export_line_for_account(
+                account,
+                outlook_mailapi_urls=outlook_mailapi_urls,
+                outlook_accounts=outlook_accounts,
+                icloud_accounts=icloud_accounts,
+                generic_api_accounts=generic_api_accounts,
+            )
+            if include_totp_secret:
+                credentials = get_totp_credentials(normalize_email(account.get("email"))) or {}
+                line = f"{line}-----{credentials.get('secret') or ''}"
             lines.append(line)
         content = "\n".join(lines)
         # Preparing a response is not proof that the browser received or saved it.
@@ -125,12 +119,9 @@ def create_account_exports_router(
             "exported_emails": exported_emails,
             "exported_at": None,
             "filename": "accounts-credentials.txt",
-            "format": "{email}----{password}----{totp_secret} when TOTP is enabled"
-            if exported_totp_count
-            else "{email}-----{password_or_token}-----{mail_url}"
+            "format": "{email}-----{password_or_token}-----{mail_url}"
             + ("-----{totp_secret}" if include_totp_secret else ""),
-            "totp_included": bool(exported_totp_count or include_totp_secret),
-            "totp_count": exported_totp_count,
+            "totp_included": include_totp_secret,
         }
 
     @router.post("/api/accounts/export-status")

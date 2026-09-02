@@ -152,8 +152,6 @@ def _account_metadata_update_fields(
 
 
 def _parse_external_account_import_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-    from autotoken.services.totp import TOTPSecretError, normalize_totp_secret
-
     entries: list[dict[str, Any]] = []
     invalid: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -163,47 +161,22 @@ def _parse_external_account_import_lines(text: str) -> tuple[list[dict[str, Any]
         if not line:
             continue
         if "----" not in line:
-            invalid.append({"line": line_no, "content": line, "error": "格式应为 邮箱----取件URL 或 邮箱----密码----2FA密钥"})
+            invalid.append({"line": line_no, "content": line, "error": "格式应为 邮箱----取件URL"})
             continue
-        parts = line.split("----")
-        raw_email = parts[0]
+        raw_email, raw_url = line.split("----", 1)
         email = normalized_email(raw_email)
+        mailapi_url = raw_url.strip()
         if not email or "@" not in email:
             invalid.append({"line": line_no, "content": line, "error": "邮箱无效"})
+            continue
+        if not mailapi_url:
+            invalid.append({"line": line_no, "content": line, "error": "取件URL不能为空"})
             continue
         if email in seen:
             duplicates += 1
             continue
-
-        if len(parts) == 3:
-            password = parts[1].strip()
-            raw_totp_secret = parts[2].strip()
-            if not password:
-                invalid.append({"line": line_no, "content": line, "error": "密码不能为空"})
-                continue
-            try:
-                totp_secret = normalize_totp_secret(raw_totp_secret)
-            except TOTPSecretError as exc:
-                invalid.append({"line": line_no, "content": line, "error": f"2FA密钥无效: {exc}"})
-                continue
-            seen.add(email)
-            entries.append({
-                "email": email,
-                "password": password,
-                "totp_secret": totp_secret,
-                "mailapi_url": "",
-                "line": line_no,
-                "format": "password_totp",
-            })
-            continue
-
-        raw_url = line.split("----", 1)[1]
-        mailapi_url = raw_url.strip()
-        if not mailapi_url:
-            invalid.append({"line": line_no, "content": line, "error": "取件URL不能为空"})
-            continue
         seen.add(email)
-        entries.append({"email": email, "mailapi_url": mailapi_url, "line": line_no, "format": "mailapi_url"})
+        entries.append({"email": email, "mailapi_url": mailapi_url, "line": line_no})
     return entries, invalid, duplicates
 
 
@@ -331,11 +304,9 @@ def create_account_management_router(
         from autotoken.storage.accounts import (
             ACCOUNT_TYPE_FREE,
             STATUS_ACTIVE,
-            TOTP_STATUS_ENABLED,
             add_account,
             find_account,
             load_accounts,
-            save_totp_metadata,
             update_account,
         )
 
@@ -348,63 +319,45 @@ def create_account_management_router(
         updated = 0
         accounts: list[dict[str, Any]] = []
         skipped_main: list[str] = []
-        totp_imported = 0
         for entry in entries:
             email = entry["email"]
-            mailapi_url = str(entry.get("mailapi_url") or "")
-            password = str(entry.get("password") or "")
-            totp_secret = str(entry.get("totp_secret") or "")
-            is_password_totp = str(entry.get("format") or "") == "password_totp"
+            mailapi_url = entry["mailapi_url"]
             if is_main_account_email(email):
                 skipped_main.append(email)
                 continue
             current = find_account(existing_accounts, email)
             if current:
-                update_fields = {"last_bind_provider": "external_import"}
-                if is_password_totp:
-                    update_fields["password"] = password
-                else:
-                    update_fields.update({"mail_provider": "generic-api", "mailapi_url": mailapi_url})
-                updated_account = update_account(email, **update_fields)
+                updated_account = update_account(
+                    email,
+                    mail_provider="generic-api",
+                    mailapi_url=mailapi_url,
+                    last_bind_provider="external_import",
+                )
                 updated += 1
             else:
                 add_account(
                     email,
-                    password if is_password_totp else "",
-                    mail_provider=None if is_password_totp else "generic-api",
-                    mailapi_url="" if is_password_totp else mailapi_url,
+                    "",
+                    mail_provider="generic-api",
+                    mailapi_url=mailapi_url,
                 )
-                update_fields = {
-                    "status": STATUS_ACTIVE,
-                    "account_type": ACCOUNT_TYPE_FREE,
-                    "last_bind_provider": "external_import",
-                }
-                if is_password_totp:
-                    update_fields["password"] = password
-                else:
-                    update_fields.update({"mail_provider": "generic-api", "mailapi_url": mailapi_url})
-                updated_account = update_account(email, **update_fields)
+                updated_account = update_account(
+                    email,
+                    status=STATUS_ACTIVE,
+                    account_type=ACCOUNT_TYPE_FREE,
+                    mail_provider="generic-api",
+                    mailapi_url=mailapi_url,
+                    last_bind_provider="external_import",
+                )
                 imported += 1
                 existing_accounts.append({"email": email})
-            if is_password_totp and totp_secret:
-                saved = save_totp_metadata(
-                    email,
-                    secret=totp_secret,
-                    issuer="OpenAI",
-                    factor_label="ChatGPT",
-                    status=TOTP_STATUS_ENABLED,
-                )
-                if saved:
-                    updated_account = saved
-                    totp_imported += 1
             if updated_account:
                 accounts.append(sanitize_account(updated_account))
 
         return {
-            "message": f"导入账号完成：新增 {imported}，更新 {updated}，2FA {totp_imported}，重复 {duplicates}，无效 {len(invalid)}",
+            "message": f"导入账号完成：新增 {imported}，更新 {updated}，重复 {duplicates}，无效 {len(invalid)}",
             "imported": imported,
             "updated": updated,
-            "totp_imported": totp_imported,
             "duplicates": duplicates,
             "invalid": invalid,
             "skipped_main": skipped_main,

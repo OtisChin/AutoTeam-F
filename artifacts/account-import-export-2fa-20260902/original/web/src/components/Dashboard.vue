@@ -1244,7 +1244,7 @@
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
               <h3 class="text-white font-semibold">导入账号</h3>
-              <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL，或 邮箱----密码----2FA密钥；带 2FA 密钥的账号导入后直接显示“已设置”。</div>
+              <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL；新账号默认 Free，绑定渠道为外部导入。</div>
             </div>
             <button type="button" aria-label="关闭导入账号" @click="closeExternalAccountImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
@@ -1255,15 +1255,14 @@
                 id="external-account-import-content"
                 v-model="externalAccountImportText"
                 rows="10"
-                placeholder="user@example.com----https://example.com/api/mail?token=...
-Pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+                placeholder="user@example.com----https://example.com/api/mail?token=..."
                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
-              <div class="mt-1 text-xs text-gray-500">重复邮箱只导入第一条；取件URL格式会更新取件URL，2FA格式会更新密码并保存密钥，不覆盖账号类型/状态。</div>
+              <div class="mt-1 text-xs text-gray-500">重复邮箱只导入第一条；已存在账号会更新取件URL和绑定渠道，不覆盖账号类型/状态。</div>
             </div>
 
             <div v-if="externalAccountImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
               <div class="text-gray-200">
-                新增 {{ externalAccountImportResult.imported || 0 }}，更新 {{ externalAccountImportResult.updated || 0 }}，2FA {{ externalAccountImportResult.totp_imported || 0 }}，重复 {{ externalAccountImportResult.duplicates || 0 }}，无效 {{ externalAccountImportResult.invalid?.length || 0 }}
+                新增 {{ externalAccountImportResult.imported || 0 }}，更新 {{ externalAccountImportResult.updated || 0 }}，重复 {{ externalAccountImportResult.duplicates || 0 }}，无效 {{ externalAccountImportResult.invalid?.length || 0 }}
               </div>
               <div v-if="externalAccountImportResult.invalid?.length" class="mt-2 text-amber-300">
                 跳过 {{ externalAccountImportResult.invalid.length }} 条无效；前 5 条：
@@ -3647,18 +3646,9 @@ async function submitExternalAccountImport() {
   try {
     const result = await api.importExternalAccounts(text)
     externalAccountImportResult.value = result
-    const completed = new Set(twoFactorCompletedEmails.value)
-    for (const account of result.accounts || []) {
-      if (accountTwoFactorEnabled(account)) {
-        const email = accountTwoFactorEmailKey(account)
-        if (email) completed.add(email)
-      }
-    }
-    twoFactorCompletedEmails.value = completed
     const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，跳过 ${result.invalid.length} 条无效` : ''
     const skippedMain = Array.isArray(result.skipped_main) && result.skipped_main.length ? `，跳过主号 ${result.skipped_main.length} 个` : ''
-    const totp = result.totp_imported ? `，2FA ${result.totp_imported}` : ''
-    message.value = `账号导入完成：新增 ${result.imported || 0}，更新 ${result.updated || 0}${totp}，重复 ${result.duplicates || 0}${invalid}${skippedMain}`
+    message.value = `账号导入完成：新增 ${result.imported || 0}，更新 ${result.updated || 0}，重复 ${result.duplicates || 0}${invalid}${skippedMain}`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     externalAccountImportText.value = ''
     emit('refresh')

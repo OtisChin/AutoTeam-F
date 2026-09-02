@@ -1,0 +1,387 @@
+--- original/src/autotoken/api_routes/account_exports.py
++++ modified/src/autotoken/api_routes/account_exports.py
+@@ -89,18 +89,24 @@
+         icloud_accounts = icloud_accounts_by_email()
+         generic_api_accounts = generic_api_accounts_by_email()
+         include_totp_secret = bool(params.include_totp_secret)
++        exported_totp_count = 0
+         lines = []
+         for account in export_rows:
+-            line = credential_export_line_for_account(
+-                account,
+-                outlook_mailapi_urls=outlook_mailapi_urls,
+-                outlook_accounts=outlook_accounts,
+-                icloud_accounts=icloud_accounts,
+-                generic_api_accounts=generic_api_accounts,
+-            )
+-            if include_totp_secret:
+-                credentials = get_totp_credentials(normalize_email(account.get("email"))) or {}
+-                line = f"{line}-----{credentials.get('secret') or ''}"
++            credentials = get_totp_credentials(normalize_email(account.get("email"))) or {}
++            totp_secret = str(credentials.get("secret") or "").strip()
++            if totp_secret:
++                exported_totp_count += 1
++                line = f"{normalize_email(account.get('email'))}----{account.get('password') or ''}----{totp_secret}"
++            else:
++                line = credential_export_line_for_account(
++                    account,
++                    outlook_mailapi_urls=outlook_mailapi_urls,
++                    outlook_accounts=outlook_accounts,
++                    icloud_accounts=icloud_accounts,
++                    generic_api_accounts=generic_api_accounts,
++                )
++                if include_totp_secret:
++                    line = f"{line}-----"
+             lines.append(line)
+         content = "\n".join(lines)
+         # Preparing a response is not proof that the browser received or saved it.
+@@ -119,9 +125,12 @@
+             "exported_emails": exported_emails,
+             "exported_at": None,
+             "filename": "accounts-credentials.txt",
+-            "format": "{email}-----{password_or_token}-----{mail_url}"
++            "format": "{email}----{password}----{totp_secret} when TOTP is enabled"
++            if exported_totp_count
++            else "{email}-----{password_or_token}-----{mail_url}"
+             + ("-----{totp_secret}" if include_totp_secret else ""),
+-            "totp_included": include_totp_secret,
++            "totp_included": bool(exported_totp_count or include_totp_secret),
++            "totp_count": exported_totp_count,
+         }
+ 
+     @router.post("/api/accounts/export-status")
+--- original/src/autotoken/api_routes/account_management.py
++++ modified/src/autotoken/api_routes/account_management.py
+@@ -152,6 +152,8 @@
+ 
+ 
+ def _parse_external_account_import_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
++    from autotoken.services.totp import TOTPSecretError, normalize_totp_secret
++
+     entries: list[dict[str, Any]] = []
+     invalid: list[dict[str, Any]] = []
+     seen: set[str] = set()
+@@ -161,22 +163,47 @@
+         if not line:
+             continue
+         if "----" not in line:
+-            invalid.append({"line": line_no, "content": line, "error": "格式应为 邮箱----取件URL"})
++            invalid.append({"line": line_no, "content": line, "error": "格式应为 邮箱----取件URL 或 邮箱----密码----2FA密钥"})
+             continue
+-        raw_email, raw_url = line.split("----", 1)
++        parts = line.split("----")
++        raw_email = parts[0]
+         email = normalized_email(raw_email)
+-        mailapi_url = raw_url.strip()
+         if not email or "@" not in email:
+             invalid.append({"line": line_no, "content": line, "error": "邮箱无效"})
+-            continue
+-        if not mailapi_url:
+-            invalid.append({"line": line_no, "content": line, "error": "取件URL不能为空"})
+             continue
+         if email in seen:
+             duplicates += 1
+             continue
++
++        if len(parts) == 3:
++            password = parts[1].strip()
++            raw_totp_secret = parts[2].strip()
++            if not password:
++                invalid.append({"line": line_no, "content": line, "error": "密码不能为空"})
++                continue
++            try:
++                totp_secret = normalize_totp_secret(raw_totp_secret)
++            except TOTPSecretError as exc:
++                invalid.append({"line": line_no, "content": line, "error": f"2FA密钥无效: {exc}"})
++                continue
++            seen.add(email)
++            entries.append({
++                "email": email,
++                "password": password,
++                "totp_secret": totp_secret,
++                "mailapi_url": "",
++                "line": line_no,
++                "format": "password_totp",
++            })
++            continue
++
++        raw_url = line.split("----", 1)[1]
++        mailapi_url = raw_url.strip()
++        if not mailapi_url:
++            invalid.append({"line": line_no, "content": line, "error": "取件URL不能为空"})
++            continue
+         seen.add(email)
+-        entries.append({"email": email, "mailapi_url": mailapi_url, "line": line_no})
++        entries.append({"email": email, "mailapi_url": mailapi_url, "line": line_no, "format": "mailapi_url"})
+     return entries, invalid, duplicates
+ 
+ 
+@@ -304,9 +331,11 @@
+         from autotoken.storage.accounts import (
+             ACCOUNT_TYPE_FREE,
+             STATUS_ACTIVE,
++            TOTP_STATUS_ENABLED,
+             add_account,
+             find_account,
+             load_accounts,
++            save_totp_metadata,
+             update_account,
+         )
+ 
+@@ -319,45 +348,63 @@
+         updated = 0
+         accounts: list[dict[str, Any]] = []
+         skipped_main: list[str] = []
++        totp_imported = 0
+         for entry in entries:
+             email = entry["email"]
+-            mailapi_url = entry["mailapi_url"]
++            mailapi_url = str(entry.get("mailapi_url") or "")
++            password = str(entry.get("password") or "")
++            totp_secret = str(entry.get("totp_secret") or "")
++            is_password_totp = str(entry.get("format") or "") == "password_totp"
+             if is_main_account_email(email):
+                 skipped_main.append(email)
+                 continue
+             current = find_account(existing_accounts, email)
+             if current:
+-                updated_account = update_account(
+-                    email,
+-                    mail_provider="generic-api",
+-                    mailapi_url=mailapi_url,
+-                    last_bind_provider="external_import",
+-                )
++                update_fields = {"last_bind_provider": "external_import"}
++                if is_password_totp:
++                    update_fields["password"] = password
++                else:
++                    update_fields.update({"mail_provider": "generic-api", "mailapi_url": mailapi_url})
++                updated_account = update_account(email, **update_fields)
+                 updated += 1
+             else:
+                 add_account(
+                     email,
+-                    "",
+-                    mail_provider="generic-api",
+-                    mailapi_url=mailapi_url,
++                    password if is_password_totp else "",
++                    mail_provider=None if is_password_totp else "generic-api",
++                    mailapi_url="" if is_password_totp else mailapi_url,
+                 )
+-                updated_account = update_account(
+-                    email,
+-                    status=STATUS_ACTIVE,
+-                    account_type=ACCOUNT_TYPE_FREE,
+-                    mail_provider="generic-api",
+-                    mailapi_url=mailapi_url,
+-                    last_bind_provider="external_import",
+-                )
++                update_fields = {
++                    "status": STATUS_ACTIVE,
++                    "account_type": ACCOUNT_TYPE_FREE,
++                    "last_bind_provider": "external_import",
++                }
++                if is_password_totp:
++                    update_fields["password"] = password
++                else:
++                    update_fields.update({"mail_provider": "generic-api", "mailapi_url": mailapi_url})
++                updated_account = update_account(email, **update_fields)
+                 imported += 1
+                 existing_accounts.append({"email": email})
++            if is_password_totp and totp_secret:
++                saved = save_totp_metadata(
++                    email,
++                    secret=totp_secret,
++                    issuer="OpenAI",
++                    factor_label="ChatGPT",
++                    status=TOTP_STATUS_ENABLED,
++                )
++                if saved:
++                    updated_account = saved
++                    totp_imported += 1
+             if updated_account:
+                 accounts.append(sanitize_account(updated_account))
+ 
+         return {
+-            "message": f"导入账号完成：新增 {imported}，更新 {updated}，重复 {duplicates}，无效 {len(invalid)}",
++            "message": f"导入账号完成：新增 {imported}，更新 {updated}，2FA {totp_imported}，重复 {duplicates}，无效 {len(invalid)}",
+             "imported": imported,
+             "updated": updated,
++            "totp_imported": totp_imported,
+             "duplicates": duplicates,
+             "invalid": invalid,
+             "skipped_main": skipped_main,
+--- original/web/src/components/Dashboard.vue
++++ modified/web/src/components/Dashboard.vue
+@@ -1244,7 +1244,7 @@
+           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+             <div>
+               <h3 class="text-white font-semibold">导入账号</h3>
+-              <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL；新账号默认 Free，绑定渠道为外部导入。</div>
++              <div class="text-xs text-gray-500 mt-0.5">支持一行一个：邮箱----取件URL，或 邮箱----密码----2FA密钥；带 2FA 密钥的账号导入后直接显示“已设置”。</div>
+             </div>
+             <button type="button" aria-label="关闭导入账号" @click="closeExternalAccountImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+           </div>
+@@ -1255,14 +1255,15 @@
+                 id="external-account-import-content"
+                 v-model="externalAccountImportText"
+                 rows="10"
+-                placeholder="user@example.com----https://example.com/api/mail?token=..."
++                placeholder="user@example.com----https://example.com/api/mail?token=...
++Pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+                 class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
+-              <div class="mt-1 text-xs text-gray-500">重复邮箱只导入第一条；已存在账号会更新取件URL和绑定渠道，不覆盖账号类型/状态。</div>
++              <div class="mt-1 text-xs text-gray-500">重复邮箱只导入第一条；取件URL格式会更新取件URL，2FA格式会更新密码并保存密钥，不覆盖账号类型/状态。</div>
+             </div>
+ 
+             <div v-if="externalAccountImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
+               <div class="text-gray-200">
+-                新增 {{ externalAccountImportResult.imported || 0 }}，更新 {{ externalAccountImportResult.updated || 0 }}，重复 {{ externalAccountImportResult.duplicates || 0 }}，无效 {{ externalAccountImportResult.invalid?.length || 0 }}
++                新增 {{ externalAccountImportResult.imported || 0 }}，更新 {{ externalAccountImportResult.updated || 0 }}，2FA {{ externalAccountImportResult.totp_imported || 0 }}，重复 {{ externalAccountImportResult.duplicates || 0 }}，无效 {{ externalAccountImportResult.invalid?.length || 0 }}
+               </div>
+               <div v-if="externalAccountImportResult.invalid?.length" class="mt-2 text-amber-300">
+                 跳过 {{ externalAccountImportResult.invalid.length }} 条无效；前 5 条：
+@@ -3646,9 +3647,18 @@
+   try {
+     const result = await api.importExternalAccounts(text)
+     externalAccountImportResult.value = result
++    const completed = new Set(twoFactorCompletedEmails.value)
++    for (const account of result.accounts || []) {
++      if (accountTwoFactorEnabled(account)) {
++        const email = accountTwoFactorEmailKey(account)
++        if (email) completed.add(email)
++      }
++    }
++    twoFactorCompletedEmails.value = completed
+     const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，跳过 ${result.invalid.length} 条无效` : ''
+     const skippedMain = Array.isArray(result.skipped_main) && result.skipped_main.length ? `，跳过主号 ${result.skipped_main.length} 个` : ''
+-    message.value = `账号导入完成：新增 ${result.imported || 0}，更新 ${result.updated || 0}，重复 ${result.duplicates || 0}${invalid}${skippedMain}`
++    const totp = result.totp_imported ? `，2FA ${result.totp_imported}` : ''
++    message.value = `账号导入完成：新增 ${result.imported || 0}，更新 ${result.updated || 0}${totp}，重复 ${result.duplicates || 0}${invalid}${skippedMain}`
+     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+     externalAccountImportText.value = ''
+     emit('refresh')
+
+--- NEW FILE: tests/unit/test_account_import_export_2fa.py ---
+from __future__ import annotations
+
+from autotoken.api_routes.account_exports import AccountCredentialExportParams, create_account_exports_router
+from autotoken.api_routes.account_management import AccountExternalImportParams, create_account_management_router
+from autotoken.storage import accounts as account_store
+
+
+class _NoopLock:
+    def acquire(self, blocking=False):
+        return False
+
+    def release(self):
+        pass
+
+
+class _NoopExecutor:
+    def run(self, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+
+def _endpoint(router, path: str):
+    return next(route.endpoint for route in router.routes if route.path == path)
+
+
+def _normalize(email):
+    return account_store._normalized_email(email)
+
+
+def _sanitize(account):
+    return dict(account or {})
+
+
+def _is_main(_email):
+    return False
+
+
+def _isolate_accounts(monkeypatch, tmp_path):
+    monkeypatch.setattr(account_store, "ACCOUNTS_FILE", str(tmp_path / "accounts.json"))
+
+
+def test_export_credentials_uses_three_part_2fa_format_for_enabled_accounts(monkeypatch, tmp_path):
+    _isolate_accounts(monkeypatch, tmp_path)
+    account_store.add_account("Pro2x-0906@nbclas.com", "EaD5zylT23wAJv")
+    account_store.save_totp_metadata(
+        "Pro2x-0906@nbclas.com",
+        secret="MSRVASZAW32OYTLQOUXK625IXPCMKPAW",
+    )
+
+    router = create_account_exports_router(
+        normalize_email=_normalize,
+        is_main_account_email=_is_main,
+        sanitize_account=_sanitize,
+    )
+    response = _endpoint(router, "/api/accounts/export-credentials")(
+        AccountCredentialExportParams(emails=["Pro2x-0906@nbclas.com"])
+    )
+
+    assert response["content"] == "pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+    assert response["format"] == "{email}----{password}----{totp_secret} when TOTP is enabled"
+    assert response["totp_included"] is True
+
+
+def test_import_external_accounts_accepts_password_2fa_format_and_marks_enabled(monkeypatch, tmp_path):
+    _isolate_accounts(monkeypatch, tmp_path)
+    router = create_account_management_router(
+        playwright_lock=_NoopLock(),
+        playwright_executor=_NoopExecutor(),
+        current_busy_detail=lambda _email: None,
+        is_main_account_email=_is_main,
+        sanitize_account=_sanitize,
+    )
+
+    response = _endpoint(router, "/api/accounts/import-external")(
+        AccountExternalImportParams(
+            text="Pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+        )
+    )
+
+    assert response["imported"] == 1
+    assert response["totp_imported"] == 1
+    account = account_store.find_account(account_store.load_accounts(), "Pro2x-0906@nbclas.com")
+    assert account["password"] == "EaD5zylT23wAJv"
+    assert account["two_factor_enabled"] is True
+    assert account["totp_status"] == account_store.TOTP_STATUS_ENABLED
+    assert account["totp_secret_masked"]
+    assert account_store.get_totp_credentials("Pro2x-0906@nbclas.com")["secret"] == "MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
+    assert response["accounts"][0]["two_factor_enabled"] is True
+    assert response["accounts"][0]["totp_status"] == account_store.TOTP_STATUS_ENABLED
+
+--- NEW FILE: web/scripts/test-dashboard-2fa-import-format.mjs ---
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const dashboardSource = readFileSync(path.resolve(here, '../src/components/Dashboard.vue'), 'utf8')
+const importModal = dashboardSource.match(/<!-- 外部账号导入弹窗 -->[\s\S]*?<\/AccessibleModal>/)?.[0] || ''
+const submitExternalImport = dashboardSource.match(/async function submitExternalAccountImport\(\)[\s\S]*?function openCpaImport/)?.[0] || ''
+
+assert.match(
+  importModal,
+  /邮箱----密码----2FA密钥/,
+  '导入账号弹窗应说明支持 2FA 三段格式',
+)
+assert.match(
+  importModal,
+  /Pro2x-0906@nbclas\.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW/,
+  '导入账号输入框应展示 2FA 三段格式示例',
+)
+assert.match(
+  importModal,
+  /externalAccountImportResult\.totp_imported/,
+  '导入结果应显示本次导入的 2FA 数量',
+)
+assert.match(
+  submitExternalImport,
+  /for \(const account of result\.accounts \|\| \[\]\)[\s\S]*accountTwoFactorEnabled\(account\)[\s\S]*completed\.add\(email\)[\s\S]*twoFactorCompletedEmails\.value = completed/,
+  '导入返回启用 2FA 的账号后，应立即更新本地已设置状态',
+)
+
+console.log('dashboard 2FA import format regression passed')

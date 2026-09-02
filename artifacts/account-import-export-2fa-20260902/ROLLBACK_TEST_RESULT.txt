@@ -1,0 +1,10 @@
+COMMAND=bash /mnt/d/code/OpenSource/AutoTeam-F/artifacts/account-import-export-2fa-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/account-import-export-2fa-20260902/rollback-test-root-20260902225127
+rollback restored account import/export 2FA files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/account-import-export-2fa-20260902/rollback-test-root-20260902225127
+EXIT_STATUS=0
+HASH_CHECK src\autotoken\api_routes\account_exports.py restored=693A7D7861DE92C0780FD59B10AF6A1FAD7E168B5D0F934F3E67FCB3A9198A4B original=693A7D7861DE92C0780FD59B10AF6A1FAD7E168B5D0F934F3E67FCB3A9198A4B match=True
+HASH_CHECK src\autotoken\api_routes\account_management.py restored=35D117F10E7560CFA4A9E92330DF29BB2809B6553A093CCE4673B70BF8E9C5E9 original=35D117F10E7560CFA4A9E92330DF29BB2809B6553A093CCE4673B70BF8E9C5E9 match=True
+HASH_CHECK web\src\components\Dashboard.vue restored=726789D0ED8D5FD1283B3FC90114CA987C5331E15236D3BDA2CE5E0EB5CABCB4 original=726789D0ED8D5FD1283B3FC90114CA987C5331E15236D3BDA2CE5E0EB5CABCB4 match=True
+ABSENCE_CHECK tests\unit\test_account_import_export_2fa.py exists=False expected=False
+ABSENCE_CHECK web\scripts\test-dashboard-2fa-import-format.mjs exists=False expected=False
+RESTORED_BEHAVIOR=separate copy restored to original import/export behavior: 2FA export stayed opt-in append mode and import did not persist TOTP metadata
+RESTORED_STATUS=True

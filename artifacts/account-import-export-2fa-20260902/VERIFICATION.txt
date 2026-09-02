@@ -1,0 +1,88 @@
+BRANCH: main
+OBJECT: 启用 2FA 账号的账密导出格式与“导入账号”2FA 格式支持
+RESULT: 已实现启用 2FA 的账号导出为 email----password----2fa密钥；“导入账号”支持同样三段格式，并在导入后持久化 TOTP，账号状态直接为 two_factor_enabled=true / totp_status=enabled。
+
+CHANGED_BRANCH_FIELD:
+- src/autotoken/api_routes/account_exports.py: /api/accounts/export-credentials 对存在本地 TOTP 密钥的账号输出三段格式 {email}----{password}----{totp_secret}；普通账号继续沿用原有账密/取件地址格式；响应增加 totp_count，并在存在 2FA 导出时标记 totp_included=true。
+- src/autotoken/api_routes/account_management.py: /api/accounts/import-external 解析 邮箱----密码----2FA密钥；校验并规范化 TOTP base32 密钥；导入/更新账号密码后调用 save_totp_metadata 持久化密钥，状态为 enabled；响应增加 totp_imported。
+- web/src/components/Dashboard.vue: “导入账号”弹窗增加 2FA 格式说明与示例；导入结果显示 2FA 数量；接口返回启用 2FA 的账号后更新本地 twoFactorCompletedEmails，让已在表格里的账号立即显示“已设置”。
+- tests/unit/test_account_import_export_2fa.py: 新增后端红绿回归，覆盖 2FA 三段导出和 2FA 三段导入持久化状态。
+- web/scripts/test-dashboard-2fa-import-format.mjs: 新增前端静态回归，覆盖弹窗文案、示例、结果数量和本地“已设置”同步。
+
+SOURCE_PATHS:
+- D:\code\OpenSource\AutoTeam-F\src\autotoken\api_routes\account_exports.py
+- D:\code\OpenSource\AutoTeam-F\src\autotoken\api_routes\account_management.py
+- D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue
+- D:\code\OpenSource\AutoTeam-F\tests\unit\test_account_import_export_2fa.py
+- D:\code\OpenSource\AutoTeam-F\web\scripts\test-dashboard-2fa-import-format.mjs
+
+ARTIFACT_PATHS:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\account-import-export-2fa-20260902\MODIFIED_FILE.zip
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\account-import-export-2fa-20260902\DIFF_FILE.diff
+- VERIFICATION.txt: D:\code\OpenSource\AutoTeam-F\artifacts\account-import-export-2fa-20260902\VERIFICATION.txt
+- ROLLBACK.sh: D:\code\OpenSource\AutoTeam-F\artifacts\account-import-export-2fa-20260902\ROLLBACK.sh
+
+BASELINE:
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_account_import_export_2fa.py -q
+INPUT: pre-change implementation plus new regression tests
+LITERAL_OUTPUT_RESULT:
+FF                                                                       [100%]
+FAILED tests/unit/test_account_import_export_2fa.py::test_export_credentials_uses_three_part_2fa_format_for_enabled_accounts
+FAILED tests/unit/test_account_import_export_2fa.py::test_import_external_accounts_accepts_password_2fa_format_and_marks_enabled
+AssertionError: assert 'pro2x-0906@nbclas.com-----EaD5zylT23wAJv-----https://gptcode.external.cc.cd/' == 'pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW'
+KeyError: 'totp_imported'
+2 failed in 0.70s
+EXIT_STATUS=1
+
+MODIFIED:
+1) COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_account_import_export_2fa.py -q
+   INPUT: modified backend implementation
+   LITERAL_OUTPUT_RESULT:
+   ..                                                                       [100%]
+   2 passed in 0.63s
+   EXIT_STATUS=0
+2) COMMAND: Push-Location web; node scripts\test-dashboard-2fa-import-format.mjs; Pop-Location
+   INPUT: modified Dashboard.vue
+   LITERAL_OUTPUT_RESULT:
+   dashboard 2FA import format regression passed
+   EXIT_STATUS=0
+3) COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\api_routes\account_exports.py src\autotoken\api_routes\account_management.py
+   INPUT: modified backend implementation
+   LITERAL_OUTPUT_RESULT:
+   EXIT_STATUS=0
+4) COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit -q
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   100 passed in 8.68s
+   EXIT_STATUS=0
+5) COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+   INPUT: modified frontend
+   LITERAL_OUTPUT_RESULT:
+   dashboard 2FA import format regression passed
+   all frontend scripts passed: 48/48
+   EXIT_STATUS=0
+6) COMMAND: Push-Location web; npm run build; Pop-Location
+   INPUT: modified frontend bundle
+   LITERAL_OUTPUT_RESULT:
+   ✓ built in 2.56s
+   EXIT_STATUS=0
+7) COMMAND: git diff --check -- src\autotoken\api_routes\account_exports.py src\autotoken\api_routes\account_management.py web\src\components\Dashboard.vue tests\unit\test_account_import_export_2fa.py web\scripts\test-dashboard-2fa-import-format.mjs
+   INPUT: modified files
+   LITERAL_OUTPUT_RESULT:
+   EXIT_STATUS=0
+
+ROLLBACK:
+COMMAND: bash /mnt/d/code/OpenSource/AutoTeam-F/artifacts/account-import-export-2fa-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/account-import-export-2fa-20260902/rollback-test-root-20260902225127
+INPUT: separate copy rooted at D:\code\OpenSource\AutoTeam-F\artifacts\account-import-export-2fa-20260902\rollback-test-root-20260902225127
+LITERAL_OUTPUT_RESULT:
+rollback restored account import/export 2FA files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/account-import-export-2fa-20260902/rollback-test-root-20260902225127
+EXIT_STATUS=0
+HASH_CHECK src\autotoken\api_routes\account_exports.py restored=693A7D7861DE92C0780FD59B10AF6A1FAD7E168B5D0F934F3E67FCB3A9198A4B original=693A7D7861DE92C0780FD59B10AF6A1FAD7E168B5D0F934F3E67FCB3A9198A4B match=True
+HASH_CHECK src\autotoken\api_routes\account_management.py restored=35D117F10E7560CFA4A9E92330DF29BB2809B6553A093CCE4673B70BF8E9C5E9 original=35D117F10E7560CFA4A9E92330DF29BB2809B6553A093CCE4673B70BF8E9C5E9 match=True
+HASH_CHECK web\src\components\Dashboard.vue restored=726789D0ED8D5FD1283B3FC90114CA987C5331E15236D3BDA2CE5E0EB5CABCB4 original=726789D0ED8D5FD1283B3FC90114CA987C5331E15236D3BDA2CE5E0EB5CABCB4 match=True
+ABSENCE_CHECK tests\unit\test_account_import_export_2fa.py exists=False expected=False
+ABSENCE_CHECK web\scripts\test-dashboard-2fa-import-format.mjs exists=False expected=False
+RESTORED_BEHAVIOR=separate copy restored to original import/export behavior: 2FA export stayed opt-in append mode and import did not persist TOTP metadata
+RESTORED_STATUS=True
+
+RESTORED_BEHAVIOR_STATUS: rollback copy restored to original hashes and original behavior/status; current workspace keeps MODIFIED_FILE changed.

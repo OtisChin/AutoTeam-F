@@ -65,7 +65,6 @@ from autotoken.services import account_presentation as account_presentation_serv
 from autotoken.services import reconcile as reconcile_service
 from autotoken.services import registration, rotation, team_cleanup
 from autotoken.services.chatgpt_2fa_protocol import ChatGPT2FAProtocolSetupExecutor
-from autotoken.services.chatgpt_2fa_setup import ChatGPT2FASetupExecutor, ChatGPT2FASetupStatus
 from autotoken.settings.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autotoken.settings.config import get_playwright_launch_options
 from autotoken.storage.account_ops import delete_managed_account, fetch_team_state
@@ -1988,108 +1987,16 @@ def _enable_totp_mfa_after_auth_session(
         if callable(progress_callback):
             progress_callback(event)
 
-    if page is None:
-        executor = ChatGPT2FAProtocolSetupExecutor(
-            save_metadata=accounts.save_totp_metadata,
-            email_code_provider=email_code_provider,
-            proxy_url=proxy_url,
-        )
-        setup_result = executor.enable(target_email, session_data or {}, progress=_progress)
-    else:
-        executor = ChatGPT2FASetupExecutor(
-            page,
-            save_metadata=accounts.save_totp_metadata,
-            mark_recovery_required=accounts.mark_totp_recovery_required,
-            email_code_provider=email_code_provider,
-        )
-        setup_result = executor.enable(target_email, progress=_progress)
-    if page is not None and setup_result.status == ChatGPT2FASetupStatus.SECRET_UNAVAILABLE:
-        retry_result = _retry_totp_mfa_with_fresh_auth_session(
-            target_email,
-            session_data=session_data,
-            email_code_provider=email_code_provider,
-            progress_callback=progress_callback,
-            browser=_page_browser(page),
-        )
-        if retry_result is not None:
-            setup_result = retry_result
+    # 注册完成后的 2FA 设置统一使用仪表盘同款协议链路。
+    # Roxy / Cloak 浏览器注册只负责拿到可复用 auth_session，不再点击设置页 UI。
+    executor = ChatGPT2FAProtocolSetupExecutor(
+        save_metadata=accounts.save_totp_metadata,
+        email_code_provider=email_code_provider,
+        proxy_url=proxy_url,
+    )
+    setup_result = executor.enable(target_email, session_data or {}, progress=_progress)
     result["two_factor"] = setup_result.to_public_dict()
     return result
-
-
-def _retry_totp_mfa_with_fresh_auth_session(
-    email: str,
-    *,
-    session_data: dict | None,
-    email_code_provider=None,
-    progress_callback=None,
-    browser=None,
-):
-    if not isinstance(session_data, dict):
-        return None
-    cookies = session_data.get("cookies")
-    if not isinstance(cookies, list) or not cookies:
-        return None
-
-    def _run_with_browser(browser_obj):
-        context = browser_obj.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent=str(session_data.get("user_agent") or "")
-            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
-        try:
-            context.add_cookies(cookies)
-            retry_page = context.new_page()
-            executor = ChatGPT2FASetupExecutor(
-                retry_page,
-                save_metadata=accounts.save_totp_metadata,
-                mark_recovery_required=accounts.mark_totp_recovery_required,
-                email_code_provider=email_code_provider,
-            )
-
-            def _progress(event):
-                if callable(progress_callback):
-                    progress_callback(event)
-
-            return executor.enable(email, progress=_progress)
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
-
-    try:
-        if browser is not None:
-            return _run_with_browser(browser)
-
-        from playwright.sync_api import sync_playwright
-
-        playwright = sync_playwright().start()
-        launched_browser = None
-        try:
-            launch_kwargs = get_playwright_launch_options()
-            if sys.platform.startswith("win"):
-                launch_kwargs["slow_mo"] = 100
-            launched_browser = playwright.chromium.launch(**launch_kwargs)
-            return _run_with_browser(launched_browser)
-        finally:
-            try:
-                if launched_browser:
-                    launched_browser.close()
-            finally:
-                playwright.stop()
-    except Exception as exc:
-        logger.warning("[注册] fresh auth_session 重试 2FA 设置失败: %s", exc)
-        return None
-
-
-def _page_browser(page):
-    try:
-        context = getattr(page, "context", None)
-        browser = getattr(context, "browser", None)
-        return browser() if callable(browser) else browser
-    except Exception:
-        return None
 
 
 def _save_auth_from_session_page(
@@ -4374,28 +4281,21 @@ def _register_direct_once(
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
 
-        def _recent_auth_email_code_provider(target_email: str, *, issued_after=None) -> str:
-            code_timeout = _direct_register_code_timeout(mail_client, target_email)
-            deadline = time.time() + max(30, min(180, int(code_timeout or 90)))
-            while time.time() < deadline:
-                try:
-                    emails = mail_client.search_emails_by_recipient(
-                        target_email,
-                        size=10,
-                        account_id=cloudmail_account_id,
-                    )
-                except Exception:
-                    emails = []
-                for item in emails or []:
-                    try:
-                        code = str(mail_client.extract_verification_code(item) or "").strip()
-                    except Exception:
-                        code = ""
-                    if code and code not in used_email_codes:
-                        used_email_codes.add(code)
-                        return code
-                time.sleep(3)
-            return ""
+        def _recent_auth_email_code_provider(target_email: str, *, issued_after=None, exclude_codes=None) -> str:
+            excluded = set(used_email_codes)
+            excluded.update(str(code or "").strip() for code in (exclude_codes or set()) if str(code or "").strip())
+            code = _wait_for_direct_verification_code(
+                mail_client,
+                email=target_email,
+                account_id=cloudmail_account_id,
+                timeout=_direct_register_code_timeout(mail_client, target_email),
+                issued_after=issued_after,
+                exclude_codes=excluded,
+                strict_issued_after=True,
+            )
+            if code:
+                used_email_codes.add(code)
+            return code
 
         def _finish(success, session_data=None):
             try:
