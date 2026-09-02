@@ -1,0 +1,48 @@
+对象: 仪表盘单账号 2FA 设置按钮
+结果: 已修复并验证
+
+原因:
+- accountTwoFactorSetupInProgress(account) 里包含 twoFactorSubmitting.value / twoFactorTaskRunning.value 这种全局状态。
+- 单账号设置任务运行时，全局状态为 true，导致所有未设置账号行都被判定为“设置中...”。
+
+变更:
+- 行内“设置中...”只按该账号 email 是否在 twoFactorSubmittingEmails / twoFactorPendingTaskEmails / twoFactorTaskEmails 判断。
+- 表格行 v-memo 同时包含全局 2FA busy 和该行 2FA progress，确保目标行变“设置中...”，其它行刷新为禁用但仍显示“设置”。
+- 回归检查增加: 单账号任务不能让所有账号行显示“设置中...”。
+
+验证:
+1) 失败复现检查
+命令: node web/scripts/regression-dashboard-2fa-actions.mjs
+输出: AssertionError: a single-account 2FA task must not make every account row display 设置中...
+退出状态: 1
+
+2) 前端回归
+命令: node web/scripts/regression-dashboard-2fa-actions.mjs
+输出: dashboard 2FA actions regression passed
+退出状态: 0
+
+3) 前端生产包
+命令: npm --prefix web run build
+输出: vite v6.4.2 building for production... ✓ built in 2.46s；生成 index-DJiaIJLT.js 和 Dashboard-BiB0DG3L.js
+退出状态: 0
+
+4) 后端相关单测
+命令: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py tests/unit/test_task_snapshots.py -q
+输出: 4 passed in 0.40s
+退出状态: 0
+
+5) 代码检查
+命令: .\.venv\Scripts\python.exe -m ruff check src/autotoken/api_routes/task_actions.py src/autotoken/services/account_two_factor.py src/autotoken/core/task_snapshots.py tests/unit/test_account_two_factor_service.py tests/unit/test_task_snapshots.py
+输出: All checks passed!
+退出状态: 0
+
+6) 浏览器实测（拦截 POST，未真正设置 2FA）
+输入: 筛选“2FA 未设置”，点击第一行“设置”，让 /api/accounts/2fa/setup 保持 pending。
+结果: POST 调用次数=1；提交 body={"emails":["el17oikg@zuntuan.cc"]}；前 10 行中 settingRows 只有 1 行；该行 twoFa=设置中...；其余 9 行 twoFa=设置；其余 9 行按钮 disabled=true；页面加载包 index-DJiaIJLT.js。
+恢复状态: 已释放拦截请求，未执行真实 2FA 设置。
+
+工件路径:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-single-row-setting-state-20260902\MODIFIED_FILE_Dashboard.vue
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-single-row-setting-state-20260902\DIFF_FILE.patch
+- VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-single-row-setting-state-20260902\VERIFICATION.txt
+- ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-single-row-setting-state-20260902\ROLLBACK.sh

@@ -13,6 +13,11 @@ type Client struct {
 	pollInterval time.Duration
 }
 
+type WaitOptions struct {
+	IssuedAfterUnix int64
+	ExcludeCodes    map[string]bool
+}
+
 func NewClient(httpClient *http.Client, pollInterval time.Duration) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -24,14 +29,18 @@ func NewClient(httpClient *http.Client, pollInterval time.Duration) *Client {
 }
 
 func (c *Client) WaitForOTP(ctx context.Context, receiveCodeURL string) (string, error) {
+	return c.WaitForOTPWithOptions(ctx, receiveCodeURL, WaitOptions{})
+}
+
+func (c *Client) WaitForOTPWithOptions(ctx context.Context, receiveCodeURL string, opts WaitOptions) (string, error) {
 	if receiveCodeURL == "" {
 		return "", fmt.Errorf("receive_code_url is empty")
 	}
 	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 	for {
-		code, err := c.fetchOnce(ctx, receiveCodeURL)
-		if err == nil && code != "" {
+		code, err := c.fetchOnce(ctx, receiveCodeURL, opts)
+		if err == nil && code != "" && !opts.ExcludeCodes[code] {
 			return code, nil
 		}
 		select {
@@ -42,7 +51,7 @@ func (c *Client) WaitForOTP(ctx context.Context, receiveCodeURL string) (string,
 	}
 }
 
-func (c *Client) fetchOnce(ctx context.Context, receiveCodeURL string) (string, error) {
+func (c *Client) fetchOnce(ctx context.Context, receiveCodeURL string, opts WaitOptions) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, receiveCodeURL, nil)
 	if err != nil {
 		return "", err
@@ -57,7 +66,7 @@ func (c *Client) fetchOnce(ctx context.Context, receiveCodeURL string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if code := ExtractOTP(body); code != "" {
+	if code := ExtractOTPWithOptions(body, opts); code != "" {
 		return code, nil
 	}
 	return "", fmt.Errorf("no otp in response status=%d", resp.StatusCode)

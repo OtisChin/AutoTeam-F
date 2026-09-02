@@ -1,0 +1,92 @@
+Dashboard live 2FA status fix verification
+Date: 2026-09-02
+Git branch: main
+Changed branch/field: DASHBOARD_ACCOUNT_FIELDS now includes two_factor_enabled and totp_status. The dashboard compact account response therefore reaches the existing accountTwoFactorEnabled(account) branch: true/enabled -> 已设置; otherwise -> 设置.
+Root cause: the protocol task was submitted and completed, but /api/accounts?view=dashboard omitted both 2FA fields. The refreshed row therefore returned to 设置 and appeared to have no reaction.
+Restored behavior/status: rollback removes both fields from the dashboard compact projection, recreating the stale 设置-button behavior even when storage says the account has 2FA enabled.
+
+Four artifacts:
+MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-live-status-fix-20260902\MODIFIED_FILE.zip
+DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-live-status-fix-20260902\DIFF_FILE.patch
+VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-live-status-fix-20260902\VERIFICATION.txt
+ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-live-status-fix-20260902\ROLLBACK.sh
+
+Original hashes: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-live-status-fix-20260902\ORIGINAL_SHA256.txt
+Modified hashes: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-live-status-fix-20260902\MODIFIED_SHA256.txt
+
+BASELINE
+Command: .\.venv\Scripts\python.exe artifacts/dashboard-2fa-live-status-fix-20260902/FEATURE_CHECK.py artifacts/dashboard-2fa-live-status-fix-20260902/baseline
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: pre-fix account_overview.py dashboard projection.
+Literal output/result: FEATURE_CHECK_FAIL missing=two_factor_enabled,totp_status
+Exit status: 1
+Result: expected RED baseline.
+
+MODIFIED
+Command: .\.venv\Scripts\python.exe artifacts/dashboard-2fa-live-status-fix-20260902/FEATURE_CHECK.py .
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: live modified account_overview.py.
+Literal output/result: FEATURE_CHECK_PASS fields=two_factor_enabled,totp_status
+Exit status: 0
+
+UNIT TEST BASELINE
+Command: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py -q
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: new dashboard projection regression with the pre-fix projection.
+Literal output/result: FAILED tests/unit/test_account_two_factor_service.py::test_dashboard_projection_keeps_two_factor_status_fields - ValueError: 'two_factor_enabled' is not in list / 1 failed, 2 passed in 0.47s
+Exit status: 1
+
+UNIT TEST MODIFIED
+Command: .\.venv\Scripts\python.exe -m pytest tests/unit -q
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: final modified workspace.
+Literal output/result: 72 passed in 4.56s
+Exit status: 0
+
+TARGETED LINT
+Command: .\.venv\Scripts\python.exe -m ruff check src/autotoken/api_routes/account_overview.py tests/unit/test_account_two_factor_service.py
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: modified projection and regression test.
+Literal output/result: All checks passed!
+Exit status: 0
+
+DIFF CHECK
+Command: git diff --check -- src/autotoken/api_routes/account_overview.py tests/unit/test_account_two_factor_service.py
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: both modified files.
+Literal output/result: no whitespace errors; only the existing LF-to-CRLF working-copy notice was printed.
+Exit status: 0
+
+LIVE ROOT-CAUSE EVIDENCE
+Command/input: authenticated GET http://127.0.0.1:8787/api/tasks and GET /api/accounts before the projection fix.
+Literal output/result: a real setup-2fa task completed in 18.57s with total=1, failed=0, skipped=0; full account data showed one actual account with two_factor_enabled/totp_status enabled; dashboard compact fields reported two_factor_enabled index=-1 and totp_status index=-1.
+Exit status: 0
+
+SERVER RELOAD
+Command/input: stop verified AutoTeam-F listener PID 409704; start .\.venv\Scripts\autoteam.exe api -b with a hidden window; wait for /openapi.json.
+Literal output/result: server_ready=yes; port 8787 listening on PID 325948.
+Exit status: 0
+
+LIVE DASHBOARD PROJECTION
+Command/input: authenticated GET http://127.0.0.1:8787/api/accounts?view=dashboard after reload.
+Literal output/result: dashboard_rows=23 two_factor_enabled_field=True totp_status_field=True; full actual accounts=23 enabled=1.
+Exit status: 0
+
+LIVE ACTUAL-ACCOUNT CHECK
+Command/input: submit the already-enabled actual account 1***@echocli.cc to POST http://127.0.0.1:8787/api/accounts/2fa/setup, then poll its task and dashboard row. The already-enabled branch avoids changing its external 2FA state.
+Literal output/result: LIVE_ACCOUNT_CHECK=PASS account=1***@echocli.cc http_status=202 task_status=completed skipped=1 dashboard_status=enabled
+Exit status: 0
+Result: the real route accepted the actual account, the worker recognized its existing 2FA, and the dashboard compact row now reports enabled.
+
+ROLLBACK
+Command: bash artifacts/dashboard-2fa-live-status-fix-20260902/ROLLBACK.sh artifacts/dashboard-2fa-live-status-fix-20260902/ROLLBACK_TEST_COPY_RUN1
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: independent copy of both modified files.
+Literal output/result:
+restored: artifacts/dashboard-2fa-live-status-fix-20260902/ROLLBACK_TEST_COPY_RUN1
+behavior: dashboard compact accounts omit two_factor_enabled and totp_status again
+ROLLBACK_HASH_CHECK=PASS files=2
+FEATURE_CHECK_FAIL missing=two_factor_enabled,totp_status
+ROLLBACK_EXIT=0 FEATURE_EXIT=1
+Exit status: 0
+Restored behavior/status: both rollback-copy hashes match ORIGINAL_SHA256.txt and the missing-field behavior is restored. The live workspace and MODIFIED_FILE.zip remain fixed.

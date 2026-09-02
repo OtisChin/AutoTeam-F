@@ -47,7 +47,9 @@ def register_once(
     proxy: str | None = None,
     fingerprint_profile: str | None = None,
 ) -> tuple[bool, dict]:
-    timeout_seconds = max(30, int(os.environ.get("OTP_TIMEOUT", "60") or 60))
+    provider_name = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+    default_timeout = "120" if provider_name == "icloud" else "60"
+    timeout_seconds = max(30, int(os.environ.get("OTP_TIMEOUT", default_timeout) or default_timeout))
     client = GoProtocolRegisterClient(timeout=max(90.0, float(timeout_seconds + 30)))
     client.health()
     options = {

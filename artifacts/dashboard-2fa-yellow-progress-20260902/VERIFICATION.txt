@@ -1,0 +1,81 @@
+Dashboard 2FA yellow/progress verification
+Date: 2026-09-02
+Git branch: main
+Changed branch/field: row and batch 2FA setup buttons use yellow-* classes. During POST submission, twoFactorSubmittingEmails contains the submitted account emails; the matching row button displays 设置中.... During a pending/running setup-2fa task, twoFactorTaskEmails keeps the matching row at 设置中.... The batch button displays 设置中... while either submission or task execution is active.
+Restored behavior/status: rollback restores the prior green 2FA setup buttons and removes the local submission-email state, so row progress returns to the prior task-only behavior.
+
+Four artifacts:
+MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-yellow-progress-20260902\MODIFIED_FILE.zip
+DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-yellow-progress-20260902\DIFF_FILE.patch
+VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-yellow-progress-20260902\VERIFICATION.txt
+ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-yellow-progress-20260902\ROLLBACK.sh
+
+Original hashes: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-yellow-progress-20260902\ORIGINAL_SHA256.txt
+Modified hashes: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-yellow-progress-20260902\MODIFIED_SHA256.txt
+
+BASELINE
+Command: node artifacts/dashboard-2fa-yellow-progress-20260902/FEATURE_CHECK.mjs artifacts/dashboard-2fa-yellow-progress-20260902/baseline
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: pre-request Dashboard.vue and regression script, including the green setup buttons and task-only row progress state.
+Literal output/result: FEATURE_CHECK_FAIL missing=yellow_row_button,yellow_batch_button,local_submitting_set,immediate_progress_label
+Exit status: 1
+Result: expected RED baseline.
+
+MODIFIED
+Command: node artifacts/dashboard-2fa-yellow-progress-20260902/FEATURE_CHECK.mjs .
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: live modified Dashboard.vue.
+Literal output/result: FEATURE_CHECK_PASS checks=5
+Exit status: 0
+Result: yellow row/batch styles and immediate/running progress labels are present.
+
+TARGETED REGRESSION
+Command: node web/scripts/regression-dashboard-2fa-actions.mjs
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: live modified dashboard and 2FA action contract.
+Literal output/result: dashboard 2FA actions regression passed
+Exit status: 0
+
+FULL FRONTEND REGRESSIONS
+Command: npm run test:frontend-regressions
+Working directory: D:\code\OpenSource\AutoTeam-F\web
+Input: live modified frontend workspace.
+Literal output/result: all frontend scripts passed: 45/45
+Exit status: 0
+
+PRODUCTION BUILD
+Command: npm run build
+Working directory: D:\code\OpenSource\AutoTeam-F\web
+Input: live modified frontend workspace.
+Literal output/result: ✓ 76 modules transformed. / ✓ built in 2.50s
+Exit status: 0
+
+DIFF CHECK
+Command: git diff --check -- web/src/components/Dashboard.vue web/scripts/regression-dashboard-2fa-actions.mjs
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: the two live modified files.
+Literal output/result: no whitespace errors; only LF-to-CRLF working-copy notices were printed.
+Exit status: 0
+
+VISUAL CHECK — IDLE
+Command/input: local production fixture at http://127.0.0.1:8800/ with unset accounts.
+Literal output/result: text="设置"; class="... border-yellow-500/30 bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20"; consoleErrors=[]
+Exit status: 0
+
+VISUAL CHECK — RUNNING
+Command/input: local production fixture at http://127.0.0.1:8801/ with setup-2fa status=running and params.emails=[benchmark-1@example.com].
+Literal output/result: text="设置中..."; class="... border-yellow-500/20 bg-yellow-500/5 text-yellow-300/70 cursor-wait"; enabled=false; matchingRowCount=1; batchText="设置中..."; consoleErrors=[]
+Exit status: 0
+
+ROLLBACK
+Command: bash artifacts/dashboard-2fa-yellow-progress-20260902/ROLLBACK.sh artifacts/dashboard-2fa-yellow-progress-20260902/ROLLBACK_TEST_COPY_RUN1
+Working directory: D:\code\OpenSource\AutoTeam-F
+Input: independent copy of both modified files.
+Literal output/result:
+restored: artifacts/dashboard-2fa-yellow-progress-20260902/ROLLBACK_TEST_COPY_RUN1
+behavior: 2FA setup buttons return to green and the local submission label returns to task-only progress
+ROLLBACK_HASH_CHECK=PASS files=2
+FEATURE_CHECK_FAIL missing=yellow_row_button,yellow_batch_button,local_submitting_set,immediate_progress_label
+ROLLBACK_EXIT=0 FEATURE_EXIT=1
+Exit status: 0
+Restored behavior/status: both files match ORIGINAL_SHA256.txt. The live workspace and MODIFIED_FILE.zip remain on the yellow/immediate-progress implementation.

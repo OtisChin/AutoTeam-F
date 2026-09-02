@@ -6,6 +6,8 @@ import os
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from loguru import logger
+
 from autotoken.core.normalization import normalized_email
 from autotoken.mail.base import wait_for_openai_otp
 from autotoken.services.chatgpt_2fa_protocol import ChatGPT2FAProtocolSetupExecutor
@@ -73,16 +75,31 @@ def setup_accounts_two_factor_protocol(
     skipped: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
 
+    logger.info("[2FA] 协议设置开始：{} 个账号", len(targets))
+
     for index, email in enumerate(targets, start=1):
+        logger.info("[2FA] 正在处理账号 {}/{}：{}", index, len(targets), email)
+        emit(
+            {
+                "stage": "account_2fa_account_started",
+                "email": email,
+                "current": index,
+                "total": len(targets),
+                "message": f"正在设置 2FA：{email} ({index}/{len(targets)})",
+            }
+        )
         account = accounts_by_email.get(email)
         if account is None:
+            logger.warning("[2FA] 账号不存在：{}", email)
             failed.append({"email": email, "reason": "account_not_found"})
             continue
         if account_two_factor_enabled(account):
+            logger.info("[2FA] 跳过已设置账号：{}", email)
             skipped.append({"email": email, "reason": "already_enabled"})
             continue
         session_data = load_session(email)
         if not isinstance(session_data, dict) or not session_data:
+            logger.warning("[2FA] 缺少协议会话：{}", email)
             failed.append({"email": email, "reason": "auth_session_missing"})
             continue
 
@@ -123,8 +140,14 @@ def setup_accounts_two_factor_protocol(
             result = executor.enable(email, session_data, progress=emit)
             public_result = result.to_public_dict()
             if result.status == ChatGPT2FASetupStatus.ENABLED:
+                logger.info("[2FA] 设置成功：{}", email)
                 enabled.append({"email": email, "two_factor": public_result})
             else:
+                logger.warning(
+                    "[2FA] 设置失败：{} reason={}",
+                    email,
+                    public_result.get("reason") or public_result.get("status") or "setup_failed",
+                )
                 failed.append(
                     {
                         "email": email,
@@ -132,6 +155,7 @@ def setup_accounts_two_factor_protocol(
                     }
                 )
         except Exception as exc:
+            logger.exception("[2FA] 设置异常：{}", email)
             failed.append({"email": email, "reason": str(exc)})
         finally:
             emit(
@@ -145,6 +169,14 @@ def setup_accounts_two_factor_protocol(
                     "failed": len(failed),
                 }
             )
+
+    logger.info(
+        "[2FA] 协议设置结束：total={} enabled={} skipped={} failed={}",
+        len(targets),
+        len(enabled),
+        len(skipped),
+        len(failed),
+    )
 
     return {
         "total": len(targets),

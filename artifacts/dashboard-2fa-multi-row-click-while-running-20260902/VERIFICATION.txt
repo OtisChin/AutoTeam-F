@@ -1,0 +1,54 @@
+对象: 仪表盘 2FA 单账号任务运行时继续点击其它账号设置
+结果: 已修复并验证
+
+原因:
+- 前端行内按钮之前使用 twoFactorSubmitting || twoFactorTaskRunning 做 disabled，任一 2FA 任务运行时其它账号也被禁用。
+- submitAccountTwoFactorSetup 顶部也用 twoFactorSubmitting || twoFactorTaskRunning 直接 return，放开按钮后仍会被函数挡住。
+- 后端 setup-2fa 默认走独占任务，同组 2FA 运行时第二个任务会被 409 挡住。
+
+变更:
+- web/src/components/Dashboard.vue: 行内按钮 disabled 改为 accountTwoFactorSetupInProgress(acc)，只禁用正在设置的账号。
+- web/src/components/Dashboard.vue: submitAccountTwoFactorSetup 不再因为全局 2FA 任务运行直接 return；只过滤已经在设置中的账号。
+- web/src/components/Dashboard.vue: twoFactorTasks 聚合所有 active setup-2fa 任务；twoFactorTaskEmails 聚合所有任务邮箱。
+- web/src/components/Dashboard.vue: twoFactorSubmittingEmails / twoFactorPendingTaskEmails 改为合并/按邮箱移除，避免多个点击互相覆盖。
+- src/autotoken/api_routes/task_actions.py: setup-2fa 调用 start_task 时传 exclusive=False，允许多个账号设置任务进入流程。
+- tests/unit/test_account_two_factor_service.py: 断言 setup-2fa 是非独占任务。
+- web/scripts/regression-dashboard-2fa-actions.mjs: 断言行内按钮只按该账号 in-progress 禁用，并聚合所有 setup-2fa 任务。
+
+验证:
+1) 后端并发要求 RED
+命令: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py::test_task_route_submits_protocol_2fa_background_job -q
+输出: KeyError: 'exclusive'
+退出状态: 1
+
+2) 前端回归
+命令: node web/scripts/regression-dashboard-2fa-actions.mjs
+输出: dashboard 2FA actions regression passed
+退出状态: 0
+
+3) 前端生产包
+命令: npm --prefix web run build
+输出: vite v6.4.2 building for production... ✓ built in 2.40s；生成 index-l0xCyudR.js 和 Dashboard-B7u25t3q.js
+退出状态: 0
+
+4) 后端相关单测
+命令: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py tests/unit/test_task_snapshots.py -q
+输出: 4 passed in 0.56s
+退出状态: 0
+
+5) 代码检查
+命令: .\.venv\Scripts\python.exe -m ruff check src/autotoken/api_routes/task_actions.py src/autotoken/services/account_two_factor.py src/autotoken/core/task_snapshots.py tests/unit/test_account_two_factor_service.py tests/unit/test_task_snapshots.py
+输出: All checks passed!
+退出状态: 0
+
+6) 浏览器实测（拦截 POST，未真正设置 2FA）
+输入: 筛选“2FA 未设置”；点击第 1 行设置并保持 pending；再点击第 2 行设置。
+结果: 第 1 次点击后第 1 行 twoFa=设置中...，第 2 行仍显示“设置”且 disabled=false；第 2 次点击成功触发第二个 POST；POST 调用次数=2；postBodies=[{"emails":["el17oikg@zuntuan.cc"]}, {"emails":["28fzu31y@nl78.com"]}]；第 3/4 行仍显示“设置”且可点击；页面加载包 index-l0xCyudR.js。
+退出状态: 0
+恢复状态: 已释放拦截请求，未执行真实 2FA 设置。
+
+工件路径:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-multi-row-click-while-running-20260902\MODIFIED_FILE_Dashboard.vue
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-multi-row-click-while-running-20260902\DIFF_FILE.patch
+- VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-multi-row-click-while-running-20260902\VERIFICATION.txt
+- ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-multi-row-click-while-running-20260902\ROLLBACK.sh

@@ -256,6 +256,8 @@ const largeAccounts = Array.from({ length: LARGE_ACCOUNT_COUNT }, (_, index) => 
   account_type: index % 3 === 0 ? 'plus' : 'free',
   seat_type: index % 3 === 0 ? 'plus' : 'free',
   trial_eligible: index % 7 === 0,
+  two_factor_enabled: index % 8 === 0,
+  totp_status: index % 8 === 0 ? 'enabled' : 'disabled',
   is_main_account: index === 0,
   created_at: localDaySeconds + index,
   registered_at: localDaySeconds + index,
@@ -320,7 +322,7 @@ const largeAccounts = Array.from({ length: LARGE_ACCOUNT_COUNT }, (_, index) => 
   },
 }))
 const compactFields = Object.keys(largeAccounts[0])
-assert.equal(compactFields.length, 44, 'the 20k benchmark must cover the full production Dashboard DTO field set')
+assert.equal(compactFields.length, 46, 'the 20k benchmark must cover the full production Dashboard DTO field set')
 const accountOverviewSource = readFileSync(accountOverviewPath, 'utf8')
 function pythonStringTuple(name) {
   const body = accountOverviewSource.match(new RegExp(`${name}\\s*=\\s*\\(([\\s\\S]*?)\\n\\)`))?.[1] || ''

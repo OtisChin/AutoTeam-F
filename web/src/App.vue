@@ -86,7 +86,7 @@
         <div class="workspace-main">
           <!-- 页面内容 -->
           <Dashboard v-if="currentPage === 'dashboard'"
-            :status="status" :loading="loading" :running-task="busyTask"
+            :status="status" :loading="loading" :running-task="busyTask" :tasks="tasks"
             :accounts-error="accountsError" :last-successful-at="lastSuccessfulAt"
             :refresh-quota-result-task="lastDashboardRefreshQuotaTask"
             :admin-status="adminStatus"

@@ -7530,7 +7530,11 @@ _account_register_task_endpoints = {
 post_add = _account_register_task_endpoints["post_add"]
 
 
-_task_actions_router = create_task_actions_router(start_task=_start_task)
+_task_actions_router = create_task_actions_router(
+    start_task=_start_task,
+    append_task_progress=lambda task_id, progress: _append_task_progress(task_id, progress),
+    logger=logger,
+)
 app.include_router(_task_actions_router)
 _task_actions_endpoints = {route.endpoint.__name__: route.endpoint for route in _task_actions_router.routes}
 post_check = _task_actions_endpoints["post_check"]

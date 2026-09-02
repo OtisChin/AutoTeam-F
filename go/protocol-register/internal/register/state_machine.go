@@ -186,13 +186,34 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 		return *attempt.failure("network_error", errors.New("mailbox client unavailable"), "mail_client", true)
 	}
 	defer mailHTTPClient.CloseIdleConnections()
-	code, err := mailbridge.NewClient(mailHTTPClient, 3*time.Second).WaitForOTP(ctx, req.Mail.ReceiveCodeURL)
-	if err != nil {
-		return *attempt.failure("email_code_timeout", errors.New("email OTP not received within timeout"), "email_otp", false)
+	mailClient := mailbridge.NewClient(mailHTTPClient, 3*time.Second)
+	excludeCodes := map[string]bool{}
+	issuedAfterUnix := req.Mail.IssuedAfterUnix
+	if attempt.emailOtpIssuedAfterUnix > 0 {
+		issuedAfterUnix = attempt.emailOtpIssuedAfterUnix
 	}
-	sessionData, failure := attempt.runFinalAuthPhase(deviceID, code)
-	if failure != nil {
-		return *failure
+	var sessionData map[string]any
+	for otpAttempt := 1; otpAttempt <= 2; otpAttempt++ {
+		code, err := mailClient.WaitForOTPWithOptions(ctx, req.Mail.ReceiveCodeURL, mailbridge.WaitOptions{
+			IssuedAfterUnix: issuedAfterUnix,
+			ExcludeCodes:    excludeCodes,
+		})
+		if err != nil {
+			return *attempt.failure("email_code_timeout", errors.New("email OTP not received within timeout"), "email_otp", false)
+		}
+		excludeCodes[code] = true
+		var failure *model.RegisterResponse
+		sessionData, failure = attempt.runFinalAuthPhase(deviceID, code)
+		if failure == nil {
+			break
+		}
+		if failure.Error == nil || failure.Error.Step != "verify_email_otp" || otpAttempt >= 2 {
+			return *failure
+		}
+		issuedAfterUnix = time.Now().Unix()
+		if err := api.ResendEmailOTP(ctx); err != nil {
+			return *attempt.failure("register_failed", err, "resend_email_otp", true)
+		}
 	}
 	sessionData["email"] = req.Email
 	raw := map[string]any{
@@ -207,14 +228,15 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 }
 
 type registrationAttempt struct {
-	engine   *HTTPRegisterEngine
-	ctx      context.Context
-	request  model.RegisterRequest
-	client   *http.Client
-	profile  fingerprint.Profile
-	api      *openai.Client
-	progress *Progress
-	metadata map[string]string
+	engine                  *HTTPRegisterEngine
+	ctx                     context.Context
+	request                 model.RegisterRequest
+	client                  *http.Client
+	profile                 fingerprint.Profile
+	api                     *openai.Client
+	progress                *Progress
+	metadata                map[string]string
+	emailOtpIssuedAfterUnix int64
 }
 
 func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResponse) {
@@ -261,6 +283,7 @@ func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResp
 			return "", a.authFailure(err, "register_password", "register_failed", true)
 		}
 	}
+	a.emailOtpIssuedAfterUnix = time.Now().Unix()
 	if err := a.api.SendEmailOTP(a.ctx); err != nil {
 		return "", a.failure("register_failed", err, "send_email_otp", true)
 	}

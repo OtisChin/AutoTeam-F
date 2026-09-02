@@ -1,0 +1,60 @@
+对象: 仪表盘行内 2FA 设置按钮 / 后端 2FA HTTP 500 / 后端 2FA 日志
+结果: 已修复并验证
+
+原因:
+- 行内按钮不更新: 表格行使用了 v-memo 缓存，缓存依赖里没有 2FA 设置中状态；所以顶部批量按钮会更新，行内“设置”按钮被缓存住。
+- HTTP 500: 当前 API 注入的是 Python 标准 logging，之前写成 loguru 的 {} 占位并带参数，标准 logging 会按 % 格式化，触发 TypeError: not all arguments converted during string formatting，导致接口返回非 JSON 500。
+
+变更点:
+- web/src/components/Dashboard.vue: 表格行 v-memo 加入 accountTwoFactorSetupInProgress(acc)，行内按钮在设置过程中重绘为“设置中...”。
+- web/scripts/regression-dashboard-2fa-actions.mjs: 增加回归检查，防止漏掉行缓存依赖。
+- src/autotoken/api_routes/task_actions.py: 2FA 路由日志改为预格式化文本后再交给日志器，兼容标准 logging 和 loguru。
+- tests/unit/test_account_two_factor_service.py: 用标准 logging 风格复现并验证不会再抛 TypeError，且日志包含实际进度。
+
+验证:
+1) 复现后端 500 根因（修复前）
+命令: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py::test_task_route_submits_protocol_2fa_background_job -q
+输出: TypeError: not all arguments converted during string formatting
+退出状态: 1
+
+2) 后端 500 修复后单测
+命令: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py::test_task_route_submits_protocol_2fa_background_job -q
+输出: 1 passed in 0.38s
+退出状态: 0
+
+3) 实际接口形态验证（标准 logging + FastAPI TestClient）
+输入: POST /api/accounts/2fa/setup {"emails":["one@example.com"]}
+输出: HTTP 202；JSON {'task_id': 'task-2fa', 'command': 'setup-2fa', 'status': 'pending'}；RUN {'total': 1, 'enabled': [], 'skipped': [], 'failed': []}
+退出状态: 0
+
+4) 完整相关后端单测
+命令: .\.venv\Scripts\python.exe -m pytest tests/unit/test_account_two_factor_service.py tests/unit/test_task_snapshots.py -q
+输出: 4 passed in 0.40s
+退出状态: 0
+
+5) 代码检查
+命令: .\.venv\Scripts\python.exe -m ruff check src/autotoken/api_routes/task_actions.py src/autotoken/services/account_two_factor.py src/autotoken/core/task_snapshots.py tests/unit/test_account_two_factor_service.py tests/unit/test_task_snapshots.py
+输出: All checks passed!
+退出状态: 0
+
+6) 前端回归
+命令: node web/scripts/regression-dashboard-2fa-actions.mjs
+输出: dashboard 2FA actions regression passed
+退出状态: 0
+
+7) 前端生产包
+命令: npm --prefix web run build
+输出: vite v6.4.2 building for production... ✓ built in 2.50s；生成 index-CzExM0Yq.js 和 Dashboard-QPz87Prm.js
+退出状态: 0
+
+8) 浏览器实测（已拦截 /api/accounts/2fa/setup，未真正给账号设置 2FA）
+输入: 筛选“2FA 未设置”，点击第一行“设置”，让请求保持 pending。
+输出/结果: POST 调用次数=1；行内按钮文本=设置中...；行内按钮 disabled=true；行内按钮 class 包含 cursor-wait/yellow；批量按钮文本=设置中...；页面加载前端包=index-CzExM0Yq.js。
+退出状态: 0
+恢复状态: 已释放拦截请求，页面未执行真实 2FA 设置。
+
+工件路径:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-row-state-vmemo-fix-20260902\MODIFIED_FILE_Dashboard.vue
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-row-state-vmemo-fix-20260902\DIFF_FILE.patch
+- VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-row-state-vmemo-fix-20260902\VERIFICATION.txt
+- ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-2fa-row-state-vmemo-fix-20260902\ROLLBACK.sh

@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urljoin
 
 from autotoken import accounts
 from autotoken.auth.auth_prompts import dismiss_passkey_prompt
@@ -357,19 +358,14 @@ def _sync_provider_registered_email(
         return
     if provider == "icloud":
         try:
-            from autotoken.storage.icloud_pool import mark_unavailable_email
+            from autotoken.storage.icloud_pool import mark_registered_email, mark_unavailable_email
 
-            mark_unavailable_email(email, source=source or "account_deactivated")
-            add_account(email, password, cloudmail_account_id=email, seat_type=SEAT_CODEX, mail_provider="icloud")
-            update_account(
-                email,
-                status=STATUS_FAIL,
-                account_type=ACCOUNT_TYPE_FREE,
-                seat_type=SEAT_CODEX,
-                last_error=source or "registered",
-            )
+            if str(source or "").strip().lower() == "account_deactivated":
+                mark_unavailable_email(email, source=source)
+            else:
+                mark_registered_email(email, source=source or "register_success")
         except Exception as exc:
-            logger.debug("[icloud] 标记不可复用邮箱失败: %s", exc, exc_info=True)
+            logger.debug("[icloud] 同步邮箱池状态失败: %s", exc, exc_info=True)
         return
 
 
@@ -3707,8 +3703,31 @@ def _switch_direct_signup_to_password(page, *, timeout=15):
     """Switch a passwordless signup OTP page to the password creation branch."""
 
     click_result = {}
+    selector = (
+        "a[href*='/create-account/password'], "
+        "[role='link'][href*='/create-account/password'], "
+        'a:has-text("Continue with password"), button:has-text("Continue with password"), '
+        'a:has-text("Continue with a password"), button:has-text("Continue with a password"), '
+        'a:has-text("使用密码继续"), button:has-text("使用密码继续"), '
+        'a:has-text("使用密碼繼續"), button:has-text("使用密碼繼續"), '
+        'a:has-text("パスワードで続行"), button:has-text("パスワードで続行")'
+    )
     try:
-        click_result = page.evaluate(
+        control = page.locator(selector).first
+        if control.is_visible(timeout=1000) and control.is_enabled(timeout=500):
+            href = ""
+            try:
+                href = str(control.get_attribute("href", timeout=500) or "").strip()
+            except Exception:
+                href = ""
+            control.click(timeout=2500, no_wait_after=True)
+            click_result = {"clicked": True, "href": href or "actionable_locator"}
+    except Exception as exc:
+        logger.debug("[直接注册] 密码注册入口可操作性点击失败，改用 DOM click: %s", exc)
+
+    try:
+        if not click_result.get("clicked"):
+            click_result = page.evaluate(
             r"""() => {
                 const visible = el => {
                     if (!el) return false;
@@ -3722,13 +3741,19 @@ def _switch_direct_signup_to_password(page, *, timeout=15):
                 const control = controls.find(el => {
                     if (!visible(el)) return false;
                     const href = String(el.getAttribute('href') || '').toLowerCase();
+                    const text = String(el.textContent || '').replace(/\s+/g, '').toLowerCase();
                     const attrs = [
                         href, el.id, el.getAttribute('aria-label'), el.getAttribute('title'),
                         el.getAttribute('data-testid'), el.getAttribute('data-login-web-auth-control'),
                         el.getAttribute('data-dd-action-name'), el.className
                     ].join(' ').toLowerCase();
                     return href.includes('/create-account/password')
-                      || attrs.includes('/create-account/password');
+                      || attrs.includes('/create-account/password')
+                      || text.includes('continuewithpassword')
+                      || text.includes('continuewithapassword')
+                      || text.includes('使用密码继续')
+                      || text.includes('使用密碼繼續')
+                      || text.includes('パスワードで続行');
                 });
                 if (!control) return {clicked:false, reason:'password_signup_control_missing'};
                 const href = String(control.getAttribute('href') || '/create-account/password');
@@ -3736,7 +3761,7 @@ def _switch_direct_signup_to_password(page, *, timeout=15):
                 control.click();
                 return {clicked:true, href};
             }"""
-        ) or {}
+            ) or {}
     except Exception as exc:
         logger.debug("[直接注册] 密码注册入口 DOM 点击失败，改用地址跳转: %s", exc)
 
@@ -3750,11 +3775,24 @@ def _switch_direct_signup_to_password(page, *, timeout=15):
 
     logger.info("[直接注册] 邮箱验证码页已点击“使用密码继续”")
 
-    return _wait_for_direct_register_step(
-        page,
-        {"password", "code", "profile", "completed", "google", "email"},
-        timeout=timeout,
-    )
+    next_step = _wait_for_direct_step_change(page, "code", timeout=timeout)
+    if next_step != "code":
+        return next_step
+
+    logger.info("[直接注册] 密码入口点击后未跳转，直接打开 create-account/password 兜底")
+    try:
+        target_href = str(click_result.get("href") or "").strip()
+        target_url = "https://auth.openai.com/create-account/password"
+        if target_href and target_href != "actionable_locator":
+            target_url = urljoin(str(page.url or "https://auth.openai.com/"), target_href)
+        page.goto(
+            target_url,
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+    except Exception as exc:
+        logger.warning("[直接注册] create-account/password 兜底跳转失败: %s", exc)
+    return _detect_direct_register_step(page)
 
 
 def _wait_for_direct_register_step(page, allowed_steps, timeout=15):
@@ -4542,10 +4580,11 @@ def _register_direct_once(
         _safe_invite_screenshot(page, "direct_03b_before_password.png")
 
         if password_step == "code":
-            # Current browser signup is passwordless: the OTP page owns the
-            # active server transaction. Switching to create-account/password
-            # invalidates that transaction in both Roxy and Cloak.
-            logger.info("[直接注册] 已进入邮箱验证码页，继续 passwordless OTP 流程")
+            password_step = _switch_direct_signup_to_password(page, timeout=15)
+            logger.info("[直接注册] 验证码页切换密码注册后的状态: %s | URL: %s", password_step, page.url)
+            if password_step == "code":
+                logger.error("[直接注册] 验证码页没有可用的密码注册入口，终止本次注册，避免保存无效密码")
+                return _finish(False)
 
         try:
             for attempt in range(2):

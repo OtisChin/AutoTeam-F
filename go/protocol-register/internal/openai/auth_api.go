@@ -175,6 +175,12 @@ func (c *Client) SendEmailOTP(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodGet, c.BaseURL+"/api/accounts/email-otp/send", nil, nil, c.authAPIHeaders(c.BaseURL+"/create-account/password"))
 }
 
+func (c *Client) ResendEmailOTP(ctx context.Context) error {
+	headers := c.authAPIHeaders(c.BaseURL + "/email-verification")
+	headers.Set("Content-Type", "application/json")
+	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/email-otp/resend", map[string]any{}, nil, headers)
+}
+
 func (c *Client) VerifyEmailOTP(ctx context.Context, code string) (AuthStep, error) {
 	var out authStepResponse
 	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/email-otp/validate", map[string]any{"code": code}, &out, c.authAPIHeaders(c.BaseURL+"/email-verification"))

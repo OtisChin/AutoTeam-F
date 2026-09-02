@@ -301,7 +301,7 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
     from autotoken.mail.base import normalize_email_addr
     from autotoken.mail.icloud import ICloudMailProvider
     from autotoken.storage.accounts import load_accounts
-    from autotoken.storage.icloud_pool import unavailable_email_records
+    from autotoken.storage.icloud_pool import registered_email_records, unavailable_email_records
 
     content = read_text(target) if target.exists() else ""
     local_accounts = {
@@ -310,6 +310,7 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
         if account.get("email")
     }
     unavailable_records = unavailable_email_records()
+    registered_records = registered_email_records()
     skipped_emails = ICloudMailProvider._registered_emails()
 
     entries: list[dict[str, Any]] = []
@@ -334,7 +335,7 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
             or local_status == "fail"
             or "account_deactivated" in last_error
         )
-        registered = bool(local_account) and not local_unavailable
+        registered = (email in registered_records or bool(local_account)) and not local_unavailable
         unavailable = local_unavailable or (email in skipped_emails and not registered)
         status = "registered" if registered else ("unavailable" if unavailable else "available")
         unavailable_reason = last_error or unavailable_source
@@ -390,6 +391,7 @@ def _load_generic_api_pool_status(target: Path, *, include_all: bool = False) ->
     }
     registered_records = registered_email_records()
     unavailable_records = unavailable_email_records()
+    registered_records = registered_email_records()
     skipped_emails = GenericApiMailProvider._registered_emails()
 
     entries: list[dict[str, Any]] = []

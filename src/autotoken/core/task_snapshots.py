@@ -117,10 +117,21 @@ def task_list_snapshot(task: dict[str, Any] | None) -> dict[str, Any]:
     """Lightweight task snapshot for frequently polled task lists."""
 
     snapshot = task_public_snapshot(task)
+    raw_params = snapshot.get("params")
     progress_events = snapshot.pop("progress_events", None)
     if isinstance(progress_events, list):
         snapshot["progress_event_count"] = len(progress_events)
     snapshot["params"] = compact_task_params(snapshot.get("params"))
+    if (
+        snapshot.get("command") == "setup-2fa"
+        and isinstance(raw_params, dict)
+        and isinstance(raw_params.get("emails"), list)
+    ):
+        snapshot["params"]["emails"] = [
+            str(email)
+            for email in raw_params.get("emails") or []
+            if str(email or "").strip()
+        ]
     snapshot["progress"] = compact_task_progress(snapshot.get("progress"))
     snapshot["result"] = compact_task_result(snapshot.get("result"))
     if snapshot.get("error"):

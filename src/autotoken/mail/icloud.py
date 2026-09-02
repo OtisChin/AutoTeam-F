@@ -252,9 +252,10 @@ class ICloudMailProvider(MailProvider):
     def _registered_emails() -> set[str]:
         try:
             from autotoken.storage.accounts import load_accounts
-            from autotoken.storage.icloud_pool import list_unavailable_emails
+            from autotoken.storage.icloud_pool import list_registered_emails, list_unavailable_emails
 
             emails = {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
+            emails.update(list_registered_emails())
             emails.update(list_unavailable_emails())
             return emails
         except Exception:
