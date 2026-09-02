@@ -1,0 +1,4 @@
+warning: in the working copy of 'src/autotoken/api_routes/account_login.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/autotoken/core/task_snapshots.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS=0

@@ -1,0 +1,6 @@
+ROLLBACK_COMMAND: bash -lc "'/mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-20260902/ROLLBACK.sh' '/mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-20260902/rollback-test-root'"
+ROLLBACK_OUTPUT: rollback restored Dashboard.vue and removed test-dashboard-oauth-badge.mjs under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-20260902/rollback-test-root
+ROLLBACK_EXIT_STATUS: 0
+RESTORED_HASHES: MATCH  938951D7988A09AAAB68F25FAE78250D0EF630055A5B82F1EC915D5EFA21D215  web\src\components\Dashboard.vue
+REMOVED  web\scripts\test-dashboard-oauth-badge.mjs: True
+RESTORED_STATUS: original behavior restored on rollback-test-root

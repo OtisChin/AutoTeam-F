@@ -1,0 +1,111 @@
+--- original/web/src/components/Dashboard.vue
++++ modified/web/src/components/Dashboard.vue
+@@ -927,7 +927,6 @@
+               <th class="px-4 py-3 font-medium whitespace-nowrap">2FA</th>
+               <th class="px-4 py-3 font-medium">绑定渠道</th>
+               <th class="px-4 py-3 font-medium">账密导出</th>
+-              <th class="px-4 py-3 font-medium">导出时间</th>
+               <th class="px-4 py-3 font-medium">Hub同步</th>
+               <th class="px-4 py-3 font-medium text-right">5h 剩余</th>
+               <th class="px-4 py-3 font-medium text-right">周 剩余</th>
+@@ -953,7 +952,7 @@
+           </thead>
+           <tbody>
+             <tr v-if="!filteredAccounts.length">
+-              <td class="px-4 py-8 text-center text-gray-500" colspan="15">没有匹配的账号</td>
++              <td class="px-4 py-8 text-center text-gray-500" colspan="14">没有匹配的账号</td>
+             </tr>
+             <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
+               v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorEnabled(acc), accountTwoFactorSetupInProgress(acc), hasCodexAuthFile(acc)]"
+@@ -1033,12 +1032,18 @@
+                 </span>
+               </td>
+               <td class="px-4 py-3">
+-                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+-                  :class="credentialExportClass(acc)">
+-                  {{ credentialExportLabel(acc) }}
+-                </span>
++                <div class="inline-flex flex-col items-start gap-1">
++                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
++                    :class="credentialExportClass(acc)">
++                    {{ credentialExportLabel(acc) }}
++                  </span>
++                  <span
++                    v-if="acc?.credentials_exported && accountExportTs(acc)"
++                    class="pl-0.5 text-[11px] font-mono leading-tight text-gray-500">
++                    {{ exportTimeLabel(acc) }}
++                  </span>
++                </div>
+               </td>
+-              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ exportTimeLabel(acc) }}</td>
+               <td class="px-4 py-3">
+                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                   :class="accountHubSyncClass(acc)">
+--- original/web/scripts/regression-dashboard-2fa-column.mjs
++++ modified/web/scripts/regression-dashboard-2fa-column.mjs
+@@ -23,18 +23,22 @@
+ )
+ assert.match(
+   dashboardSource,
+-  /colspan="15">没有匹配的账号/,
+-  'the empty account row should span all 15 columns',
++  /colspan="14">没有匹配的账号/,
++  'the empty account row should span all 14 columns',
+ )
+ 
+ const helperBody = dashboardSource.match(
+   /function accountTwoFactorEnabled\(account\) \{([\s\S]*?)\n\}/,
+ )?.[1]
+ assert.ok(helperBody, 'the 2FA state helper should be executable in isolation')
+-const accountTwoFactorEnabled = new Function('account', helperBody)
+-assert.equal(accountTwoFactorEnabled({ two_factor_enabled: true }), true)
+-assert.equal(accountTwoFactorEnabled({ totp_status: 'enabled' }), true)
+-assert.equal(accountTwoFactorEnabled({ totp_status: 'disabled' }), false)
+-assert.equal(accountTwoFactorEnabled({}), false)
++const twoFactorCompletedEmails = { value: new Set(['local@example.com']) }
++const accountTwoFactorEmailKey = account => String(account?.email || '').trim().toLowerCase()
++const accountTwoFactorEnabled = new Function('account', 'twoFactorCompletedEmails', 'accountTwoFactorEmailKey', helperBody)
++const enabled = account => accountTwoFactorEnabled(account, twoFactorCompletedEmails, accountTwoFactorEmailKey)
++assert.equal(enabled({ two_factor_enabled: true }), true)
++assert.equal(enabled({ totp_status: 'enabled' }), true)
++assert.equal(enabled({ email: 'local@example.com' }), true)
++assert.equal(enabled({ totp_status: 'disabled' }), false)
++assert.equal(enabled({}), false)
+ 
+ console.log('dashboard 2FA column regression passed')
+
+--- NEW FILE: web/scripts/test-dashboard-export-time-merge.mjs ---
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const dashboardSource = readFileSync(path.resolve(here, '../src/components/Dashboard.vue'), 'utf8')
+const headerRow = dashboardSource.match(/<thead>[\s\S]*?<\/thead>/)?.[0] || ''
+const accountRowTemplate = dashboardSource.match(/<tr v-for="\(acc, i\) in paginatedAccounts"[\s\S]*?<\/tr>/)?.[0] || ''
+const exportCellMatch = accountRowTemplate.match(/<td class="px-4 py-3">\s*<div class="inline-flex flex-col items-start gap-1">[\s\S]*?credentialExportLabel\(acc\)[\s\S]*?<\/div>\s*<\/td>/)
+
+assert.doesNotMatch(
+  headerRow,
+  /<th class="[^"]*font-medium[^"]*">导出时间<\/th>/,
+  '导出时间不应再作为独立表头列展示',
+)
+assert.ok(exportCellMatch, '账号行应保留账密导出状态单元格')
+assert.match(
+  exportCellMatch[0],
+  /v-if="acc\?\.credentials_exported && accountExportTs\(acc\)"[\s\S]*exportTimeLabel\(acc\)/,
+  '已导出账号的导出时间应显示在“已导出”标识下面',
+)
+assert.doesNotMatch(
+  accountRowTemplate,
+  /<td class="px-4 py-3 text-gray-400 text-xs font-mono">\{\{ exportTimeLabel\(acc\) \}\}<\/td>/,
+  '导出时间不应保留独立账号行单元格',
+)
+assert.match(
+  dashboardSource,
+  /colspan="14">没有匹配的账号/,
+  '空状态应覆盖合并后的 14 列',
+)
+
+console.log('dashboard export time merge regression passed')

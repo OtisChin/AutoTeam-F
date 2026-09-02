@@ -1,0 +1,128 @@
+COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+INPUT: new OAuth badge regression on pre-change Dashboard.vue
+OUTPUT: node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: accounts that already have OAuth credentials should show an OAuth badge next to the account email
+    at file:///D:/code/OpenSource/AutoTeam-F/web/scripts/test-dashboard-oauth-badge.mjs:10:8
+    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: '<tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"\n' +
+    '              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorEnabled(acc), accountTwoFactorSetupInProgress(acc)]"\n' +
+    '              class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"\r\n' +
+    `              :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">\r\n` +
+    '              <td class="px-3 py-3">\r\n' +
+    '                <input\r\n' +
+    '                  v-if="!acc.is_main_account"\r\n' +
+    '                  type="checkbox"\r\n' +
+    '                  :checked="isSelected(acc.email)"\r\n' +
+    '                  @change="toggleSelect(acc.email)"\r\n' +
+    '                  class="accent-rose-500 cursor-pointer" />\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-500">{{ accountPageStartIndex + i + 1 }}</td>\r\n' +
+    '              <td class="px-4 py-3 max-w-56">\r\n' +
+    '                <div\r\n' +
+    '                  class="w-56 max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-gray-200"\r\n' +
+    '                  :title="displayEmail(acc)">\r\n' +
+    '                  {{ displayEmailPreview(acc) }}\r\n' +
+    '                </div>\r\n' +
+    '                <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">\r\n' +
+    '                  Hub: {{ acc.hub_source_name }}\r\n' +
+    '                </div>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="accountTypeClass(acc.account_type)">\r\n' +
+    '                  {{ accountTypeLabel(acc.account_type) }}\r\n' +
+    '                </span>\r\n' +
+    '                <span\r\n' +
+    '                  v-if="acc.trial_eligible"\r\n' +
+    '                  class="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"\r\n' +
+    '                  title="注册时检测到该账号可 0 元试用（available_plans 非空）">\r\n' +
+    '                  可试用\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="statusClass(acc.status)">\r\n' +
+    '                  <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(acc.status)"></span>\r\n' +
+    '                  {{ statusLabel(acc.status) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\n' +
+    '                <button\n' +
+    '                  v-if="accountTwoFactorEnabled(acc)"\n' +
+    '                  type="button"\n' +
+    '                  @click="openTwoFactorTotpDialog(acc)"\n' +
+    '                  class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 transition hover:bg-emerald-500/20">\n' +
+    '                  已设置\n' +
+    '                </button>\n' +
+    '                <button\n' +
+    '                  v-else\n' +
+    '                  type="button"\n' +
+    '                  @click="setupAccountTwoFactor(acc)"\n' +
+    '                  :disabled="accountTwoFactorSetupInProgress(acc)"\r\n' +
+    '                  class="inline-flex items-center px-2 py-0.5 rounded-md border text-xs font-medium whitespace-nowrap transition"\r\n' +
+    '                  :class="accountTwoFactorSetupInProgress(acc)\r\n' +
+    "                    ? 'border-yellow-500/20 bg-yellow-500/5 text-yellow-300/70 cursor-wait'\r\n" +
+    `                    : 'border-yellow-500/30 bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20'">\r\n` +
+    '                  {{ twoFactorButtonLabel(acc) }}\r\n' +
+    '                </button>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="bindProviderClass(effectiveBindProvider(acc))">\r\n' +
+    '                  {{ bindProviderLabel(effectiveBindProvider(acc)) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="credentialExportClass(acc)">\r\n' +
+    '                  {{ credentialExportLabel(acc) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ exportTimeLabel(acc) }}</td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="accountHubSyncClass(acc)">\r\n' +
+    '                  {{ accountHubSyncLabel(acc) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td\r\n' +
+    '                class="px-4 py-3 text-right font-mono"\r\n' +
+    `                :class="pctColor(quota(acc, 'primary'))"\r\n` +
+    `                :title="quotaWindow(acc, 'primary') ? 'OpenAI 返回的 5h 限额窗口' : 'OpenAI 未返回 5h 限额窗口'">\r\n` +
+    "                {{ quotaPct(acc, 'primary') }}\r\n" +
+    '              </td>\r\n' +
+    '              <td\r\n' +
+    '                class="px-4 py-3 text-right font-mono"\r\n' +
+    `                :class="pctColor(quota(acc, 'weekly'))"\r\n` +
+    `                :title="quotaWindow(acc, 'weekly') ? 'OpenAI 返回的周限额窗口' : 'OpenAI 未返回周限额窗口'">\r\n` +
+    "                {{ quotaPct(acc, 'weekly') }}\r\n" +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ registerTimeLabel(acc) }}</td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ activationTimeLabel(acc) }}</td>\r\n' +
+    '              <td class="px-4 py-3 text-right">\r\n' +
+    '                <button\r\n' +
+    '                  type="button"\r\n' +
+    '                  @click="openAccountActionMenu(acc, $event)"\r\n' +
+    '                  :disabled="accountActionBusy && actionEmail === acc.email"\r\n' +
+    '                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '                  :class="accountActionBusy && actionEmail === acc.email\r\n' +
+    "                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-wait'\r\n" +
+    `                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white'">\r\n` +
+    "                  {{ accountActionBusy && actionEmail === acc.email ? '处理中…' : '操作' }}\r\n" +
+    '                </button>\r\n' +
+    '              </td>\r\n' +
+    '            </tr>',
+  expected: /displayEmailPreview\(acc\)[\s\S]*v-if="hasCodexAuthFile\(acc\)"[\s\S]*OAuth/,
+  operator: 'match',
+  diff: 'simple'
+}
+
+Node.js v24.14.0
+EXIT_STATUS: 1

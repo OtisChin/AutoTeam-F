@@ -1,0 +1,6 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py -q
+INPUT: (none)
+OUTPUT:
+...                                                                      [100%]
+3 passed in 0.04s
+EXIT_STATUS: 0

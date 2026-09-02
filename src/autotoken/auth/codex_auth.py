@@ -967,6 +967,38 @@ _OTP_INVALID_HINTS = (
     "验证码无效",
     "验证码错误",
     "验证码已过期",
+    "コードが正しくありません",
+    "コードが間違っています",
+    "無効なコード",
+    "期限切れのコード",
+)
+_TOTP_CHALLENGE_HINTS = (
+    "authenticator app",
+    "authentication app",
+    "two-factor",
+    "two factor",
+    "2fa",
+    "mfa",
+    "totp",
+    "multi-factor",
+    "verification code from your authenticator",
+    "enter the code from your authenticator",
+    "身份验证器",
+    "认证器",
+    "驗證器",
+    "双重验证",
+    "雙重驗證",
+    "两步验证",
+    "兩步驗證",
+    "二步验证",
+    "二步驗證",
+)
+_TOTP_URL_HINTS = (
+    "/mfa",
+    "totp",
+    "authenticator",
+    "two-factor",
+    "2fa",
 )
 _PHONE_INPUT_SELECTORS = (
     'input[type="tel"], input[name*="phone" i], input[id*="phone" i], '
@@ -1170,6 +1202,69 @@ def _is_otp_input_visible(page, timeout=500):
         return False
 
 
+def _looks_like_totp_challenge(*, url: str = "", body: str = "") -> bool:
+    lower_url = str(url or "").lower()
+    lower_body = str(body or "").lower().replace("\n", " ")
+    return any(hint in lower_url for hint in _TOTP_URL_HINTS) or any(
+        hint in lower_body for hint in _TOTP_CHALLENGE_HINTS
+    )
+
+
+def _looks_like_totp_challenge_page(page) -> bool:
+    try:
+        url = getattr(page, "url", "") or ""
+    except Exception:
+        url = ""
+    try:
+        body = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        body = ""
+    return _looks_like_totp_challenge(url=url, body=body)
+
+
+def _submit_totp_if_present(page, totp_secret: str | None, *, stage: str = "OAuth") -> bool:
+    secret = str(totp_secret or "").strip()
+    if not secret or not _looks_like_totp_challenge_page(page):
+        return False
+    otp_input = _otp_input_locator(page)
+    if not otp_input:
+        return False
+    try:
+        if not otp_input.is_visible(timeout=500):
+            return False
+    except Exception:
+        return False
+
+    from autotoken.services.totp import generate_totp_candidates, mask_totp_secret
+
+    logger.info("[Codex] %s 检测到2FA验证页，将使用本地TOTP密钥完成登录: secret=%s", stage, mask_totp_secret(secret))
+    last_status = ""
+    for attempt, code in enumerate(generate_totp_candidates(secret), start=1):
+        if not _fill_otp_input_and_verify(otp_input, code):
+            last_status = "fill_failed"
+            continue
+        page.locator('button[type="submit"], button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify"), button:has-text("验证")').first.click()
+        submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=12)
+        logger.info(
+            "[Codex] %s 已提交2FA验证码: attempt=%s status=%s detail=%s",
+            stage,
+            attempt,
+            submit_status,
+            submit_detail or "",
+        )
+        if submit_status == "accepted":
+            time.sleep(2)
+            return True
+        if submit_status == "pending" and not _looks_like_totp_challenge_page(page):
+            time.sleep(2)
+            return True
+        last_status = submit_status or "unknown"
+        otp_input = _otp_input_locator(page)
+        if not otp_input:
+            return True
+    raise CodexOAuthLoginRequired(f"{stage} 2FA验证码提交失败: {last_status or 'unknown'}")
+
+
 def _is_auth_login_url(url: str) -> bool:
     lower = (url or "").lower()
     return "auth.openai.com/log-in" in lower or "auth.openai.com/login" in lower
@@ -1314,12 +1409,12 @@ def _fill_auth_email_if_present(page, email, *, timeout=800):
         return False
 
 
-def _fill_auth_password_if_present(page, password, *, timeout=5000):
+def _fill_auth_password_if_present(page, password, *, timeout=5000, prefer_password: bool = False):
     try:
         pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
         if not pwd_input.is_visible(timeout=timeout):
             return False
-        if _click_email_code_login_if_present(page):
+        if not (prefer_password and password) and _click_email_code_login_if_present(page):
             logger.info("[Codex] 检测到密码页，已切换邮箱验证码登录")
             return True
         if password:
@@ -1387,7 +1482,15 @@ def _detect_auth_html_json_error(page) -> str:
 def _is_oauth_cloudflare_challenge_page(page) -> bool:
     try:
         url = (getattr(page, "url", "") or "").lower()
-        if "challenge" in url and "auth.openai.com" in url:
+        if "auth.openai.com" in url and (
+            "/mfa" in url or "mfa-challenge" in url or "totp" in url or "authenticator" in url
+        ):
+            return False
+        if (
+            "challenges.cloudflare.com" in url
+            or "challenge-platform" in url
+            or "cdn-cgi/challenge" in url
+        ):
             return True
     except Exception:
         pass
@@ -1756,22 +1859,415 @@ def _click_phone_resend_if_present(page) -> bool:
     return False
 
 
-_OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES = {
-    "12": "1",
-    "187": "1",
-    "36": "1",
-    "175": "61",
-    "16": "44",
-    "48": "31",
-    "73": "55",
-    "31": "27",
-    "6": "62",
-    "182": "81",
-    "54": "52",
-    "4": "63",
-    "52": "66",
-    "33": "57",
+_OAUTH_DYNAMIC_SMS_COUNTRIES: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "0": ("RU", "7", ("Russia",)),
+    "1": ("UA", "380", ("Ukraine",)),
+    "2": ("KZ", "7", ("Kazakhstan",)),
+    "3": ("CN", "86", ("China",)),
+    "4": ("PH", "63", ("Philippines", "フィリピン", "菲律宾", "菲律賓")),
+    "5": ("MM", "95", ("Myanmar",)),
+    "6": ("ID", "62", ("Indonesia", "インドネシア", "印度尼西亚", "印尼")),
+    "7": ("MY", "60", ("Malaysia",)),
+    "8": ("KE", "254", ("Kenya",)),
+    "9": ("TZ", "255", ("Tanzania",)),
+    "10": ("VN", "84", ("Vietnam",)),
+    "11": ("KG", "996", ("Kyrgyzstan",)),
+    "12": ("US", "1", ("United States", "アメリカ合衆国", "美国", "美國")),
+    "13": ("IL", "972", ("Israel",)),
+    "14": ("HK", "852", ("Hong Kong",)),
+    "15": ("PL", "48", ("Poland",)),
+    "16": ("GB", "44", ("United Kingdom", "イギリス", "英国", "英國")),
+    "17": ("MG", "261", ("Madagascar",)),
+    "18": ("CD", "243", ("Congo", "DR Congo", "Democratic Republic of the Congo")),
+    "19": ("NG", "234", ("Nigeria",)),
+    "20": ("MO", "853", ("Macao", "Macau")),
+    "21": ("EG", "20", ("Egypt",)),
+    "22": ("IN", "91", ("India",)),
+    "23": ("IE", "353", ("Ireland",)),
+    "24": ("KH", "855", ("Cambodia",)),
+    "25": ("LA", "856", ("Laos",)),
+    "26": ("HT", "509", ("Haiti",)),
+    "27": ("CI", "225", ("Cote d'Ivoire", "Ivory Coast")),
+    "28": ("GM", "220", ("Gambia",)),
+    "29": ("RS", "381", ("Serbia",)),
+    "30": ("YE", "967", ("Yemen",)),
+    "31": ("ZA", "27", ("South Africa", "南アフリカ", "南非")),
+    "32": ("RO", "40", ("Romania",)),
+    "33": ("CO", "57", ("Colombia", "コロンビア", "哥伦比亚", "哥倫比亞")),
+    "34": ("EE", "372", ("Estonia",)),
+    "35": ("AZ", "994", ("Azerbaijan",)),
+    "36": ("CA", "1", ("Canada", "カナダ", "加拿大")),
+    "37": ("MA", "212", ("Morocco",)),
+    "38": ("GH", "233", ("Ghana",)),
+    "39": ("AR", "54", ("Argentina",)),
+    "40": ("UZ", "998", ("Uzbekistan",)),
+    "41": ("CM", "237", ("Cameroon",)),
+    "42": ("TD", "235", ("Chad",)),
+    "43": ("DE", "49", ("Germany",)),
+    "44": ("LT", "370", ("Lithuania",)),
+    "45": ("HR", "385", ("Croatia",)),
+    "46": ("SE", "46", ("Sweden",)),
+    "47": ("IQ", "964", ("Iraq",)),
+    "48": ("NL", "31", ("Netherlands", "オランダ", "荷兰", "荷蘭")),
+    "49": ("LV", "371", ("Latvia",)),
+    "50": ("AT", "43", ("Austria",)),
+    "51": ("BY", "375", ("Belarus",)),
+    "52": ("TH", "66", ("Thailand", "タイ", "泰国", "泰國")),
+    "53": ("SA", "966", ("Saudi Arabia",)),
+    "54": ("MX", "52", ("Mexico", "メキシコ", "墨西哥")),
+    "55": ("TW", "886", ("Taiwan",)),
+    "56": ("ES", "34", ("Spain",)),
+    "57": ("IR", "98", ("Iran",)),
+    "58": ("DZ", "213", ("Algeria",)),
+    "59": ("SI", "386", ("Slovenia",)),
+    "60": ("BD", "880", ("Bangladesh",)),
+    "61": ("SN", "221", ("Senegal",)),
+    "62": ("TR", "90", ("Turkey", "Türkiye")),
+    "63": ("CZ", "420", ("Czechia", "Czech Republic")),
+    "64": ("LK", "94", ("Sri Lanka",)),
+    "65": ("PE", "51", ("Peru",)),
+    "66": ("PK", "92", ("Pakistan",)),
+    "67": ("NZ", "64", ("New Zealand",)),
+    "68": ("GN", "224", ("Guinea",)),
+    "69": ("ML", "223", ("Mali",)),
+    "70": ("VE", "58", ("Venezuela",)),
+    "71": ("ET", "251", ("Ethiopia",)),
+    "72": ("MN", "976", ("Mongolia",)),
+    "73": ("BR", "55", ("Brazil", "ブラジル", "巴西")),
+    "74": ("AF", "93", ("Afghanistan",)),
+    "75": ("UG", "256", ("Uganda",)),
+    "76": ("AO", "244", ("Angola",)),
+    "77": ("CY", "357", ("Cyprus",)),
+    "78": ("FR", "33", ("France",)),
+    "79": ("PG", "675", ("Papua New Guinea",)),
+    "80": ("MZ", "258", ("Mozambique",)),
+    "81": ("NP", "977", ("Nepal",)),
+    "82": ("BE", "32", ("Belgium",)),
+    "83": ("BG", "359", ("Bulgaria",)),
+    "84": ("HU", "36", ("Hungary",)),
+    "85": ("MD", "373", ("Moldova",)),
+    "86": ("IT", "39", ("Italy",)),
+    "87": ("PY", "595", ("Paraguay",)),
+    "88": ("HN", "504", ("Honduras",)),
+    "89": ("TN", "216", ("Tunisia",)),
+    "90": ("NI", "505", ("Nicaragua",)),
+    "91": ("TL", "670", ("Timor-Leste", "East Timor")),
+    "92": ("BO", "591", ("Bolivia",)),
+    "93": ("CR", "506", ("Costa Rica",)),
+    "94": ("GT", "502", ("Guatemala",)),
+    "95": ("AE", "971", ("United Arab Emirates", "UAE")),
+    "96": ("ZW", "263", ("Zimbabwe",)),
+    "97": ("PR", "1", ("Puerto Rico",)),
+    "98": ("SD", "249", ("Sudan",)),
+    "99": ("TG", "228", ("Togo",)),
+    "100": ("KW", "965", ("Kuwait",)),
+    "101": ("SV", "503", ("El Salvador",)),
+    "102": ("LY", "218", ("Libya",)),
+    "103": ("JM", "1", ("Jamaica",)),
+    "104": ("TT", "1", ("Trinidad and Tobago",)),
+    "105": ("EC", "593", ("Ecuador",)),
+    "106": ("SZ", "268", ("Eswatini", "Swaziland")),
+    "107": ("OM", "968", ("Oman",)),
+    "108": ("BA", "387", ("Bosnia and Herzegovina",)),
+    "109": ("DO", "1", ("Dominican Republic",)),
+    "110": ("SY", "963", ("Syria",)),
+    "111": ("QA", "974", ("Qatar",)),
+    "112": ("PA", "507", ("Panama",)),
+    "113": ("CU", "53", ("Cuba",)),
+    "114": ("MR", "222", ("Mauritania",)),
+    "115": ("SL", "232", ("Sierra Leone",)),
+    "116": ("JO", "962", ("Jordan",)),
+    "117": ("PT", "351", ("Portugal",)),
+    "118": ("BB", "1", ("Barbados",)),
+    "119": ("BI", "257", ("Burundi",)),
+    "120": ("BJ", "229", ("Benin",)),
+    "121": ("BN", "673", ("Brunei",)),
+    "122": ("BS", "1", ("Bahamas",)),
+    "123": ("BW", "267", ("Botswana",)),
+    "124": ("BZ", "501", ("Belize",)),
+    "125": ("CF", "236", ("Central African Republic",)),
+    "126": ("DM", "1", ("Dominica",)),
+    "127": ("GD", "1", ("Grenada",)),
+    "128": ("GE", "995", ("Georgia",)),
+    "129": ("GR", "30", ("Greece",)),
+    "130": ("GW", "245", ("Guinea-Bissau",)),
+    "131": ("GY", "592", ("Guyana",)),
+    "132": ("IS", "354", ("Iceland",)),
+    "133": ("KM", "269", ("Comoros",)),
+    "134": ("KN", "1", ("Saint Kitts and Nevis",)),
+    "135": ("LR", "231", ("Liberia",)),
+    "136": ("LS", "266", ("Lesotho",)),
+    "137": ("MW", "265", ("Malawi",)),
+    "138": ("NA", "264", ("Namibia",)),
+    "139": ("NE", "227", ("Niger",)),
+    "140": ("RW", "250", ("Rwanda",)),
+    "141": ("SK", "421", ("Slovakia",)),
+    "142": ("SR", "597", ("Suriname",)),
+    "143": ("TJ", "992", ("Tajikistan",)),
+    "144": ("MC", "377", ("Monaco",)),
+    "145": ("BH", "973", ("Bahrain",)),
+    "146": ("RE", "262", ("Reunion", "Réunion")),
+    "147": ("ZM", "260", ("Zambia",)),
+    "148": ("AM", "374", ("Armenia",)),
+    "149": ("SO", "252", ("Somalia",)),
+    "150": ("CG", "242", ("Congo", "Republic of the Congo")),
+    "151": ("CL", "56", ("Chile",)),
+    "152": ("BF", "226", ("Burkina Faso",)),
+    "153": ("LB", "961", ("Lebanon",)),
+    "154": ("GA", "241", ("Gabon",)),
+    "155": ("AL", "355", ("Albania",)),
+    "156": ("UY", "598", ("Uruguay",)),
+    "157": ("MU", "230", ("Mauritius",)),
+    "158": ("BT", "975", ("Bhutan",)),
+    "159": ("MV", "960", ("Maldives",)),
+    "160": ("GP", "590", ("Guadeloupe",)),
+    "161": ("TM", "993", ("Turkmenistan",)),
+    "162": ("GF", "594", ("French Guiana",)),
+    "163": ("FI", "358", ("Finland",)),
+    "164": ("LC", "1", ("Saint Lucia",)),
+    "165": ("LU", "352", ("Luxembourg",)),
+    "166": ("VC", "1", ("Saint Vincent and the Grenadines",)),
+    "167": ("GQ", "240", ("Equatorial Guinea",)),
+    "168": ("DJ", "253", ("Djibouti",)),
+    "169": ("AG", "1", ("Antigua and Barbuda",)),
+    "170": ("KY", "1", ("Cayman Islands",)),
+    "171": ("ME", "382", ("Montenegro",)),
+    "172": ("DK", "45", ("Denmark",)),
+    "173": ("CH", "41", ("Switzerland",)),
+    "174": ("NO", "47", ("Norway",)),
+    "175": ("AU", "61", ("Australia", "オーストラリア", "澳大利亚", "澳洲")),
+    "176": ("ER", "291", ("Eritrea",)),
+    "177": ("SS", "211", ("South Sudan",)),
+    "178": ("ST", "239", ("Sao Tome and Principe",)),
+    "179": ("AW", "297", ("Aruba",)),
+    "180": ("MS", "1", ("Montserrat",)),
+    "181": ("AI", "1", ("Anguilla",)),
+    "182": ("JP", "81", ("Japan", "日本")),
+    "183": ("MK", "389", ("North Macedonia",)),
+    "184": ("SC", "248", ("Seychelles",)),
+    "185": ("NC", "687", ("New Caledonia",)),
+    "186": ("CV", "238", ("Cape Verde", "Cabo Verde")),
+    "187": ("US", "1", ("United States", "アメリカ合衆国", "美国", "美國")),
+    "188": ("PS", "970", ("Palestine",)),
+    "189": ("FJ", "679", ("Fiji",)),
+    "190": ("KR", "82", ("South Korea", "Korea")),
+    "191": ("EH", "212", ("Western Sahara",)),
+    "192": ("SB", "677", ("Solomon Islands",)),
+    "193": ("SG", "65", ("Singapore",)),
+    "194": ("KI", "686", ("Kiribati",)),
+    "195": ("TO", "676", ("Tonga",)),
+    "196": ("WF", "681", ("Wallis and Futuna",)),
+    "197": ("PM", "508", ("Saint Pierre and Miquelon",)),
+    "198": ("VU", "678", ("Vanuatu",)),
 }
+
+_OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES = {
+    country_id: meta[1] for country_id, meta in _OAUTH_DYNAMIC_SMS_COUNTRIES.items()
+}
+_OAUTH_DYNAMIC_SMS_COUNTRY_SELECT_TERMS = {
+    country_id: (*meta[2], f"+{meta[1]}") for country_id, meta in _OAUTH_DYNAMIC_SMS_COUNTRIES.items()
+}
+_OAUTH_DYNAMIC_SMS_COUNTRY_ISO2 = {
+    country_id: meta[0] for country_id, meta in _OAUTH_DYNAMIC_SMS_COUNTRIES.items()
+}
+
+def _select_oauth_phone_country_if_needed(page, country_id: str | None) -> bool:
+    provider_country = str(country_id or "").strip()
+    dial_code = _OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES.get(provider_country)
+    terms = _OAUTH_DYNAMIC_SMS_COUNTRY_SELECT_TERMS.get(provider_country, ())
+    if not dial_code or not terms:
+        return True
+    if dial_code == "1":
+        return True
+
+    try:
+        result = page.evaluate(
+            """({countryId, dialCode, terms, iso2}) => {
+              const expectedDial = `+${String(dialCode || '').replace(/^\\+/, '')}`;
+              const localeCandidates = [
+                document.documentElement && document.documentElement.lang,
+                navigator.language,
+                ...(navigator.languages || []),
+                'en',
+                'ja',
+                'zh-CN',
+                'zh-TW',
+              ].filter(Boolean);
+              const localizedNames = [];
+              if (iso2 && window.Intl && Intl.DisplayNames) {
+                for (const locale of localeCandidates) {
+                  try {
+                    const name = new Intl.DisplayNames([locale], {type: 'region'}).of(iso2);
+                    if (name) localizedNames.push(name);
+                  } catch (_) {}
+                }
+              }
+              const names = Array.from(new Set(
+                [...(terms || []), ...localizedNames].map(String).filter((term) => term && term !== expectedDial)
+              ));
+              const wantedTexts = [...names, expectedDial].map((term) => term.toLowerCase());
+              const visible = (el) => {
+                if (!el || el.disabled) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                  && style.visibility !== 'hidden'
+                  && style.display !== 'none';
+              };
+              const textOf = (el) => [
+                el.innerText || el.textContent || '',
+                el.getAttribute('aria-label') || '',
+                el.getAttribute('title') || '',
+                el.getAttribute('value') || '',
+                el.value || '',
+              ].join(' ').replace(/\\s+/g, ' ').trim();
+              const fire = (el, type, extra = {}) => {
+                const init = {bubbles: true, cancelable: true, view: window, ...extra};
+                el.dispatchEvent(type.startsWith('key')
+                  ? new KeyboardEvent(type, init)
+                  : new MouseEvent(type, init));
+              };
+              const setValue = (el, value) => {
+                el.focus && el.focus();
+                const proto = Object.getPrototypeOf(el);
+                const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+                if (desc && desc.set) desc.set.call(el, value);
+                else el.value = value;
+                el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+              };
+              const selected = () => {
+                const body = document.body ? (document.body.innerText || document.body.textContent || '') : '';
+                return body.includes(expectedDial) && names.some((name) => body.includes(name));
+              };
+
+              for (const select of Array.from(document.querySelectorAll('select')).filter(visible)) {
+                const options = Array.from(select.options || []);
+                const option = options.find((item) => {
+                  const value = String(item.value || '').toLowerCase();
+                  const label = textOf(item).toLowerCase();
+                  return value === String(iso2 || '').toLowerCase()
+                    || (label.includes(expectedDial.toLowerCase()) && wantedTexts.some((term) => label.includes(term)));
+                });
+                if (option) {
+                  select.value = option.value;
+                  select.dispatchEvent(new Event('input', {bubbles: true}));
+                  select.dispatchEvent(new Event('change', {bubbles: true}));
+                  return {ok: true, mode: 'native_select', countryId, dial: expectedDial, selectedText: textOf(option)};
+                }
+              }
+
+              for (const input of Array.from(document.querySelectorAll('input')).filter(visible)) {
+                const meta = [
+                  input.getAttribute('name') || '',
+                  input.getAttribute('id') || '',
+                  input.getAttribute('aria-label') || '',
+                  input.getAttribute('autocomplete') || '',
+                ].join(' ').toLowerCase();
+                if (meta.includes('country')) {
+                  setValue(input, iso2 || names[0] || expectedDial);
+                  return {ok: selected(), mode: 'country_input_value', countryId, dial: expectedDial, selectedText: input.value || ''};
+                }
+              }
+
+              const countryControls = Array.from(document.querySelectorAll(
+                'button, [role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"], div, span'
+              ))
+                .filter(visible)
+                .map((el) => {
+                  const rect = el.getBoundingClientRect();
+                  const text = textOf(el);
+                  const lower = text.toLowerCase();
+                  let score = 0;
+                  if (/\\(\\+\\d+\\)|\\+\\d+/.test(text)) score += 100;
+                  if (el.getAttribute('role') === 'combobox') score += 80;
+                  if ((el.getAttribute('aria-haspopup') || '').includes('listbox')) score += 80;
+                  if (lower.includes('country') || lower.includes('国') || lower.includes('國')) score += 30;
+                  if (lower.includes('phone') || lower.includes('電話')) score += 10;
+                  if (rect.width > 700 || rect.height > 160 || text.length > 220) score -= 200;
+                  return {el, score, text, area: rect.width * rect.height};
+                })
+                .filter((item) => item.score > 0)
+                .sort((a, b) => b.score - a.score || a.area - b.area);
+
+              const control = countryControls[0] && countryControls[0].el;
+              if (!control) {
+                return {ok: false, reason: 'country_control_not_found', countryId, dial: expectedDial};
+              }
+              fire(control, 'mousedown');
+              fire(control, 'mouseup');
+              fire(control, 'click');
+
+              const searchValue = names[0] || expectedDial;
+              for (const input of Array.from(document.querySelectorAll('input')).filter(visible)) {
+                const type = String(input.getAttribute('type') || '').toLowerCase();
+                const role = String(input.getAttribute('role') || '').toLowerCase();
+                const meta = [
+                  input.getAttribute('name') || '',
+                  input.getAttribute('id') || '',
+                  input.getAttribute('aria-label') || '',
+                  input.getAttribute('placeholder') || '',
+                ].join(' ').toLowerCase();
+                if (type === 'tel' || type === 'email' || type === 'password' || meta.includes('reservedforphonenumber')) {
+                  continue;
+                }
+                if (role === 'combobox' || meta.includes('search') || meta.includes('country') || meta.includes('国') || meta.includes('國')) {
+                  setValue(input, searchValue);
+                  fire(input, 'keydown', {key: searchValue.slice(-1) || 'a'});
+                }
+              }
+
+              const option = Array.from(document.querySelectorAll('[role="option"], li, button, div, span'))
+                .filter(visible)
+                .map((el) => {
+                  const rect = el.getBoundingClientRect();
+                  const text = textOf(el);
+                  const lower = text.toLowerCase();
+                  const hasDial = text.includes(expectedDial);
+                  const hasName = names.some((name) => text.includes(name));
+                  let score = 0;
+                  if (hasDial) score += 300;
+                  if (hasName) score += 300;
+                  if (el.getAttribute('role') === 'option') score += 120;
+                  if (rect.width > 700 || rect.height > 120 || text.length > 180) score -= 240;
+                  if (!hasDial && !hasName) score -= 500;
+                  return {el, score, text, area: rect.width * rect.height};
+                })
+                .filter((item) => item.score > 0)
+                .sort((a, b) => b.score - a.score || a.area - b.area)[0];
+              if (!option) {
+                return {ok: selected(), reason: 'country_option_not_found', countryId, dial: expectedDial, controlText: textOf(control)};
+              }
+              fire(option.el, 'mousedown');
+              fire(option.el, 'mouseup');
+              fire(option.el, 'click');
+              option.el.dispatchEvent(new Event('change', {bubbles: true}));
+              return {ok: selected(), mode: 'injected_option', countryId, dial: expectedDial, selectedText: option.text};
+            }""",
+            {
+                "countryId": provider_country,
+                "dialCode": dial_code,
+                "terms": list(terms),
+                "iso2": _OAUTH_DYNAMIC_SMS_COUNTRY_ISO2.get(provider_country, ""),
+            },
+        )
+    except Exception as exc:
+        logger.warning("[Codex] add-phone 国家/地区注入异常: country=%s dial=+%s error=%s", provider_country, dial_code, exc)
+        return False
+
+    if isinstance(result, dict) and result.get("ok"):
+        logger.info(
+            "[Codex] add-phone 已注入选择国家/地区: country=%s dial=+%s mode=%s selected=%s",
+            provider_country,
+            dial_code,
+            result.get("mode") or "",
+            _compact_log_text(result.get("selectedText") or "", limit=120),
+        )
+        time.sleep(0.5)
+        return True
+    logger.warning("[Codex] add-phone 国家/地区注入失败: result=%s", result)
+    logger.warning("[Codex] add-phone 国家/地区选择失败: country=%s dial=+%s", provider_country, dial_code)
+    return False
 
 
 def _format_oauth_phone_for_input(
@@ -1781,6 +2277,7 @@ def _format_oauth_phone_for_input(
     *,
     force_us: bool = False,
     country_id: str | None = None,
+    country_selected: bool = False,
 ) -> str:
     raw = str(phone or "").strip()
     digits = re.sub(r"\D+", "", raw)
@@ -1805,6 +2302,8 @@ def _format_oauth_phone_for_input(
         return digits[1:]
     provider_country = str(country_id or "").strip()
     dial_code = _OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES.get(provider_country)
+    if country_selected and dial_code and digits.startswith(dial_code) and len(digits) > len(dial_code):
+        return digits[len(dial_code) :]
     if dial_code and not country_is_us:
         if raw.startswith("+"):
             return raw
@@ -3647,12 +4146,22 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
     phone_input = _phone_input_locator(page)
     if not phone_input:
         return False, "未找到 add-phone 手机号输入框"
+    country_id = str(phone_item.get("country_id") or "")
+    country_selected = False
+    if is_dynamic_sms:
+        country_selected = _select_oauth_phone_country_if_needed(page, country_id)
+        if not country_selected and _OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES.get(country_id):
+            return False, f"页面填写失败: 国家/地区选择失败 country={country_id}"
+        phone_input = _phone_input_locator(page)
+        if not phone_input:
+            return False, "未找到 add-phone 手机号输入框"
     phone_for_input = _format_oauth_phone_for_input(
         page,
         phone_input,
         phone,
-        force_us=is_dynamic_sms and str(phone_item.get("country_id") or "") == "187",
-        country_id=str(phone_item.get("country_id") or ""),
+        force_us=is_dynamic_sms and country_id == "187",
+        country_id=country_id,
+        country_selected=country_selected,
     )
     ok, fill_error = _fill_oauth_phone_field(page, phone_input, phone_for_input)
     if not ok:
@@ -3796,6 +4305,8 @@ def _classify_oauth_phone_failure(error: str) -> str:
         return "invalid"
     if "hero_sms_first_code_timeout" in text:
         return "hero_release"
+    if str(error or "").startswith("页面填写失败:"):
+        return "retry"
     if any(hint in text for hint in _PHONE_FULL_HINTS):
         return "invalid"
     if any(hint in text for hint in _PHONE_COOLDOWN_HINTS):
@@ -4083,6 +4594,8 @@ def _handle_oauth_add_phone_if_present(
             action_text = "，已标记失效并切换下一个"
         elif failure_action == "hero_release":
             action_text = "，2 分钟未收到首个验证码，已释放该 hero-sms 号码并切换下一个"
+        elif failure_action == "retry":
+            action_text = "，已释放当前号码并重载页面继续尝试"
         logger.warning(
             "[Codex] add-phone 手机号尝试失败%s: email=%s phone=%s reason=%s",
             action_text,
@@ -4402,6 +4915,7 @@ def _login_codex_via_browser_simple(
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
     phone_sms_oasis_cdks: str | None = None,
+    totp_secret: str | None = None,
 ):
     """
     极简 OAuth 登录：输入邮箱 -> 邮箱验证码 -> 授权。
@@ -4520,6 +5034,10 @@ def _login_codex_via_browser_simple(
                 logger.info("[Codex] 极简 OAuth 点击重试: %s", email)
                 time.sleep(3)
                 continue
+            if _submit_totp_if_present(page, totp_secret, stage="极简 OAuth"):
+                _screenshot(page, "codex_simple_02b_after_totp.png")
+                _wait_for_oauth_cloudflare_challenge(page, stage="极简 OAuth 提交2FA后", timeout=90)
+                continue
             otp_input = _otp_input_locator(page)
             if otp_input and otp_input.is_visible(timeout=500):
                 logger.info("[Codex] 极简 OAuth 检测到验证码输入框: %s", email)
@@ -4560,7 +5078,7 @@ def _login_codex_via_browser_simple(
                 pwd_input = None
                 password_visible = False
             if password_visible:
-                if _click_email_code_login_if_present(page):
+                if not (totp_secret and password) and _click_email_code_login_if_present(page):
                     logger.info("[Codex] 极简 OAuth 检测到密码页，已切换邮箱验证码登录: %s", email)
                     time.sleep(2)
                     continue
@@ -4596,7 +5114,7 @@ def _login_codex_via_browser_simple(
                 logger.info("[Codex] 极简 OAuth 已提交邮箱: %s", email)
                 time.sleep(2)
                 continue
-            if _click_email_code_login_if_present(page):
+            if not (totp_secret and password) and _click_email_code_login_if_present(page):
                 logger.info("[Codex] 极简 OAuth 已切换邮箱验证码登录: %s", email)
                 time.sleep(2)
                 continue
@@ -4690,6 +5208,7 @@ def login_codex_via_browser(
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
     phone_sms_oasis_cdks: str | None = None,
+    totp_secret: str | None = None,
 ):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
@@ -4717,6 +5236,7 @@ def login_codex_via_browser(
             phone_sms_provider=phone_sms_provider,
             phone_sms_country=phone_sms_country,
             phone_sms_oasis_cdks=phone_sms_oasis_cdks,
+            totp_secret=totp_secret,
         )
 
     code_verifier, code_challenge = _generate_pkce()
@@ -4832,7 +5352,7 @@ def login_codex_via_browser(
             try:
                 pi = _page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if pi.is_visible(timeout=5000):
-                    if _click_email_code_login_if_present(_page):
+                    if not (totp_secret and password) and _click_email_code_login_if_present(_page):
                         logger.info("[Codex] ChatGPT 登录密码页已切换邮箱验证码登录")
                     elif password:
                         pi.fill(password)
@@ -4850,6 +5370,9 @@ def login_codex_via_browser(
                     time.sleep(8)
             except Exception:
                 pass
+
+            if _submit_totp_if_present(_page, totp_secret, stage="ChatGPT预登录"):
+                _screenshot(_page, "codex_00_after_totp.png")
 
             # 可能需要邮箱验证码
             try:
@@ -4984,8 +5507,11 @@ def login_codex_via_browser(
         except Exception:
             _screenshot(page, "codex_03_no_password.png")
 
-        # 可能需要邮箱登录验证码
+        # 可能需要邮箱登录验证码 / 2FA 验证码
         _screenshot(page, "codex_03b_check_otp.png")
+        if _submit_totp_if_present(page, totp_secret, stage="OAuth"):
+            _screenshot(page, "codex_03c_after_totp.png")
+
         code_input = None
         try:
             code_input = page.locator(
@@ -5267,7 +5793,7 @@ def login_codex_via_browser(
             try:
                 pwd_field = page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if pwd_field.is_visible(timeout=2000):
-                    if _click_email_code_login_if_present(page):
+                    if not (totp_secret and password) and _click_email_code_login_if_present(page):
                         logger.info("[Codex] 密码页已切换邮箱验证码登录 (step %d)", step + 1)
                     elif password:
                         logger.info("[Codex] 需要重新输入密码 (step %d)...", step + 1)
@@ -5287,6 +5813,10 @@ def login_codex_via_browser(
                     continue
             except Exception:
                 pass
+
+            if _submit_totp_if_present(page, totp_secret, stage="OAuth"):
+                _screenshot(page, f"codex_04_totp_{step + 1}.png")
+                continue
 
             # 处理邮箱验证码页面（可能在 consent 流程中出现）
             try:
@@ -5577,10 +6107,10 @@ def login_codex_via_session():
                 qs = urllib.parse.parse_qs(parsed.query)
                 auth_code = qs.get("code", [None])[0]
 
-            def open_oauth_page(tag):
-                _goto_oauth_auth_page(page, auth_url, stage=f"OAuth {tag}")
-                time.sleep(3)
-                _screenshot(page, f"codex_main_{tag}.png")
+        def open_oauth_page(tag):
+            _goto_oauth_auth_page(page, auth_url, stage=f"OAuth {tag}")
+            time.sleep(3)
+            _screenshot(page, f"codex_main_{tag}.png")
 
         page.on("request", on_request)
         page.on("response", on_response)
@@ -5702,6 +6232,7 @@ class SessionCodexAuthFlow:
         phone_sms_provider=None,
         phone_sms_country=None,
         phone_sms_oasis_cdks=None,
+        totp_secret: str | None = None,
     ):
         self.email = email or ""
         self.password = password or ""
@@ -5717,6 +6248,7 @@ class SessionCodexAuthFlow:
         self.phone_sms_provider = str(phone_sms_provider or "").strip()
         self.phone_sms_country = str(phone_sms_country or "").strip()
         self.phone_sms_oasis_cdks = str(phone_sms_oasis_cdks or "").strip()
+        self.totp_secret = str(totp_secret or "").strip()
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
         self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
@@ -5760,6 +6292,8 @@ class SessionCodexAuthFlow:
             return "phone_required", cur
         if "auth.openai.com/choose-an-account" in lower_url or "/choose-an-account" in lower_url:
             return "choose_account", cur
+        if _looks_like_totp_challenge_page(self.page):
+            return "totp_required", cur
         if "auth.openai.com/email-verification" in lower_url or "/email-verification" in lower_url:
             return "code_required", cur
         if _is_auth_login_url(cur):
@@ -5779,6 +6313,8 @@ class SessionCodexAuthFlow:
         ):
             return "code_required", cur
 
+        if _looks_like_totp_challenge(url=cur, body=body):
+            return "totp_required", cur
         if self._visible_locator(self.CODE_SELECTORS, timeout_ms=800):
             return "code_required", None
         if self._visible_locator(self.PASSWORD_SELECTORS, timeout_ms=800):
@@ -6036,7 +6572,13 @@ class SessionCodexAuthFlow:
                 return {"step": "retryable_error", "detail": detail}
             if step == "code_required":
                 return {"step": "code_required", "detail": detail}
+            if step == "totp_required":
+                if _submit_totp_if_present(self.page, self.totp_secret, stage="auth_session OAuth"):
+                    continue
+                return {"step": "totp_required", "detail": "缺少可用2FA验证码输入框或本地密钥"}
             if step == "password_required":
+                if self.totp_secret and self.password and self._auto_fill_password():
+                    continue
                 if self._switch_password_to_otp():
                     continue
                 return {
@@ -6177,6 +6719,7 @@ class ChromeCDPCodexAuthFlow:
         otp_timeout=120,
         cdp_url=None,
         auth_file_callback=None,
+        totp_secret: str | None = None,
     ):
         self.email = email or ""
         self.password = password or ""
@@ -6185,6 +6728,7 @@ class ChromeCDPCodexAuthFlow:
         self.otp_timeout = int(otp_timeout or 120)
         self.cdp_url = _normalize_chrome_cdp_url(cdp_url)
         self.auth_file_callback = auth_file_callback or save_auth_file
+        self.totp_secret = str(totp_secret or "").strip()
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
         self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
@@ -6244,6 +6788,8 @@ class ChromeCDPCodexAuthFlow:
   const isEmailVerification = location.href.toLowerCase().includes('/email-verification');
   const isAuthLogin = /auth\\.openai\\.com\\/(log-in|login)/.test(location.href.toLowerCase());
   const body = (document.body && document.body.innerText || '').slice(0, 3000);
+  const lower = (location.href + ' ' + body).toLowerCase();
+  const hasTotp = /\\bmfa\\b|\\btotp\\b|2fa|two[-\\s]?factor|authenticator|身份验证器|认证器|驗證器|双重验证|雙重驗證|两步验证|兩步驗證|二步验证|二步驗證/.test(lower);
   return {{
     url: location.href,
     title: document.title || '',
@@ -6251,6 +6797,7 @@ class ChromeCDPCodexAuthFlow:
     hasEmail: isAuthLogin || hasVisible(selectors.email),
     hasPassword: hasVisible(selectors.password),
     hasCode: isEmailVerification || hasVisible(selectors.code),
+    hasTotp,
   }};
 }})()
 """
@@ -6268,6 +6815,8 @@ class ChromeCDPCodexAuthFlow:
         body = str(state.get("body") or "").lower()
         if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
             return "phone_required", url
+        if state.get("hasTotp") or _looks_like_totp_challenge(url=url, body=body):
+            return "totp_required", url
         if "auth.openai.com/email-verification" in lower_url or "/email-verification" in lower_url:
             return "code_required", url
         if _is_auth_login_url(url):
@@ -6455,11 +7004,12 @@ class ChromeCDPCodexAuthFlow:
         return False
 
     async def _handle_password_step(self):
-        clicked = await self._click_by_text(list(_EMAIL_CODE_LOGIN_TEXTS))
-        if clicked:
-            logger.info("[Codex] Chrome CDP OAuth 已切换邮箱验证码登录")
-            await asyncio.sleep(2)
-            return True
+        if not (self.totp_secret and self.password):
+            clicked = await self._click_by_text(list(_EMAIL_CODE_LOGIN_TEXTS))
+            if clicked:
+                logger.info("[Codex] Chrome CDP OAuth 已切换到邮箱验证码登录")
+                await asyncio.sleep(2)
+                return True
         if self.password:
             result = await self._fill_input(SessionCodexAuthFlow.PASSWORD_SELECTORS, self.password)
             if result:
@@ -6467,6 +7017,26 @@ class ChromeCDPCodexAuthFlow:
                 await asyncio.sleep(0.4)
                 await self._click_by_text(["Continue", "继续", "Log in", "登录"])
                 await asyncio.sleep(3)
+                return True
+        return False
+
+    async def _handle_totp_step(self):
+        if not self.totp_secret:
+            logger.warning("[Codex] Chrome CDP OAuth 需要2FA，但本地没有TOTP密钥")
+            return False
+        from autotoken.services.totp import generate_totp_candidates, mask_totp_secret
+
+        logger.info("[Codex] Chrome CDP OAuth 检测到2FA验证页，将使用本地TOTP密钥: secret=%s", mask_totp_secret(self.totp_secret))
+        for attempt, code in enumerate(generate_totp_candidates(self.totp_secret), start=1):
+            if not await self._fill_otp_code(code):
+                continue
+            await asyncio.sleep(0.4)
+            await self._click_by_text(["Continue", "继续", "Verify", "验证"])
+            await asyncio.sleep(4)
+            state = await self._page_state()
+            step, _ = self._detect_step_from_state(state)
+            logger.info("[Codex] Chrome CDP OAuth 已提交2FA验证码: attempt=%s next_step=%s", attempt, step)
+            if step != "totp_required":
                 return True
         return False
 
@@ -6537,6 +7107,10 @@ class ChromeCDPCodexAuthFlow:
                     if await self._handle_code_step():
                         continue
                     return
+                elif step == "totp_required":
+                    if await self._handle_totp_step():
+                        continue
+                    return
                 else:
                     clicked = await self._click_by_text(
                         ["Continue", "继续", "Allow", "Authorize", "授权", "Confirm", "确认"]
@@ -6581,6 +7155,7 @@ def login_codex_via_chrome_cdp(
     native_oauth=True,
     otp_timeout=120,
     cdp_url=None,
+    totp_secret: str | None = None,
 ):
     """Complete Codex OAuth in the user's real Chrome through local CDP."""
     flow = ChromeCDPCodexAuthFlow(
@@ -6590,6 +7165,7 @@ def login_codex_via_chrome_cdp(
         native_oauth=native_oauth,
         otp_timeout=otp_timeout,
         cdp_url=cdp_url,
+        totp_secret=totp_secret,
     )
     return flow.run()
 
@@ -6641,10 +7217,11 @@ def _open_real_chrome_url(url: str) -> bool:
 
 
 class _OAuthHelperServer:
-    def __init__(self, *, email, password, token):
+    def __init__(self, *, email, password, token, totp_secret: str | None = None):
         self.email = email or ""
         self.password = password or ""
         self.token = token
+        self.totp_secret = str(totp_secret or "").strip()
         self.otp = ""
         self.events: list[dict] = []
         self.auth_code = ""
@@ -6689,6 +7266,7 @@ class _OAuthHelperServer:
                         "email": owner.email,
                         "password": owner.password,
                         "otp": owner.otp,
+                        "totp": owner.current_totp(),
                     },
                 )
 
@@ -6720,6 +7298,17 @@ class _OAuthHelperServer:
         self.thread.start()
         return self
 
+    def current_totp(self) -> str:
+        if not self.totp_secret:
+            return ""
+        try:
+            from autotoken.services.totp import generate_totp
+
+            return generate_totp(self.totp_secret)
+        except Exception as exc:
+            logger.warning("[Codex] Windows UI OAuth 生成2FA验证码失败: %s", exc)
+            return ""
+
     def stop(self):
         if self.httpd:
             self.httpd.shutdown()
@@ -6739,6 +7328,7 @@ class WindowsUICodexAuthFlow:
         native_oauth=True,
         otp_timeout=120,
         auth_file_callback=None,
+        totp_secret: str | None = None,
     ):
         self.email = email or ""
         self.password = password or ""
@@ -6746,6 +7336,7 @@ class WindowsUICodexAuthFlow:
         self.native_oauth = bool(native_oauth)
         self.otp_timeout = int(otp_timeout or 120)
         self.auth_file_callback = auth_file_callback or save_auth_file
+        self.totp_secret = str(totp_secret or "").strip()
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
         self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
@@ -6827,7 +7418,7 @@ class WindowsUICodexAuthFlow:
 
         self._prime_latest_email_id()
         self._server = _OAuthHelperServer(
-            email=self.email, password=self.password, token=secrets.token_urlsafe(18)
+            email=self.email, password=self.password, token=secrets.token_urlsafe(18), totp_secret=self.totp_secret
         ).start()
         try:
             self._submit_email()
@@ -6873,6 +7464,7 @@ def login_codex_via_windows_ui(
     password="",
     native_oauth=True,
     otp_timeout=120,
+    totp_secret: str | None = None,
 ):
     """Complete Codex OAuth in the user's normal desktop Chrome via Windows UI."""
     flow = WindowsUICodexAuthFlow(
@@ -6881,6 +7473,7 @@ def login_codex_via_windows_ui(
         mail_client=mail_client,
         native_oauth=native_oauth,
         otp_timeout=otp_timeout,
+        totp_secret=totp_secret,
     )
     return flow.run()
 
@@ -6953,6 +7546,7 @@ def login_codex_via_auth_session(
     phone_sms_provider=None,
     phone_sms_country=None,
     phone_sms_oasis_cdks=None,
+    totp_secret: str | None = None,
 ):
     """Complete Codex OAuth by reusing a freshly registered ChatGPT auth session."""
     if not isinstance(session_data, dict):
@@ -6984,6 +7578,7 @@ def login_codex_via_auth_session(
         phone_sms_provider=phone_sms_provider,
         phone_sms_country=phone_sms_country,
         phone_sms_oasis_cdks=phone_sms_oasis_cdks,
+        totp_secret=totp_secret,
     )
     try:
         state = flow.start()

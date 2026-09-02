@@ -1,0 +1,93 @@
+BRANCH: main
+OBJECT: 仪表盘账号旁 OAuth 标识实时显示
+RESULT: 已修复 OAuth 授权成功后必须刷新网页才显示 OAuth 的问题。
+
+CHANGED_BRANCH_FIELD:
+- src/autotoken/core/task_snapshots.py: login-batch / login:* 任务快照现在保留精简后的 progress_events: [{ stage: "account_login_done", email }]；params 允许 email、refresh_auth_session；result 允许 auth_file、email。
+- src/autotoken/api_routes/account_login.py: 单账号 OAuth 任务 params 持久带 email；refresh_auth_session 任务带 refresh_auth_session=true，前端可区分补登录刷新会话和正式 OAuth 授权。
+- web/src/components/Dashboard.vue: 新增 oauthCredentialCompletedEmails 本地完成集合；监听 OAuth 任务进度，收到 account_login_done 立即点亮对应账号 OAuth 标识；单账号完成仅在 result.auth_file 存在时点亮；hasCodexAuthFile 合并持久字段和本地完成状态。
+- tests/unit/test_task_snapshots.py: 增加任务快照回归测试，确保 OAuth 完成事件不会被任务列表压缩掉。
+- web/scripts/test-dashboard-oauth-badge.mjs: 增加前端回归断言，覆盖本地完成集合、任务进度、auth_file 保护和 v-memo 更新。
+
+SOURCE_PATHS:
+- D:\code\OpenSource\AutoTeam-F\src\autotoken\core\task_snapshots.py
+- D:\code\OpenSource\AutoTeam-F\src\autotoken\api_routes\account_login.py
+- D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue
+- D:\code\OpenSource\AutoTeam-F\tests\unit\test_task_snapshots.py
+- D:\code\OpenSource\AutoTeam-F\web\scripts\test-dashboard-oauth-badge.mjs
+
+ARTIFACT_PATHS:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-live-20260902\MODIFIED_FILE.zip
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-live-20260902\DIFF_FILE.diff
+- VERIFICATION.txt: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-live-20260902\VERIFICATION.txt
+- ROLLBACK.sh: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-live-20260902\ROLLBACK.sh
+
+BASELINE:
+1) COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py::test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge -q
+   INPUT: live OAuth badge regression on pre-change implementation
+   LITERAL_OUTPUT_RESULT:
+   F                                                                        [100%]
+   E       KeyError: 'progress_events'
+   FAILED tests/unit/test_task_snapshots.py::test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge
+   1 failed in 0.10s
+   EXIT_STATUS: 1
+2) COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+   INPUT: live OAuth badge regression on pre-change implementation
+   LITERAL_OUTPUT_RESULT:
+   AssertionError [ERR_ASSERTION]: OAuth login completion should be tracked locally so the badge appears before a full page reload
+   EXIT_STATUS: 1
+
+MODIFIED:
+1) COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py::test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge -q
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   .                                                                        [100%]
+   1 passed in 0.04s
+   EXIT_STATUS=0
+2) COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   dashboard OAuth badge regression passed
+   EXIT_STATUS=0
+3) COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\core\task_snapshots.py src\autotoken\api_routes\account_login.py
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   EXIT_STATUS=0
+4) COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit -q
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   91 passed in 5.48s
+   EXIT_STATUS=0
+5) COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   all frontend scripts passed: 46/46
+   EXIT_STATUS=0
+6) COMMAND: Push-Location web; npm run build; Pop-Location
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   ✓ built in 2.65s
+   EXIT_STATUS=0
+7) COMMAND: git diff --check -- src\autotoken\core\task_snapshots.py src\autotoken\api_routes\account_login.py web\src\components\Dashboard.vue tests\unit\test_task_snapshots.py web\scripts\test-dashboard-oauth-badge.mjs
+   INPUT: modified implementation
+   LITERAL_OUTPUT_RESULT:
+   warning: in the working copy of 'src/autotoken/api_routes/account_login.py', LF will be replaced by CRLF the next time Git touches it
+   warning: in the working copy of 'src/autotoken/core/task_snapshots.py', LF will be replaced by CRLF the next time Git touches it
+   warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+   EXIT_STATUS=0
+
+ROLLBACK:
+COMMAND: bash /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-live-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-live-20260902/rollback-test-root-20260902213825
+INPUT: separate copy rooted at D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-live-20260902\rollback-test-root-20260902213825
+LITERAL_OUTPUT_RESULT:
+rollback restored 5 files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-live-20260902/rollback-test-root-20260902213825
+EXIT_STATUS=0
+HASH_CHECK src\autotoken\core\task_snapshots.py restored=072E79B012077786073D565305A9212DCDB9DF1940050D2776241A9D3A26B383 original=072E79B012077786073D565305A9212DCDB9DF1940050D2776241A9D3A26B383 match=True
+HASH_CHECK src\autotoken\api_routes\account_login.py restored=FA4FF77E85FB5102E97EA23542704A4A47E541EC5DF982B81C8A23FB93E490E2 original=FA4FF77E85FB5102E97EA23542704A4A47E541EC5DF982B81C8A23FB93E490E2 match=True
+HASH_CHECK web\src\components\Dashboard.vue restored=CE81DFE4C996CD689C7991C1485E5BD7FBD06B52C77D252D0F48A93B54EDC459 original=CE81DFE4C996CD689C7991C1485E5BD7FBD06B52C77D252D0F48A93B54EDC459 match=True
+HASH_CHECK tests\unit\test_task_snapshots.py restored=705747E8BE811369CF0B4514268C4DAEE2F65AF40D7FC3EA537E7F820DAD8BD0 original=705747E8BE811369CF0B4514268C4DAEE2F65AF40D7FC3EA537E7F820DAD8BD0 match=True
+HASH_CHECK web\scripts\test-dashboard-oauth-badge.mjs restored=C55AB779120A1F9F618EBC6DE866089EAF4B6694BD67DC3BA043FDC10C067383 original=C55AB779120A1F9F618EBC6DE866089EAF4B6694BD67DC3BA043FDC10C067383 match=True
+RESTORED_BEHAVIOR=separate copy restored to original OAuth badge behavior (no live task-progress badge update)
+RESTORED_STATUS=True
+
+RESTORED_BEHAVIOR_STATUS: rollback copy restored to original hashes and original behavior/status; current workspace keeps MODIFIED_FILE changed.

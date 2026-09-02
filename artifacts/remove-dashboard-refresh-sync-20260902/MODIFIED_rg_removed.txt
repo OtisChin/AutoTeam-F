@@ -1,0 +1,5 @@
+COMMAND: rg dashboard refresh/sync button references
+INPUT: (none)
+OUTPUT:
+NO_MATCHES
+EXIT_STATUS: 0

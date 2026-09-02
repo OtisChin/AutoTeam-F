@@ -1,0 +1,61 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: 导出时间不应再作为独立表头列展示
+    at file:///D:/code/OpenSource/AutoTeam-F/web/scripts/test-dashboard-export-time-merge.mjs:12:8
+    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: '<thead>\r\n' +
+    '            <tr class="text-gray-400 text-left border-b border-gray-800">\r\n' +
+    '              <th class="px-3 py-3 font-medium w-8">\r\n' +
+    '                <input\r\n' +
+    '                  type="checkbox"\r\n' +
+    '                  :checked="allSelectableChecked"\r\n' +
+    '                  :indeterminate.prop="someSelectableChecked"\r\n' +
+    '                  @change="toggleSelectAll"\r\n' +
+    '                  :disabled="!selectableEmails.length"\r\n' +
+    '                  class="accent-rose-500 cursor-pointer"\r\n' +
+    '                  title="全选/取消全选(主号除外)" />\r\n' +
+    '              </th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">#</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium min-w-56">邮箱</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">账号类型</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">状态</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium whitespace-nowrap">2FA</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">绑定渠道</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">账密导出</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">导出时间</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">Hub同步</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium text-right">5h 剩余</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium text-right">周 剩余</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">注册时间</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium">激活时间</th>\r\n' +
+    '              <th class="px-4 py-3 font-medium text-right">\r\n' +
+    '                <div class="inline-flex items-center justify-end gap-2">\r\n' +
+    '                  <span>操作</span>\r\n' +
+    '                  <button\r\n' +
+    '                    type="button"\r\n' +
+    '                    @click="toggleAccountDisplayOrder"\r\n' +
+    '                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-[11px] font-semibold transition"\r\n' +
+    `                    :class="accountDisplayOrder === 'desc'\r\n` +
+    "                      ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'\r\n" +
+    `                      : 'border-gray-700 bg-gray-800/70 text-gray-400 hover:border-gray-600 hover:text-gray-200'"\r\n` +
+    `                    :title="accountDisplayOrder === 'desc' ? '当前倒序显示，点击切换正序' : '当前正序显示，点击切换倒序'"\r\n` +
+    `                    :aria-label="accountDisplayOrder === 'desc' ? '切换为账号正序显示' : '切换为账号倒序显示'">\r\n` +
+    '                    ↑↓\r\n' +
+    '                  </button>\r\n' +
+    '                </div>\r\n' +
+    '              </th>\r\n' +
+    '            </tr>\r\n' +
+    '          </thead>',
+  expected: /<th class="[^"]*font-medium[^"]*">导出时间<\/th>/,
+  operator: 'doesNotMatch',
+  diff: 'simple'
+}
+
+Node.js v24.14.0
+EXIT_STATUS=1

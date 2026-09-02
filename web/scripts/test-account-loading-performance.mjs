@@ -240,8 +240,8 @@ const accountRowTemplate = dashboardSource.match(/<tr v-for="\(acc, i\) in pagin
 assert.ok(accountRowTemplate, 'the paginated account row template should remain discoverable')
 assert.match(accountRowTemplate, /v-memo=/, 'stable account rows should skip unrelated reactive patches')
 assert.ok(
-  (accountRowTemplate.match(/<button\b/g) || []).length <= 2,
-  'each rich account row should mount only the requested 2FA setup button plus one shared action trigger',
+  (accountRowTemplate.match(/<button\b/g) || []).length <= 3,
+  'each rich account row should mount only the requested 2FA view/setup controls plus one shared action trigger',
 )
 assert.match(dashboardSource, /v-if="accountActionMenuAccount"[^>]*role="dialog"/, 'row actions should mount once in an on-demand shared dialog')
 assert.match(dashboardSource, /<Teleport to="body">[\s\S]*v-if="accountActionMenuAccount"[\s\S]*<\/Teleport>/, 'the shared action dialog should escape the clipped table scroll container')

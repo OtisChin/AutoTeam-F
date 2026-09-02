@@ -109,7 +109,10 @@ def generate_totp_candidates(
         raise TOTPSecretError("TOTP candidate window must be non-negative")
     timestamp = time.time() if for_time is None else float(for_time)
     candidates: list[str] = []
-    for offset in range(-window, window + 1):
+    offsets = [0]
+    for distance in range(1, window + 1):
+        offsets.extend((-distance, distance))
+    for offset in offsets:
         candidates.append(generate_totp(secret, for_time=timestamp + offset * period, period=period, digits=digits))
     return candidates
 

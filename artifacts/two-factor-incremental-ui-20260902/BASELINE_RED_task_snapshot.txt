@@ -1,0 +1,48 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py::test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state -q
+INPUT: new incremental 2FA UI tests on current pre-change implementation
+OUTPUT:
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state _
+
+    def test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state():
+        task = {
+            "task_id": "task-2fa",
+            "command": "setup-2fa",
+            "status": "running",
+            "created_at": 1,
+            "params": {"emails": ["one@example.com", "two@example.com", "three@example.com"]},
+            "progress_events": [
+                {"stage": "account_2fa_account_started", "email": "one@example.com", "message": "start"},
+                {
+                    "stage": "account_2fa_progress",
+                    "email": "one@example.com",
+                    "status": "enabled",
+                    "reason": "",
+                    "message": "enabled",
+                },
+                {
+                    "stage": "account_2fa_progress",
+                    "email": "two@example.com",
+                    "status": "failed",
+                    "reason": "otp_timeout",
+                    "message": "failed",
+                },
+                {"stage": "gopay_progress", "email": "ignored@example.com", "status": "enabled"},
+            ],
+        }
+    
+        snapshot = task_list_snapshot(task)
+    
+>       assert snapshot["progress_events"] == [
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            {"stage": "account_2fa_progress", "email": "one@example.com", "status": "enabled", "reason": ""},
+            {"stage": "account_2fa_progress", "email": "two@example.com", "status": "failed", "reason": "otp_timeout"},
+        ]
+E       KeyError: 'progress_events'
+
+tests\unit\test_task_snapshots.py:48: KeyError
+=========================== short test summary info ===========================
+FAILED tests/unit/test_task_snapshots.py::test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state
+1 failed in 0.09s
+EXIT_STATUS: 1

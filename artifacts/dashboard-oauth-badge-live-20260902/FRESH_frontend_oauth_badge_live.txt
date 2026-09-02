@@ -1,0 +1,2 @@
+dashboard OAuth badge regression passed
+EXIT_STATUS=0

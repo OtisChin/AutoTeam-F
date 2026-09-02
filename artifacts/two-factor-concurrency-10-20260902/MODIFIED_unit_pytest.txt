@@ -1,0 +1,7 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit -q
+INPUT: (none)
+OUTPUT:
+........................................................................ [ 87%]
+..........                                                               [100%]
+82 passed in 4.81s
+EXIT_STATUS: 0

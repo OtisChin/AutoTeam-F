@@ -1,0 +1,5 @@
+COMMAND: rg -n '导入成品|成品账号导入|import-finished|finishedImport|importFinishedAccounts|finished_account_import' src/autotoken/web/dist -S
+INPUT: (none)
+OUTPUT:
+NO_MATCHES
+EXIT_STATUS: 0

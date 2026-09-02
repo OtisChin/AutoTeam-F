@@ -162,6 +162,7 @@ class AuthFlow:
         )
         self._trace_dump_path = ""
         self._used_email_otp_codes: set[str] = set()
+        self._stale_email_otp_codes: set[str] = set()
         self._email_otp_send_attempts = 0
         self._email_otp_resend_attempts = 0
         self._last_sentinel_token = ""
@@ -200,8 +201,10 @@ class AuthFlow:
             "timeout": timeout,
             "issued_after": issued_after,
         }
-        if exclude_used and self._used_email_otp_codes:
-            kwargs["exclude_codes"] = set(self._used_email_otp_codes)
+        excluded_codes = set(self._used_email_otp_codes)
+        excluded_codes.update(self._stale_email_otp_codes)
+        if exclude_used and excluded_codes:
+            kwargs["exclude_codes"] = excluded_codes
         if strict_issued_after:
             kwargs["strict_issued_after"] = True
         try:
@@ -217,6 +220,56 @@ class AuthFlow:
                 raise RuntimeError("邮箱 OTP 已使用，未返回新的验证码")
             self._used_email_otp_codes.add(code)
         return code
+
+    def _snapshot_existing_email_otp_codes(self, mail_provider: MailProvider, email: str) -> set[str]:
+        target = str(email or "").strip()
+        mail_client = getattr(mail_provider, "mail_client", None) or mail_provider
+        search_emails = getattr(mail_client, "search_emails_by_recipient", None)
+        extract_code = getattr(mail_client, "extract_verification_code", None)
+        if not target or not callable(search_emails) or not callable(extract_code):
+            return set()
+        account_id = getattr(mail_provider, "account_id", None)
+        try:
+            try:
+                emails = search_emails(target, size=10, account_id=account_id)
+            except TypeError:
+                emails = search_emails(target, size=10)
+        except Exception as exc:
+            logger.info("[邮箱验证码] 触发前旧码快照失败，继续登录流程: %s", safe_error_summary(exc, limit=120))
+            return set()
+
+        try:
+            from autotoken.mail.base import is_openai_otp_message
+        except Exception:
+            is_openai_otp_message = None
+
+        stale_codes: set[str] = set()
+        for item in emails or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                code = str(extract_code(item) or "").strip()
+            except Exception:
+                code = ""
+            if not code:
+                continue
+            if callable(is_openai_otp_message) and not is_openai_otp_message(item):
+                continue
+            stale_codes.add(code)
+        if stale_codes:
+            logger.info("[邮箱验证码] 已记录触发前旧验证码快照: count=%s", len(stale_codes))
+        self._stale_email_otp_codes.update(stale_codes)
+        return stale_codes
+
+    def _snapshot_settled_email_otp_codes(self, mail_provider: MailProvider, email: str) -> set[str]:
+        try:
+            settle_seconds = max(0.0, float(os.getenv("OPENAI_EMAIL_OTP_PREFLIGHT_SETTLE_SECONDS", "8") or "8"))
+        except (TypeError, ValueError):
+            settle_seconds = 8.0
+        if settle_seconds > 0:
+            logger.info("[邮箱验证码] 等待旧/自动验证码入库后再触发新码: %.1fs", settle_seconds)
+            time.sleep(settle_seconds)
+        return self._snapshot_existing_email_otp_codes(mail_provider, email)
 
     def _email_otp_verify_max_attempts(self) -> int:
         try:
@@ -261,15 +314,29 @@ class AuthFlow:
                     max_attempts,
                     safe_error_summary(exc, limit=180),
                 )
-                otp_sent_at = time.time()
+                try:
+                    current_code = self._wait_for_email_otp(
+                        mail_provider,
+                        email,
+                        timeout=max(10, min(20, int(otp_timeout))),
+                        issued_after=time.time(),
+                        exclude_used=True,
+                        strict_issued_after=True,
+                    )
+                    logger.info("[OAuth登陆] 验证码校验失败后等到新码，先尝试新码，不立即重发")
+                    continue
+                except TimeoutError:
+                    logger.info("[OAuth登陆] 验证码校验失败后未等到新码，开始重发")
                 mode = retry_mode if attempt == 1 else f"{retry_mode}_{attempt}"
                 self._require_otp_delivery(mode)
+                otp_sent_at = time.time()
                 current_code = self._wait_for_email_otp(
                     mail_provider,
                     email,
                     timeout=otp_timeout,
                     issued_after=otp_sent_at,
                     exclude_used=True,
+                    strict_issued_after=True,
                 )
         raise RuntimeError("OTP 验证失败")
 
@@ -1015,12 +1082,56 @@ class AuthFlow:
         return (pt == "add_email") or ("add-email" in cu)
 
     @staticmethod
-    def _is_totp_challenge_state(page_type: str = "", continue_url: str = "") -> bool:
+    def _extract_totp_factor_id(payload: Any = None, continue_url: str = "") -> str:
+        candidates: list[Any] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+            page = payload.get("page")
+            if isinstance(page, dict):
+                page_payload = page.get("payload")
+                if isinstance(page_payload, dict):
+                    candidates.append(page_payload)
+            client_session = payload.get("oai-client-auth-session") or payload.get("client_auth_session")
+            if isinstance(client_session, dict):
+                candidates.append(client_session)
+
+        for item in candidates:
+            for key in ("factor_id", "id", "mfa_factor_id"):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    return value
+            for list_key in ("factors", "mfa_challenge_factors", "mfa_factors"):
+                factors = item.get(list_key)
+                if not isinstance(factors, list):
+                    continue
+                for factor in factors:
+                    if not isinstance(factor, dict):
+                        continue
+                    factor_type = str(factor.get("factor_type") or factor.get("type") or "").strip().lower()
+                    factor_id = str(factor.get("id") or factor.get("factor_id") or "").strip()
+                    if factor_id and (not factor_type or factor_type == "totp"):
+                        return factor_id
+
+        url = str(continue_url or "").strip()
+        match = re.search(r"/mfa(?:-challenge)?/([^/?#]+)", url)
+        return match.group(1).strip() if match else ""
+
+    @classmethod
+    def _is_totp_challenge_state(cls, page_type: str = "", continue_url: str = "", payload: Any = None) -> bool:
         pt = (page_type or "").strip().lower()
         cu = (continue_url or "").strip().lower()
-        return any(token in pt for token in ("totp", "mfa", "authenticator")) or any(
+        if any(token in pt for token in ("totp", "mfa", "authenticator")) or any(
             token in cu for token in ("/mfa", "totp", "authenticator")
-        )
+        ):
+            return True
+        if isinstance(payload, dict):
+            page = payload.get("page")
+            if isinstance(page, dict):
+                nested_type = str(page.get("type") or "").strip().lower()
+                if any(token in nested_type for token in ("totp", "mfa", "authenticator")):
+                    return True
+            return bool(cls._extract_totp_factor_id(payload, continue_url))
+        return False
 
     def _handle_totp_challenge(self, *, continue_url: str = "", page_type: str = "", payload: dict | None = None) -> str:
         """Complete an existing-account TOTP challenge using a stored local secret.
@@ -1044,31 +1155,147 @@ class AuthFlow:
             or payload.get("url")
             or ""
         ).strip()
+        factor_id = self._extract_totp_factor_id(payload, continue_url)
+        endpoint_candidates: list[str] = []
         if endpoint and endpoint.startswith("/"):
             endpoint = f"https://auth.openai.com{endpoint}"
         if endpoint and not endpoint.startswith("https://auth.openai.com/"):
             endpoint = ""
-        if not endpoint:
+        if endpoint:
+            endpoint_candidates.append(endpoint)
+        endpoint_candidates.extend(
+            [
+                "https://auth.openai.com/api/accounts/mfa/verify",
+                "https://auth.openai.com/api/accounts/mfa/validate",
+                "https://auth.openai.com/api/accounts/mfa-challenge/verify",
+                "https://auth.openai.com/api/accounts/mfa-challenge/validate",
+            ]
+        )
+        if factor_id:
+            endpoint_candidates.extend(
+                [
+                    f"https://auth.openai.com/api/accounts/mfa-challenge/{factor_id}/validate",
+                    f"https://auth.openai.com/api/accounts/mfa-challenge/{factor_id}/verify",
+                ]
+            )
+        deduped_endpoints = []
+        for candidate in endpoint_candidates:
+            if candidate and candidate not in deduped_endpoints:
+                deduped_endpoints.append(candidate)
+        if not deduped_endpoints:
             raise RuntimeError("TOTP challenge protocol endpoint unavailable; use official browser UI flow")
+
+        logger.info(
+            "[OAuth登陆] 检测到服务端2FA挑战: page_type=%s factor_id_present=%s",
+            page_type or "-",
+            bool(factor_id),
+        )
+        self._emit_progress(
+            "protocol_totp_challenge_detected",
+            "检测到服务端2FA挑战，将提交TOTP验证码",
+            page_type=page_type or "",
+            factor_id_present=bool(factor_id),
+            continue_url_present=bool(continue_url),
+        )
 
         headers = self._common_headers(continue_url or "https://auth.openai.com/")
         headers["Content-Type"] = "application/json"
         last_error = ""
-        for code in generate_totp_candidates(secret):
-            resp = self.session.post(endpoint, headers=headers, json={"code": code}, timeout=30)
-            self._trace_http("validate_totp", resp)
+        totp_errors: list[str] = []
+        issue_data: dict[str, Any] = {}
+        issue_payloads = [{"type": "totp"}]
+        if factor_id:
+            issue_payloads.insert(0, {"type": "totp", "id": factor_id})
+            issue_payloads.insert(1, {"type": "totp", "factor_id": factor_id})
+            issue_payloads.append({"id": factor_id})
+            issue_payloads.append({"factor_id": factor_id})
+        for request_payload in issue_payloads:
+            resp = self.session.post(
+                "https://auth.openai.com/api/accounts/mfa/issue_challenge",
+                headers=headers,
+                json=request_payload,
+                timeout=30,
+            )
+            self._trace_http("issue_totp_challenge", resp)
             if resp.status_code != 200:
-                last_error = f"HTTP {resp.status_code}"
+                last_error = f"issue_challenge HTTP {resp.status_code} - {(resp.text or '')[:220]}"
+                if resp.status_code != 404 and len(totp_errors) < 6:
+                    totp_errors.append(last_error)
                 continue
             try:
-                data = resp.json()
+                issue_data = resp.json()
             except Exception:
-                data = {}
-            next_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
-            if next_url:
-                return next_url
-            last_error = "missing continue_url"
-        raise RuntimeError(f"TOTP challenge verification failed: {last_error or 'unknown'}")
+                issue_data = {}
+            logger.info("[OAuth登陆] 2FA挑战已创建: challenge_id_present=%s", bool(issue_data))
+            self._emit_progress(
+                "protocol_totp_challenge_issued",
+                "2FA挑战已创建",
+                factor_id_present=bool(factor_id),
+                challenge_payload_present=bool(issue_data),
+            )
+            break
+
+        issue_challenge = issue_data.get("challenge") if isinstance(issue_data.get("challenge"), dict) else {}
+        challenge_id = str(
+            issue_data.get("challenge_id")
+            or issue_data.get("mfa_challenge_id")
+            or issue_data.get("id")
+            or issue_challenge.get("id")
+            or ""
+        ).strip()
+        for code in generate_totp_candidates(secret):
+            payload_variants = [{"type": "totp", "code": code}]
+            if factor_id:
+                payload_variants.extend(
+                    [
+                        {"type": "totp", "id": factor_id, "code": code},
+                        {"type": "totp", "factor_id": factor_id, "code": code},
+                        {"type": "totp", "mfa_factor_id": factor_id, "code": code},
+                        {"id": factor_id, "code": code},
+                        {"factor_id": factor_id, "code": code},
+                        {"mfa_factor_id": factor_id, "code": code},
+                    ]
+                )
+            if challenge_id:
+                payload_variants.extend(
+                    [
+                        {"type": "totp", "challenge_id": challenge_id, "code": code},
+                        {"type": "totp", "mfa_challenge_id": challenge_id, "code": code},
+                    ]
+                )
+            payload_variants.append({"code": code})
+            for candidate_endpoint in deduped_endpoints:
+                for request_payload in payload_variants:
+                    resp = self.session.post(candidate_endpoint, headers=headers, json=request_payload, timeout=30)
+                    self._trace_http("validate_totp", resp)
+                    if resp.status_code != 200:
+                        last_error = f"{candidate_endpoint}: HTTP {resp.status_code} - {(resp.text or '')[:220]}"
+                        if resp.status_code != 404 and len(totp_errors) < 6:
+                            totp_errors.append(last_error)
+                        continue
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = {}
+                    next_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
+                    if next_url:
+                        logger.info("[OAuth登陆] 2FA验证码校验通过: next_url_present=True")
+                        self._emit_progress(
+                            "protocol_totp_challenge_verified",
+                            "2FA验证码已提交并验证通过",
+                            next_url_present=True,
+                        )
+                        return next_url
+                    if data.get("success") is True or data.get("ok") is True:
+                        logger.info("[OAuth登陆] 2FA验证码校验通过: next_url_present=False")
+                        self._emit_progress(
+                            "protocol_totp_challenge_verified",
+                            "2FA验证码已提交并验证通过",
+                            next_url_present=False,
+                        )
+                        return continue_url or ""
+                    last_error = "missing continue_url"
+        raise RuntimeError(f"TOTP challenge verification failed: {' | '.join(totp_errors) or last_error or 'unknown'}")
 
     @staticmethod
     def _looks_like_email_already_in_use_error(exc: Any) -> bool:
@@ -3485,7 +3712,8 @@ class AuthFlow:
 
         email = email.strip()
         self.result.email = email
-        login_password = (password or "").strip() or self._default_password_from_email(email)
+        provided_login_password = (password or "").strip()
+        login_password = provided_login_password or self._default_password_from_email(email)
         self.result.password = login_password
 
         def start_authorize_state(reason: str = "", *, reset_session: bool = False) -> tuple[str, str]:
@@ -3509,6 +3737,8 @@ class AuthFlow:
 
         page_type = ""
         mode = ""
+        payload: dict[str, Any] = {}
+        email_otp_auto_issued_after = 0.0
         try:
             invalid_state_retries = max(1, int(os.getenv("OAUTH_INVALID_STATE_RETRIES", "5") or "5"))
         except Exception:
@@ -3522,12 +3752,17 @@ class AuthFlow:
         auth_session_only = bool(getattr(self, "_auth_session_only_override", False)) or self._env_flag(
             "AUTH_SESSION_ONLY", "0"
         )
+        has_stored_totp_secret = bool(str(getattr(self, "_totp_secret", "") or "").strip())
+        force_password_before_email_otp = bool(auth_session_only and provided_login_password and has_stored_totp_secret)
+        if not has_stored_totp_secret:
+            self._snapshot_existing_email_otp_codes(mail_provider, email)
 
         if prefer_login_screen_first:
             login_probe_attempts = invalid_state_retries if auth_session_only else 1
             for attempt in range(login_probe_attempts):
                 try:
                     logger.info("已有账号协议登录：优先走 login screen_hint 探测 password/otp 分支")
+                    login_step_started_at = time.time()
                     login_step = self.authorize_continue(
                         email=email,
                         sentinel_token=sentinel,
@@ -3545,11 +3780,33 @@ class AuthFlow:
 
                     if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
                         logger.info("登录分支: login_password -> password/verify")
+                        logger.info("[OAuth登陆] 提交密码: email=%s", email)
+                        password_verify_started_at = time.time()
                         login_resp = self.login_password_verify(login_password)
+                        logger.info("[OAuth登陆] 密码校验通过: email=%s", email)
                         page_type = (self._extract_page_type(login_resp) or "").lower()
                         continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_resp))
+                        login_page = (login_resp.get("page") or {}) if isinstance(login_resp, dict) else {}
+                        payload = (login_page.get("payload") or {}) if isinstance(login_page, dict) else {}
+                        if page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
+                            email_otp_auto_issued_after = password_verify_started_at
                     elif page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
-                        logger.info("登录分支: email_otp_verification")
+                        email_otp_auto_issued_after = login_step_started_at
+                        if force_password_before_email_otp:
+                            logger.info("登录分支: email_otp_verification -> stored_password_totp -> password/verify")
+                            logger.info("[OAuth登陆] 检测到本地密码和2FA密钥，补登录优先提交密码，不触发邮箱验证码: email=%s", email)
+                            logger.info("[OAuth登陆] 提交密码: email=%s", email)
+                            password_verify_started_at = time.time()
+                            login_resp = self.login_password_verify(login_password)
+                            logger.info("[OAuth登陆] 密码校验通过: email=%s", email)
+                            page_type = (self._extract_page_type(login_resp) or "").lower()
+                            continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_resp))
+                            login_page = (login_resp.get("page") or {}) if isinstance(login_resp, dict) else {}
+                            payload = (login_page.get("payload") or {}) if isinstance(login_page, dict) else {}
+                            if page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
+                                email_otp_auto_issued_after = password_verify_started_at
+                        else:
+                            logger.info("登录分支: email_otp_verification")
                     else:
                         logger.info(
                             "login screen_hint 未直接命中已有账号完成态: page_type=%s continue_url=%s",
@@ -3627,24 +3884,27 @@ class AuthFlow:
             page_type = (page_type or self._existing_page_type or "").lower()
             mode = (mode or self._existing_email_verification_mode or "").lower()
 
-        if self._is_totp_challenge_state(page_type=page_type, continue_url=continue_url):
+        if self._is_totp_challenge_state(page_type=page_type, continue_url=continue_url, payload=payload):
             continue_url = self._normalize_continue_url(
                 self._handle_totp_challenge(continue_url=continue_url, page_type=page_type, payload=payload)
             )
             page_type = ""
 
         if not continue_url or "/email-verification" in continue_url:
-            # 仍需 OTP：优先 resend 获取新码
-            otp_sent_at = time.time()
-            self._require_otp_delivery("protocol_need_otp")
-
-            otp_code = self._wait_for_email_otp(
-                mail_provider,
-                email,
-                timeout=otp_timeout,
-                issued_after=otp_sent_at,
-                exclude_used=True,
-            )
+            otp_code = ""
+            if email_otp_auto_issued_after:
+                logger.info("[OAuth登陆] 邮箱验证码页已返回，先记录旧/自动码，再按注册逻辑触发新码")
+                self._snapshot_settled_email_otp_codes(mail_provider, email)
+            if not otp_code:
+                otp_sent_at = time.time()
+                self._require_otp_delivery("protocol_need_otp")
+                otp_code = self._wait_for_email_otp(
+                    mail_provider,
+                    email,
+                    timeout=otp_timeout,
+                    issued_after=otp_sent_at,
+                    exclude_used=True,
+                )
             otp_resp = self._verify_email_otp_with_retries(
                 mail_provider,
                 email,
@@ -3658,14 +3918,37 @@ class AuthFlow:
             otp_page_type = (self._extract_page_type(otp_resp) or "").lower()
             otp_page = (otp_resp.get("page") or {}) if isinstance(otp_resp, dict) else {}
             otp_payload = (otp_page.get("payload") or {}) if isinstance(otp_page, dict) else {}
-            if self._is_totp_challenge_state(page_type=otp_page_type, continue_url=continue_url):
+            otp_has_totp_challenge = self._is_totp_challenge_state(
+                page_type=otp_page_type,
+                continue_url=continue_url,
+                payload=otp_resp,
+            )
+            otp_factor_id = self._extract_totp_factor_id(otp_resp, continue_url)
+            logger.info(
+                "[OAuth登陆] 邮箱验证码校验后分支: page_type=%s continue_url_present=%s totp_challenge=%s factor_id_present=%s",
+                otp_page_type or "-",
+                bool(continue_url),
+                otp_has_totp_challenge,
+                bool(otp_factor_id),
+            )
+            self._emit_progress(
+                "protocol_email_otp_next_step",
+                "邮箱验证码校验后已识别下一步登录分支",
+                page_type=otp_page_type or "",
+                continue_url_present=bool(continue_url),
+                totp_challenge=otp_has_totp_challenge,
+                factor_id_present=bool(otp_factor_id),
+            )
+            if otp_has_totp_challenge:
                 continue_url = self._normalize_continue_url(
                     self._handle_totp_challenge(
                         continue_url=continue_url,
                         page_type=otp_page_type,
-                        payload=otp_payload,
+                        payload=otp_resp or otp_payload,
                     )
                 )
+            elif str(getattr(self, "_totp_secret", "") or "").strip():
+                logger.info("[OAuth登陆] 本次服务端未返回2FA挑战，继续获取 auth_session")
             if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
                 continue_url = self._normalize_continue_url(
                     self._handle_add_phone_verification(continue_url=continue_url)

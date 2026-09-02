@@ -1,0 +1,308 @@
+CHANGE_SUMMARY
+BRANCH: main
+CHANGED_BRANCH_FIELD: Dashboard account email cell now renders an OAuth badge next to displayEmailPreview(acc) when hasCodexAuthFile(acc) is true; the row v-memo includes hasCodexAuthFile(acc) so credential badge changes repaint.
+SOURCE_PATHS:
+D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue
+D:\code\OpenSource\AutoTeam-F\web\scripts\test-dashboard-oauth-badge.mjs
+ARTIFACT_PATHS:
+MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-20260902\MODIFIED_FILE.zip
+DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-20260902\DIFF_FILE.diff
+VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-20260902\VERIFICATION.txt
+ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-oauth-badge-20260902\ROLLBACK.sh
+
+ORIGINAL_HASHES
+938951D7988A09AAAB68F25FAE78250D0EF630055A5B82F1EC915D5EFA21D215  web\src\components\Dashboard.vue
+NEW_FILE  web\scripts\test-dashboard-oauth-badge.mjs
+
+==== BASELINE_RED_oauth_badge.txt ====
+COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+INPUT: new OAuth badge regression on pre-change Dashboard.vue
+OUTPUT: node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: accounts that already have OAuth credentials should show an OAuth badge next to the account email
+    at file:///D:/code/OpenSource/AutoTeam-F/web/scripts/test-dashboard-oauth-badge.mjs:10:8
+    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: '<tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"\n' +
+    '              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorEnabled(acc), accountTwoFactorSetupInProgress(acc)]"\n' +
+    '              class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"\r\n' +
+    `              :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">\r\n` +
+    '              <td class="px-3 py-3">\r\n' +
+    '                <input\r\n' +
+    '                  v-if="!acc.is_main_account"\r\n' +
+    '                  type="checkbox"\r\n' +
+    '                  :checked="isSelected(acc.email)"\r\n' +
+    '                  @change="toggleSelect(acc.email)"\r\n' +
+    '                  class="accent-rose-500 cursor-pointer" />\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-500">{{ accountPageStartIndex + i + 1 }}</td>\r\n' +
+    '              <td class="px-4 py-3 max-w-56">\r\n' +
+    '                <div\r\n' +
+    '                  class="w-56 max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-gray-200"\r\n' +
+    '                  :title="displayEmail(acc)">\r\n' +
+    '                  {{ displayEmailPreview(acc) }}\r\n' +
+    '                </div>\r\n' +
+    '                <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">\r\n' +
+    '                  Hub: {{ acc.hub_source_name }}\r\n' +
+    '                </div>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="accountTypeClass(acc.account_type)">\r\n' +
+    '                  {{ accountTypeLabel(acc.account_type) }}\r\n' +
+    '                </span>\r\n' +
+    '                <span\r\n' +
+    '                  v-if="acc.trial_eligible"\r\n' +
+    '                  class="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"\r\n' +
+    '                  title="注册时检测到该账号可 0 元试用（available_plans 非空）">\r\n' +
+    '                  可试用\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="statusClass(acc.status)">\r\n' +
+    '                  <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(acc.status)"></span>\r\n' +
+    '                  {{ statusLabel(acc.status) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\n' +
+    '                <button\n' +
+    '                  v-if="accountTwoFactorEnabled(acc)"\n' +
+    '                  type="button"\n' +
+    '                  @click="openTwoFactorTotpDialog(acc)"\n' +
+    '                  class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 transition hover:bg-emerald-500/20">\n' +
+    '                  已设置\n' +
+    '                </button>\n' +
+    '                <button\n' +
+    '                  v-else\n' +
+    '                  type="button"\n' +
+    '                  @click="setupAccountTwoFactor(acc)"\n' +
+    '                  :disabled="accountTwoFactorSetupInProgress(acc)"\r\n' +
+    '                  class="inline-flex items-center px-2 py-0.5 rounded-md border text-xs font-medium whitespace-nowrap transition"\r\n' +
+    '                  :class="accountTwoFactorSetupInProgress(acc)\r\n' +
+    "                    ? 'border-yellow-500/20 bg-yellow-500/5 text-yellow-300/70 cursor-wait'\r\n" +
+    `                    : 'border-yellow-500/30 bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20'">\r\n` +
+    '                  {{ twoFactorButtonLabel(acc) }}\r\n' +
+    '                </button>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="bindProviderClass(effectiveBindProvider(acc))">\r\n' +
+    '                  {{ bindProviderLabel(effectiveBindProvider(acc)) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="credentialExportClass(acc)">\r\n' +
+    '                  {{ credentialExportLabel(acc) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ exportTimeLabel(acc) }}</td>\r\n' +
+    '              <td class="px-4 py-3">\r\n' +
+    '                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"\r\n' +
+    '                  :class="accountHubSyncClass(acc)">\r\n' +
+    '                  {{ accountHubSyncLabel(acc) }}\r\n' +
+    '                </span>\r\n' +
+    '              </td>\r\n' +
+    '              <td\r\n' +
+    '                class="px-4 py-3 text-right font-mono"\r\n' +
+    `                :class="pctColor(quota(acc, 'primary'))"\r\n` +
+    `                :title="quotaWindow(acc, 'primary') ? 'OpenAI 返回的 5h 限额窗口' : 'OpenAI 未返回 5h 限额窗口'">\r\n` +
+    "                {{ quotaPct(acc, 'primary') }}\r\n" +
+    '              </td>\r\n' +
+    '              <td\r\n' +
+    '                class="px-4 py-3 text-right font-mono"\r\n' +
+    `                :class="pctColor(quota(acc, 'weekly'))"\r\n` +
+    `                :title="quotaWindow(acc, 'weekly') ? 'OpenAI 返回的周限额窗口' : 'OpenAI 未返回周限额窗口'">\r\n` +
+    "                {{ quotaPct(acc, 'weekly') }}\r\n" +
+    '              </td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ registerTimeLabel(acc) }}</td>\r\n' +
+    '              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ activationTimeLabel(acc) }}</td>\r\n' +
+    '              <td class="px-4 py-3 text-right">\r\n' +
+    '                <button\r\n' +
+    '                  type="button"\r\n' +
+    '                  @click="openAccountActionMenu(acc, $event)"\r\n' +
+    '                  :disabled="accountActionBusy && actionEmail === acc.email"\r\n' +
+    '                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '                  :class="accountActionBusy && actionEmail === acc.email\r\n' +
+    "                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-wait'\r\n" +
+    `                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white'">\r\n` +
+    "                  {{ accountActionBusy && actionEmail === acc.email ? '处理中…' : '操作' }}\r\n" +
+    '                </button>\r\n' +
+    '              </td>\r\n' +
+    '            </tr>',
+  expected: /displayEmailPreview\(acc\)[\s\S]*v-if="hasCodexAuthFile\(acc\)"[\s\S]*OAuth/,
+  operator: 'match',
+  diff: 'simple'
+}
+
+Node.js v24.14.0
+EXIT_STATUS: 1
+
+==== MODIFIED_oauth_badge.txt ====
+COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+INPUT: (none)
+OUTPUT:
+dashboard OAuth badge regression passed
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_regressions.txt ====
+COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 test:frontend-regressions
+> node scripts/run-frontend-tests.mjs
+
+account loading lifecycle tests passed
+account loading performance tests passed: rows=20000 compact_bytes=21054283 legacy_bytes=37793426 compact_parse_prepare=67.60ms prepare=29.56ms filter_p95=0.99ms filter_max=2.06ms actions_p95=7.97ms indexed_selection_p95=0.01ms firstPaint=50
+ok - timeout retains the newly entered key
+ok - 5xx retains the newly entered key
+ok - 401 clears the rejected key
+ok - candidate auth precedes storage-owner rotation
+ok - rejected candidate preserves prior recoverable owner
+ok - new key advances the auth epoch
+ok - concurrent Enter cannot race storage ownership
+ok - refresh rejection does not restart polling
+ok - logout advances the auth epoch
+ok - auth epoch change clears previous session state
+ok - new-session timeout cannot fallback to prior-session state
+ok - single-flight work is isolated by auth epoch
+ok - stale auxiliary success cannot commit or restart polling
+ok - stale auxiliary 401 cannot eject the new session
+ok - stale auth-check response cannot commit
+ok - stale dashboard success cannot commit
+ok - stale dashboard 401 cannot eject the new session
+ok - startup refresh rejection does not restart polling
+ok - post-setup refresh rejection does not restart polling
+ok - post-setup generated key owns resumable storage before mount
+ok - startup refuses ownerless browser storage
+ok - login refuses ownerless browser storage
+ok - post-setup refuses ownerless browser storage
+ok - cross-tab identity change invalidates the current epoch
+auth/session isolation regressions passed
+cancel polling recovery contract passed
+CPA file ingest limits passed
+dashboard account load state tests passed
+dashboard message lifecycle passed
+dashboard OAuth badge regression passed
+deferred storage regression tests passed
+export commit order passed
+extraction polling recovery tests passed: transient reject -> retry -> terminal snapshot; 404 -> missing; dispose -> stopped
+frontend bundle budget passed: entry=161385 bytes chunks=27
+frontend runtime performance tests passed
+frontend shell design tests passed
+job snapshot persistence performance tests passed: logs=500->200 interval=5000ms
+late payment state persistence contract passed
+ok - polling waits for request completion before scheduling the next timeout
+ok - manual and scheduled refreshes share a single-flight guard
+ok - hidden and unmounted pages stop polling and invalidate late responses
+ok - rendered rows use stable backend-or-composite keys and deduplicate repeats
+ok - incremental polling sends the backend boot epoch with the stable log id
+ok - a process restart resets the id cursor and retains new id 1 and 2 rows
+ok - the live DOM window is hard-capped at one thousand rows
+LogViewer polling and rendering regression contract passed
+long-running API timeout contract passed
+mail account batch contract tests passed: import=20000 auth=1000 batch=2000 boundary=2000/2001
+mail account render-window tests passed: accounts=20000 default=100 max=500 fetched=20000 password=2000
+OAuth phone pool performance contract passed
+Pay153 cancellation deadline, mutation lock, and unknown-outcome contract passed
+payment expiry clock lifecycle contract passed
+payment list render-window contract passed
+payment polling lifecycle contract passed
+payment unknown-outcome safeguards passed
+paypal auto-pay job recovery contract passed
+PayPal late job persistence contract passed
+paypal manual job recovery contract passed
+paypal missing job-id acknowledgement recovery passed
+PayPal polling lifecycle contract passed
+PayPal pre-ACK cancel terminal polling regression passed
+paypal retry backoff and restart recovery contract passed
+polling lifecycle regression contract passed
+ok - Dashboard ignores a late response from the previous provider
+ok - Dashboard keeps the newest response across A→B→A switching
+ok - Dashboard rejects defaults from stale provider loads
+ok - Register ignores a late response from the previous provider
+provider response race regressions passed
+register account polling lifecycle contract passed
+register mail.com pool render-window tests passed: rows=20000 default=100 max=100 selection=full
+register password frontend contract passed
+setup page provider and completion contracts passed
+shared payment polling gate contract passed
+start ACK remount recovery tests passed
+status polling failure classification and bounded recovery contract passed
+storage session isolation tests passed: same owner retained; key switch and post-unmount logout cleared sensitive autotoken state
+blocked browser storage degrades without crashing API module initialization or requests
+TaskPanel single-flight contract passed
+ui primitive focus, keyboard, lifecycle behavior passed
+all frontend scripts passed: 46/46
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_build.txt ====
+COMMAND: Push-Location web; npm run build; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 build
+> vite build
+
+vite v6.4.2 building for production...
+transforming...
+✓ 76 modules transformed.
+rendering chunks...
+computing gzip size...
+../src/autotoken/web/dist/index.html                                     1.31 kB │ gzip:  0.65 kB
+../src/autotoken/web/dist/assets/Dashboard-COix8nT1.css                  0.14 kB │ gzip:  0.13 kB
+../src/autotoken/web/dist/assets/BindCard-Dvijybhd.css                   0.15 kB │ gzip:  0.11 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-4_CgJR3S.css           4.91 kB │ gzip:  0.83 kB
+../src/autotoken/web/dist/assets/index-fv60oxPV.css                     85.05 kB │ gzip: 15.42 kB
+../src/autotoken/web/dist/assets/pollingRecovery-47vlF5Rs.js             0.96 kB │ gzip:  0.48 kB
+../src/autotoken/web/dist/assets/deferredStorage-BaXOmHSL.js             1.52 kB │ gzip:  0.73 kB
+../src/autotoken/web/dist/assets/bindLinkPayload-CIUq3eC4.js             1.85 kB │ gzip:  0.93 kB
+../src/autotoken/web/dist/assets/pollingLifecycle-DrMlogfE.js            2.69 kB │ gzip:  0.88 kB
+../src/autotoken/web/dist/assets/NotificationSoundControl-BlDcQld9.js    3.42 kB │ gzip:  1.71 kB
+../src/autotoken/web/dist/assets/LogViewer-mVjtXNJE.js                   3.71 kB │ gzip:  1.89 kB
+../src/autotoken/web/dist/assets/TaskHistoryPage-GiQn62KE.js             4.01 kB │ gzip:  1.75 kB
+../src/autotoken/web/dist/assets/startAckCas-CtrxxzA9.js                 4.93 kB │ gzip:  1.52 kB
+../src/autotoken/web/dist/assets/OAuthPhoneRecordsPage-D3sAL-yd.js       5.90 kB │ gzip:  2.43 kB
+../src/autotoken/web/dist/assets/OAuthPage-tJhtl3HH.js                   6.88 kB │ gzip:  2.67 kB
+../src/autotoken/web/dist/assets/TradeManagerPage-BnkYikxp.js            9.74 kB │ gzip:  3.70 kB
+../src/autotoken/web/dist/assets/OAuthPhonePoolPage-CykazvpZ.js         14.29 kB │ gzip:  4.66 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-B0AVYaOf.js           15.79 kB │ gzip:  5.63 kB
+../src/autotoken/web/dist/assets/BindCardPool-D8J4uWES.js               32.18 kB │ gzip:  8.70 kB
+../src/autotoken/web/dist/assets/MailAccountsPage-CHJtuXR0.js           32.82 kB │ gzip:  9.31 kB
+../src/autotoken/web/dist/assets/MomoPage-lT0pYhEf.js                   36.47 kB │ gzip: 10.77 kB
+../src/autotoken/web/dist/assets/GCashPhPage-L1iil4LI.js                37.22 kB │ gzip: 10.89 kB
+../src/autotoken/web/dist/assets/IdealLinkPage-C8zXlveJ.js              46.23 kB │ gzip: 13.08 kB
+../src/autotoken/web/dist/assets/Settings-DIxYiMhM.js                   66.48 kB │ gzip: 12.58 kB
+../src/autotoken/web/dist/assets/IndiaUpiPage-JcvUAFln.js               76.54 kB │ gzip: 20.47 kB
+../src/autotoken/web/dist/assets/BrazilPixPage-BSYK8wTY.js              77.47 kB │ gzip: 21.46 kB
+../src/autotoken/web/dist/assets/RegisterAccountPage-VzN3684Y.js        88.48 kB │ gzip: 22.60 kB
+../src/autotoken/web/dist/assets/KakaoPayPage-nFjqCqym.js              108.97 kB │ gzip: 29.18 kB
+../src/autotoken/web/dist/assets/index-BvX9-ijC.js                     161.39 kB │ gzip: 57.82 kB
+../src/autotoken/web/dist/assets/BindCard-Dh3zs6OV.js                  162.85 kB │ gzip: 37.09 kB
+../src/autotoken/web/dist/assets/Dashboard-BaS7XwSU.js                 164.30 kB │ gzip: 39.82 kB
+../src/autotoken/web/dist/assets/UsPaypalPage-6v0YjQZi.js              185.86 kB │ gzip: 40.48 kB
+✓ built in 2.57s
+EXIT_STATUS: 0
+
+==== MODIFIED_git_diff_check.txt ====
+COMMAND: git diff --check -- web\src\components\Dashboard.vue web\scripts\test-dashboard-oauth-badge.mjs
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0
+
+==== ROLLBACK_TEST_RESULT.txt ====
+ROLLBACK_COMMAND: bash -lc "'/mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-20260902/ROLLBACK.sh' '/mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-20260902/rollback-test-root'"
+ROLLBACK_OUTPUT: rollback restored Dashboard.vue and removed test-dashboard-oauth-badge.mjs under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-oauth-badge-20260902/rollback-test-root
+ROLLBACK_EXIT_STATUS: 0
+RESTORED_HASHES: MATCH  938951D7988A09AAAB68F25FAE78250D0EF630055A5B82F1EC915D5EFA21D215  web\src\components\Dashboard.vue
+REMOVED  web\scripts\test-dashboard-oauth-badge.mjs: True
+RESTORED_STATUS: original behavior restored on rollback-test-root
+

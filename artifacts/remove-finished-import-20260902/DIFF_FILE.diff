@@ -1,0 +1,601 @@
+--- a/web/src/api.js
++++ b/web/src/api.js
+@@ -152,7 +152,6 @@
+   exportAccountCredentials: (emails) => request('POST', '/accounts/export-credentials', { emails }),
+   importExternalAccounts: (text) => request('POST', '/accounts/import-external', { text }),
+   importAccountCpaAuths: (payload) => request('POST', '/accounts/import-cpa-auths', payload),
+-  importFinishedAccounts: (payload) => request('POST', '/accounts/import-finished', payload),
+   exportAccountCpaAuths: (emails) => request('POST', '/accounts/export-cpa-auths', { emails }, { timeoutMs: 0 }),
+   exportAccountSubAuths: (emails) => request('POST', '/accounts/export-sub-auths', { emails }, { timeoutMs: 0 }),
+   convertSessionCpaAuths: (emails) => request('POST', '/accounts/convert-session-cpa-auths', { emails }),
+--- a/web/src/components/Dashboard.vue
++++ b/web/src/components/Dashboard.vue
+@@ -83,15 +83,6 @@
+               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+               : 'bg-purple-600/10 text-purple-300 border-purple-500/30 hover:bg-purple-600/20'">
+             {{ cpaImporting ? '导入中...' : '导入CPA认证' }}
+-          </button>
+-          <button
+-            @click="openFinishedImport"
+-            :disabled="finishedImporting"
+-            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+-            :class="finishedImporting
+-              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+-              : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
+-            {{ finishedImporting ? '导入中...' : '导入成品' }}
+           </button>
+           <button
+             @click="exportCpaAuths"
+@@ -1294,74 +1285,6 @@
+         </div>
+       </AccessibleModal>
+ 
+-      <!-- 成品账号导入弹窗 -->
+-      <AccessibleModal v-if="finishedImportOpen" label="导入成品账号" @close="closeFinishedImport">
+-        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
+-          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+-            <div>
+-              <h3 class="text-white font-semibold">导入成品</h3>
+-              <div class="text-xs text-gray-500 mt-0.5">读取成品账号 JSON 和邮箱池 TXT，离线构造 CPA/Codex 认证文件。</div>
+-            </div>
+-            <button type="button" aria-label="关闭成品账号导入" @click="closeFinishedImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+-          </div>
+-          <div class="p-4 space-y-4 overflow-y-auto flex-1">
+-            <div class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+-              不会真实补登录，不使用手机号接码；缺失的 id_token / refresh_token 会按 CPA 字段格式构造占位值。
+-            </div>
+-            <div>
+-              <label for="finished-accounts-file" class="block text-xs text-gray-500 mb-2">账号 JSON 文件</label>
+-              <input
+-                id="finished-accounts-file"
+-                type="file"
+-                accept=".json,.jsonl,application/json"
+-                @change="handleFinishedAccountsFile"
+-                class="block w-full text-xs text-gray-300 file:mr-3 file:rounded-lg file:border file:border-teal-500/40 file:bg-teal-600/10 file:px-3 file:py-2 file:text-xs file:font-medium file:text-teal-200 hover:file:bg-teal-600/20" />
+-              <div v-if="finishedAccountsFile" class="mt-2 text-xs text-gray-300 font-mono break-all">{{ finishedAccountsFile.name }}</div>
+-              <div class="mt-1 text-xs text-gray-500">支持连续 JSON object、JSON 数组或 {"accounts": [...]}。</div>
+-            </div>
+-            <div>
+-              <label for="finished-mailboxes-file" class="block text-xs text-gray-500 mb-2">邮箱池 TXT 文件，可选</label>
+-              <input
+-                id="finished-mailboxes-file"
+-                type="file"
+-                accept=".txt,text/plain"
+-                @change="handleFinishedMailboxesFile"
+-                class="block w-full text-xs text-gray-300 file:mr-3 file:rounded-lg file:border file:border-gray-600 file:bg-gray-800 file:px-3 file:py-2 file:text-xs file:font-medium file:text-gray-200 hover:file:bg-gray-700" />
+-              <div v-if="finishedMailboxesFile" class="mt-2 text-xs text-gray-300 font-mono break-all">{{ finishedMailboxesFile.name }}</div>
+-              <div class="mt-1 text-xs text-gray-500">匹配到邮箱池时，会把账号标记为 outlook 并保留邮箱来源标识。</div>
+-            </div>
+-
+-            <div v-if="finishedImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
+-              <div class="text-gray-200">
+-                导入 {{ finishedImportResult.imported || 0 }}，更新账号 {{ finishedImportResult.accounts_updated || 0 }}，邮箱匹配 {{ finishedImportResult.mailboxes_matched || 0 }}/{{ finishedImportResult.mailboxes_total || 0 }}
+-              </div>
+-              <div v-if="finishedImportResult.invalid?.length" class="mt-2 text-amber-300">
+-                跳过 {{ finishedImportResult.invalid.length }} 条无效来源；前 3 条：
+-                <div v-for="item in finishedImportResult.invalid.slice(0, 3)" :key="String(item.filename || '') + String(item.error || '')" class="mt-1 text-amber-200/80 font-mono break-all">
+-                  {{ item.filename || item.line || item.offset }}: {{ item.error }}
+-                </div>
+-              </div>
+-            </div>
+-          </div>
+-          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+-            <button
+-              @click="closeFinishedImport"
+-              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+-              关闭
+-            </button>
+-            <button
+-              @click="submitFinishedImport"
+-              :disabled="finishedImporting || !finishedAccountsFile"
+-              class="px-4 py-2 text-sm rounded-lg border transition"
+-              :class="finishedImporting || !finishedAccountsFile
+-                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+-                : 'bg-teal-600 hover:bg-teal-500 text-white border-teal-500'">
+-              {{ finishedImporting ? '导入中...' : '开始导入' }}
+-            </button>
+-          </div>
+-        </div>
+-      </AccessibleModal>
+-
+       <!-- CPA 认证导入弹窗 -->
+       <AccessibleModal v-if="cpaImportOpen" label="导入 CPA 认证" @close="closeCpaImport">
+         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-3xl max-h-[86vh] flex flex-col">
+@@ -2018,11 +1941,6 @@
+ const cpaImportFiles = ref([])
+ const cpaImporting = ref(false)
+ const cpaImportResult = ref(null)
+-const finishedImportOpen = ref(false)
+-const finishedAccountsFile = ref(null)
+-const finishedMailboxesFile = ref(null)
+-const finishedImporting = ref(false)
+-const finishedImportResult = ref(null)
+ const cpaExporting = ref(false)
+ const subExporting = ref(false)
+ const accessTokenExporting = ref(false)
+@@ -3643,65 +3561,6 @@
+   cpaImportOpen.value = false
+ }
+ 
+-function openFinishedImport() {
+-  finishedImportOpen.value = true
+-  finishedImportResult.value = null
+-}
+-
+-function closeFinishedImport() {
+-  if (finishedImporting.value) return
+-  finishedImportOpen.value = false
+-}
+-
+-function handleFinishedAccountsFile(event) {
+-  finishedAccountsFile.value = Array.from(event.target.files || [])[0] || null
+-  finishedImportResult.value = null
+-}
+-
+-function handleFinishedMailboxesFile(event) {
+-  finishedMailboxesFile.value = Array.from(event.target.files || [])[0] || null
+-  finishedImportResult.value = null
+-}
+-
+-function readFileText(file) {
+-  return new Promise((resolve, reject) => {
+-    const reader = new FileReader()
+-    reader.onload = () => resolve(String(reader.result || ''))
+-    reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
+-    reader.readAsText(file)
+-  })
+-}
+-
+-async function submitFinishedImport() {
+-  const accountsFile = finishedAccountsFile.value
+-  if (finishedImporting.value || !accountsFile) return
+-
+-  finishedImporting.value = true
+-  finishedImportResult.value = null
+-  message.value = ''
+-  try {
+-    const mailboxesFile = finishedMailboxesFile.value
+-    const result = await api.importFinishedAccounts({
+-      accounts_content: await readFileText(accountsFile),
+-      accounts_filename: accountsFile.name || 'accounts.json',
+-      mailboxes_content: mailboxesFile ? await readFileText(mailboxesFile) : '',
+-      mailboxes_filename: mailboxesFile?.name || '',
+-    })
+-    finishedImportResult.value = result
+-    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，跳过 ${result.invalid.length} 条无效` : ''
+-    const matched = result.mailboxes_total ? `，邮箱匹配 ${result.mailboxes_matched || 0}/${result.mailboxes_total || 0}` : ''
+-    message.value = `成品账号导入完成：导入 ${result.imported || 0}，更新账号 ${result.accounts_updated || 0}${matched}${invalid}`
+-    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+-    emit('refresh')
+-  } catch (e) {
+-    message.value = e.message
+-    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+-  } finally {
+-    finishedImporting.value = false
+-    scheduleMessageClear(10000)
+-  }
+-}
+-
+ function handleCpaImportFiles(event) {
+   const files = Array.from(event.target.files || [])
+     .filter(file => /\.(json|zip)$/i.test(file.name || file.webkitRelativePath || ''))
+--- a/src/autotoken/interfaces/api.py
++++ b/src/autotoken/interfaces/api.py
+@@ -58,7 +58,6 @@
+ from autotoken.api_routes.card_pool import create_card_pool_router
+ from autotoken.api_routes.config_io import create_config_io_router
+ from autotoken.api_routes.cpa_to_sub2api import create_cpa_to_sub2api_router
+-from autotoken.api_routes.finished_account_import import create_finished_account_import_router
+ from autotoken.api_routes.gcash_ph import create_gcash_ph_router
+ from autotoken.api_routes.gopay_auto_signup_config import (
+     create_gopay_auto_signup_config_router,
+@@ -2595,7 +2594,6 @@
+         current_time=time.time,
+     )
+ )
+-app.include_router(create_finished_account_import_router())
+ 
+ 
+ def _run_account_codex_login_once(
+--- a/src/autotoken/api_routes/finished_account_import.py
++++ /dev/null
+@@ -1,82 +0,0 @@
+-from __future__ import annotations
+-
+-from collections.abc import Callable
+-from pathlib import Path
+-from typing import Any
+-
+-from fastapi import APIRouter, HTTPException
+-from pydantic import AliasChoices, BaseModel, Field
+-
+-from autotoken.services.finished_account_import import FINISHED_IMPORT_MAX_BYTES
+-
+-
+-class FinishedAccountImportParams(BaseModel):
+-    accounts_path: str = Field("", validation_alias=AliasChoices("accounts_path", "accountsPath"))
+-    mailboxes_path: str = Field("", validation_alias=AliasChoices("mailboxes_path", "mailboxesPath"))
+-    accounts_content: str = Field("", validation_alias=AliasChoices("accounts_content", "accountsContent"))
+-    mailboxes_content: str = Field("", validation_alias=AliasChoices("mailboxes_content", "mailboxesContent"))
+-    accounts_filename: str = Field("", validation_alias=AliasChoices("accounts_filename", "accountsFilename"))
+-    mailboxes_filename: str = Field("", validation_alias=AliasChoices("mailboxes_filename", "mailboxesFilename"))
+-
+-
+-def _read_optional_text_file(path_value: str, *, label: str, required: bool) -> tuple[str, str]:
+-    path_text = str(path_value or "").strip()
+-    if not path_text:
+-        if required:
+-            raise HTTPException(status_code=400, detail=f"{label}路径不能为空")
+-        return "", ""
+-    path = Path(path_text)
+-    if not path.exists() or not path.is_file():
+-        raise HTTPException(status_code=400, detail=f"{label}文件不存在: {path_text}")
+-    if path.stat().st_size > FINISHED_IMPORT_MAX_BYTES:
+-        raise HTTPException(status_code=400, detail=f"{label}文件过大，最多支持 2MB")
+-    try:
+-        return path.read_text(encoding="utf-8-sig"), str(path)
+-    except UnicodeDecodeError:
+-        return path.read_text(encoding="utf-8", errors="replace"), str(path)
+-
+-
+-def create_finished_account_import_router(
+-    *,
+-    import_finished_accounts_from_text: Callable[..., dict[str, Any]] | None = None,
+-) -> APIRouter:
+-    router = APIRouter()
+-
+-    @router.post("/api/accounts/import-finished")
+-    def import_finished_accounts(params: FinishedAccountImportParams):
+-        """Import finished account exports by synthesizing CPA-compatible auth files."""
+-        if import_finished_accounts_from_text is None:
+-            from autotoken.services.finished_account_import import import_finished_accounts_from_text as import_func
+-        else:
+-            import_func = import_finished_accounts_from_text
+-
+-        accounts_content = str(params.accounts_content or "")
+-        accounts_source_name = str(params.accounts_filename or "").strip() or "uploaded-accounts"
+-        if not accounts_content.strip():
+-            accounts_content, accounts_source_name = _read_optional_text_file(
+-                params.accounts_path,
+-                label="账号",
+-                required=True,
+-            )
+-        elif len(accounts_content.encode("utf-8", errors="ignore")) > FINISHED_IMPORT_MAX_BYTES:
+-            raise HTTPException(status_code=400, detail="账号内容过大，最多支持 2MB")
+-
+-        mailboxes_content = str(params.mailboxes_content or "")
+-        mailboxes_source_name = str(params.mailboxes_filename or "").strip() or "uploaded-mailboxes"
+-        if not mailboxes_content.strip() and str(params.mailboxes_path or "").strip():
+-            mailboxes_content, mailboxes_source_name = _read_optional_text_file(
+-                params.mailboxes_path,
+-                label="邮箱池",
+-                required=False,
+-            )
+-        elif len(mailboxes_content.encode("utf-8", errors="ignore")) > FINISHED_IMPORT_MAX_BYTES:
+-            raise HTTPException(status_code=400, detail="邮箱池内容过大，最多支持 2MB")
+-
+-        return import_func(
+-            accounts_content,
+-            mailboxes_content,
+-            accounts_source_name=accounts_source_name,
+-            mailboxes_source_name=mailboxes_source_name,
+-        )
+-
+-    return router
+--- a/src/autotoken/services/finished_account_import.py
++++ /dev/null
+@@ -1,314 +0,0 @@
+-from __future__ import annotations
+-
+-import base64
+-import hashlib
+-import json
+-import time
+-from datetime import datetime, timezone
+-from typing import Any
+-
+-from autotoken.core.jwt import decode_jwt_payload
+-from autotoken.core.normalization import normalized_email
+-
+-FINISHED_IMPORT_MAX_BYTES = 2 * 1024 * 1024
+-FINISHED_IMPORT_PLAN_TYPE = "plus"
+-
+-
+-def _clean(value: Any) -> str:
+-    return str(value or "").strip() if value is not None else ""
+-
+-
+-def _first(*values: Any) -> str:
+-    for value in values:
+-        text = _clean(value)
+-        if text:
+-            return text
+-    return ""
+-
+-
+-def _b64url_json(value: dict[str, Any]) -> str:
+-    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+-
+-
+-def _utc_timestamp_from_epoch(value: Any) -> str:
+-    try:
+-        number = float(value)
+-    except (TypeError, ValueError):
+-        return ""
+-    if number <= 0:
+-        return ""
+-    return datetime.fromtimestamp(number, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+-
+-
+-def _synthetic_token_id(*parts: str) -> str:
+-    source = "\n".join(parts)
+-    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:32]
+-
+-
+-def _synthetic_id_token(*, email: str, account_id: str, user_id: str, plan_type: str, expires_at: str) -> str:
+-    now = int(time.time())
+-    exp = int(time.time()) + 90 * 24 * 60 * 60
+-    try:
+-        parsed = datetime.fromisoformat(str(expires_at or "").replace("Z", "+00:00"))
+-        exp = int(parsed.timestamp())
+-    except Exception:
+-        pass
+-    auth: dict[str, Any] = {"chatgpt_account_id": account_id}
+-    if user_id:
+-        auth["chatgpt_user_id"] = user_id
+-        auth["user_id"] = user_id
+-    if plan_type:
+-        auth["chatgpt_plan_type"] = plan_type
+-    payload: dict[str, Any] = {
+-        "email": email,
+-        "iat": now,
+-        "exp": exp,
+-        "https://api.openai.com/auth": auth,
+-    }
+-    return f"{_b64url_json({'alg': 'none', 'typ': 'JWT', 'autotoken_synthetic': True})}.{_b64url_json(payload)}.synthetic"
+-
+-
+-def parse_finished_account_text(content: str, *, source_name: str = "accounts.json") -> tuple[list[dict], list[dict]]:
+-    """Parse exported finished-account JSON.
+-
+-    The common export shape is a file containing pretty-printed JSON objects
+-    back-to-back, not JSONL. This parser also accepts a JSON array or
+-    {"accounts": [...]} for compatibility.
+-    """
+-    text = str(content or "").lstrip("\ufeff")
+-    if not text.strip():
+-        return [], [{"filename": source_name, "error": "账号文件为空"}]
+-    if len(text.encode("utf-8", errors="ignore")) > FINISHED_IMPORT_MAX_BYTES:
+-        return [], [{"filename": source_name, "error": "账号文件过大，最多支持 2MB"}]
+-
+-    invalid: list[dict] = []
+-
+-    def _normalize_items(items: Any) -> list[dict]:
+-        if isinstance(items, dict) and isinstance(items.get("accounts"), list):
+-            items = items.get("accounts")
+-        if isinstance(items, dict):
+-            items = [items]
+-        if not isinstance(items, list):
+-            invalid.append({"filename": source_name, "error": "账号 JSON 顶层必须是对象、数组或连续对象"})
+-            return []
+-        records: list[dict] = []
+-        for index, item in enumerate(items, start=1):
+-            if not isinstance(item, dict):
+-                invalid.append({"filename": source_name, "line": index, "error": "账号记录不是 JSON object"})
+-                continue
+-            email = normalized_email(item.get("email"))
+-            access_token = _clean(item.get("access_token") or item.get("accessToken"))
+-            if not email or not access_token:
+-                invalid.append({"filename": source_name, "line": index, "error": "缺少 email 或 access_token"})
+-                continue
+-            record = dict(item)
+-            record["email"] = email
+-            record["access_token"] = access_token
+-            records.append(record)
+-        return records
+-
+-    try:
+-        return _normalize_items(json.loads(text)), invalid
+-    except json.JSONDecodeError:
+-        pass
+-
+-    decoder = json.JSONDecoder()
+-    index = 0
+-    items: list[dict] = []
+-    while index < len(text):
+-        while index < len(text) and text[index].isspace():
+-            index += 1
+-        if index >= len(text):
+-            break
+-        try:
+-            item, next_index = decoder.raw_decode(text, index)
+-        except json.JSONDecodeError as exc:
+-            invalid.append({"filename": source_name, "offset": index, "error": f"JSON 解析失败: {exc.msg}"})
+-            break
+-        items.append(item)
+-        index = next_index
+-    return _normalize_items(items), invalid
+-
+-
+-def parse_mailbox_text(content: str) -> dict[str, dict]:
+-    from autotoken.mail.outlook import OutlookMailProvider
+-
+-    mailboxes: dict[str, dict] = {}
+-    for line in str(content or "").replace("\ufeff", "").replace(";", "\n").splitlines():
+-        raw = line.strip()
+-        if not raw or raw.startswith("#"):
+-            continue
+-        account = OutlookMailProvider._parse_account_line(raw)
+-        if not account or not account.validate():
+-            continue
+-        mailboxes[account.email.lower()] = {
+-            "email": account.email.lower(),
+-            "line": raw,
+-            "mailapi_url": account.mailapi_url,
+-        }
+-    return mailboxes
+-
+-
+-def build_finished_cpa_auth(record: dict[str, Any]) -> dict[str, Any]:
+-    access_token = _clean(record.get("access_token") or record.get("accessToken"))
+-    access_claims = decode_jwt_payload(access_token)
+-    access_auth = access_claims.get("https://api.openai.com/auth") if isinstance(access_claims, dict) else {}
+-    access_auth = access_auth if isinstance(access_auth, dict) else {}
+-    access_profile = access_claims.get("https://api.openai.com/profile") if isinstance(access_claims, dict) else {}
+-    access_profile = access_profile if isinstance(access_profile, dict) else {}
+-
+-    email = normalized_email(_first(record.get("email"), access_profile.get("email"), access_claims.get("email")))
+-    account_id = _first(
+-        record.get("account_id"),
+-        record.get("accountId"),
+-        record.get("chatgpt_account_id"),
+-        access_auth.get("chatgpt_account_id"),
+-        f"synthetic-{hashlib.md5(email.encode('utf-8')).hexdigest()[:12]}" if email else "",
+-    )
+-    user_id = _first(record.get("chatgpt_user_id"), access_auth.get("chatgpt_user_id"), access_auth.get("user_id"))
+-    plan_type = FINISHED_IMPORT_PLAN_TYPE
+-    expired = _first(
+-        record.get("expired"),
+-        record.get("expires"),
+-        record.get("expires_at"),
+-        record.get("expiresAt"),
+-        _utc_timestamp_from_epoch(access_claims.get("exp") if isinstance(access_claims, dict) else None),
+-    )
+-    last_refresh = _first(record.get("last_refresh"), datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+-    refresh_token = _clean(record.get("refresh_token") or record.get("refreshToken"))
+-    if not refresh_token:
+-        refresh_token = f"synthetic-refresh-token-{_synthetic_token_id(email, account_id, access_token)}"
+-
+-    id_token = _clean(record.get("id_token") or record.get("idToken"))
+-    synthetic_id = False
+-    if not id_token:
+-        id_token = _synthetic_id_token(
+-            email=email,
+-            account_id=account_id,
+-            user_id=user_id,
+-            plan_type=plan_type,
+-            expires_at=expired,
+-        )
+-        synthetic_id = True
+-
+-    auth = {
+-        "type": "codex",
+-        "disabled": False,
+-        "email": email,
+-        "account_id": account_id,
+-        "chatgpt_account_id": account_id,
+-        "chatgpt_user_id": user_id,
+-        "plan_type": plan_type,
+-        "chatgpt_plan_type": plan_type,
+-        "access_token": access_token,
+-        "id_token": id_token,
+-        "refresh_token": refresh_token,
+-        "expired": expired,
+-        "last_refresh": last_refresh,
+-        "source": "finished_import_synthetic_cpa",
+-    }
+-    if synthetic_id:
+-        auth["id_token_synthetic"] = True
+-    if _clean(record.get("source")):
+-        auth["source_account_export"] = _clean(record.get("source"))
+-    return auth
+-
+-
+-def _account_type_for_plan(plan_type: str) -> str:
+-    from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS
+-
+-    return ACCOUNT_TYPE_PLUS
+-
+-
+-def _status_for_plan(plan_type: str) -> str:
+-    from autotoken.storage.accounts import STATUS_PLUS
+-
+-    return STATUS_PLUS
+-
+-
+-def import_finished_accounts_from_text(
+-    accounts_content: str,
+-    mailboxes_content: str = "",
+-    *,
+-    accounts_source_name: str = "accounts.json",
+-    mailboxes_source_name: str = "mailboxes.txt",
+-) -> dict[str, Any]:
+-    from autotoken.integrations import cpa_sync
+-    from autotoken.storage.accounts import SEAT_CODEX, add_account, find_account, load_accounts, update_account
+-
+-    records, invalid = parse_finished_account_text(accounts_content, source_name=accounts_source_name)
+-    mailboxes = parse_mailbox_text(mailboxes_content)
+-
+-    sources: list[dict[str, Any]] = []
+-    metadata_by_email: dict[str, dict[str, Any]] = {}
+-    for record in records:
+-        auth = build_finished_cpa_auth(record)
+-        email = normalized_email(auth.get("email"))
+-        if not email:
+-            invalid.append({"filename": accounts_source_name, "error": "缺少可用 email"})
+-            continue
+-        sources.append({"name": f"{email}.json", "auth_data": auth})
+-        metadata_by_email[email] = {
+-            "password": _clean(record.get("password")),
+-            "plan_type": auth.get("plan_type") or "unknown",
+-            "mailbox": mailboxes.get(email),
+-            "auth_data": auth,
+-        }
+-
+-    result = cpa_sync.import_local_cpa_auth_sources(sources)
+-
+-    accounts_updated = 0
+-    for item in result.get("files") or []:
+-        email = normalized_email(item.get("email"))
+-        if not email:
+-            continue
+-        metadata = metadata_by_email.get(email) or {}
+-        mailbox = metadata.get("mailbox") if isinstance(metadata.get("mailbox"), dict) else None
+-        if item.get("auth_file"):
+-            try:
+-                from pathlib import Path
+-
+-                path = Path(item["auth_file"])
+-                saved = json.loads(path.read_text(encoding="utf-8"))
+-                source_auth = metadata.get("auth_data") if isinstance(metadata.get("auth_data"), dict) else {}
+-                if source_auth.get("id_token_synthetic"):
+-                    saved["id_token_synthetic"] = True
+-                saved["source"] = "finished_import_synthetic_cpa"
+-                path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
+-            except Exception:
+-                pass
+-        account = find_account(load_accounts(), email)
+-        if not account:
+-            add_account(email, metadata.get("password") or "", seat_type=SEAT_CODEX, mail_provider="outlook" if mailbox else None)
+-        updates = {
+-            "password": metadata.get("password") or (account or {}).get("password") or "",
+-            "status": _status_for_plan(metadata.get("plan_type") or ""),
+-            "account_type": _account_type_for_plan(metadata.get("plan_type") or ""),
+-            "seat_type": SEAT_CODEX,
+-            "auth_file": item.get("auth_file"),
+-            "last_active_at": time.time(),
+-            "last_bind_status": "success",
+-            "last_bind_at": time.time(),
+-            "last_bind_provider": "external_import",
+-            "last_bind_message": "成品导入",
+-            "plus_bound_at": time.time(),
+-        }
+-        if mailbox:
+-            updates["mail_provider"] = "outlook"
+-            updates["cloudmail_account_id"] = email
+-            if mailbox.get("mailapi_url"):
+-                updates["mailapi_url"] = mailbox.get("mailapi_url")
+-        update_account(email, **updates)
+-        accounts_updated += 1
+-
+-    return {
+-        **result,
+-        "invalid": [*(result.get("invalid") or []), *invalid],
+-        "accounts_updated": accounts_updated,
+-        "mailboxes_total": len(mailboxes),
+-        "mailboxes_matched": sum(1 for email in metadata_by_email if email in mailboxes),
+-        "accounts_source": accounts_source_name,
+-        "mailboxes_source": mailboxes_source_name,
+-        "synthetic": True,
+-    }

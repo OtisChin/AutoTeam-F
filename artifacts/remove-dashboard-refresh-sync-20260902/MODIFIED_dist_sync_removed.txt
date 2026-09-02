@@ -1,0 +1,5 @@
+COMMAND: rg -n '同步账号|syncAccounts|syncDisabled' src/autotoken/web/dist/assets -g 'Dashboard-*.js' -S
+INPUT: (none)
+OUTPUT:
+NO_MATCHES
+EXIT_STATUS: 0

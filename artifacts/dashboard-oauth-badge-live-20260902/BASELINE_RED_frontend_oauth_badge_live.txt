@@ -1,0 +1,205 @@
+COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+INPUT: live OAuth badge regression on pre-change implementation
+OUTPUT:
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: OAuth login completion should be tracked locally so the badge appears before a full page reload
+    at file:///D:/code/OpenSource/AutoTeam-F/web/scripts/test-dashboard-oauth-badge.mjs:25:8
+    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: '<template>\r\n' +
+    '  <div v-if="status">\r\n' +
+    '    <div v-if="accountsError" class="dashboard-stale-warning" role="status">\r\n' +
+    '      <div>\r\n' +
+    '        <strong>账号数据暂时无法刷新</strong>\r\n' +
+    '        <span>保留上次成功数据<span v-if="lastSuccessfulLabel">（{{ lastSuccessfulLabel }}）</span>，可继续查看和操作。</span>\r\n' +
+    '      </div>\r\n' +
+    '      <button type="button" :disabled="loading" @click="retryAccounts">\r\n' +
+    "        {{ loading ? '正在重试…' : '立即重试' }}\r\n" +
+    '      </button>\r\n' +
+    '    </div>\r\n' +
+    '    <div class="dashboard-tabs">\r\n' +
+    '      <button\r\n' +
+    '        v-for="tab in dashboardTabs"\r\n' +
+    '        :key="tab.value"\r\n' +
+    '        @click="activeDashboardTab = tab.value"\r\n' +
+    '        class="dashboard-tab"\r\n' +
+    '        :class="activeDashboardTab === tab.value\r\n' +
+    "          ? 'dashboard-tab-active'\r\n" +
+    `          : 'dashboard-tab-idle'">\r\n` +
+    '        {{ tab.label }}\r\n' +
+    '      </button>\r\n' +
+    '    </div>\r\n' +
+    '\r\n' +
+    `    <template v-if="activeDashboardTab === 'chatgpt'">\r\n` +
+    '    <div class="dashboard-summary-grid">\r\n' +
+    '      <div v-for="card in cards" :key="card.label" class="dashboard-summary-card">\r\n' +
+    '        <div class="dashboard-summary-label">{{ card.label }}</div>\r\n' +
+    '        <div class="dashboard-summary-value" :class="card.color">{{ card.value }}</div>\r\n' +
+    '      </div>\r\n' +
+    '    </div>\r\n' +
+    '\r\n' +
+    '    <!-- 账号表格 -->\r\n' +
+    '    <div class="dashboard-table-shell">\r\n' +
+    '      <div class="dashboard-table-header">\r\n' +
+    '        <div>\r\n' +
+    '          <h2 class="text-lg font-semibold text-white">账号列表</h2>\r\n' +
+    '          <p class="mt-1 text-xs text-gray-500">批量导出、OAuth授权、补登录、刷新额度和清理无效凭证。</p>\r\n' +
+    '        </div>\r\n' +
+    '        <div class="dashboard-actions">\r\n' +
+    '          <button\r\n' +
+    '            @click="exportAccounts"\r\n' +
+    '            :disabled="!exportableAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="!exportableAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-cyan-600/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-600/20'">\r\n` +
+    '            {{ selectedEmails.length ? `导出选中 (${selectedEmails.length})` : `导出筛选 (${filteredAccounts.length})` }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="openCredentialExport"\r\n' +
+    '            :disabled="!exportableAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="!exportableAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-emerald-600/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-600/20'">\r\n` +
+    '            {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="exportSelectedAccessTokens"\r\n' +
+    '            :disabled="accessTokenExporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="accessTokenExporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">\r\n` +
+    "            {{ accessTokenExporting ? '导出中...' : `导出ac (${selectedEmails.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="openExternalAccountImport"\r\n' +
+    '            :disabled="externalAccountImporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="externalAccountImporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">\r\n` +
+    "            {{ externalAccountImporting ? '导入中...' : '导入账号' }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="openCpaImport"\r\n' +
+    '            :disabled="cpaImporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="cpaImporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-purple-600/10 text-purple-300 border-purple-500/30 hover:bg-purple-600/20'">\r\n` +
+    "            {{ cpaImporting ? '导入中...' : '导入CPA认证' }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\n' +
+    '            @click="exportCpaAuths"\n' +
+    '            :disabled="!cpaExportableAccounts.length || cpaExporting"\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\n' +
+    '            :class="!cpaExportableAccounts.length || cpaExporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-sky-600/10 text-sky-400 border-sky-500/30 hover:bg-sky-600/20'">\r\n` +
+    "            {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="exportSubAuths"\r\n' +
+    '            :disabled="!cpaExportableAccounts.length || subExporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="!cpaExportableAccounts.length || subExporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-indigo-600/10 text-indigo-300 border-indigo-500/30 hover:bg-indigo-600/20'">\r\n` +
+    "            {{ subExporting ? '导出中...' : `导出Sub2API认证 (${cpaExportableAccounts.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="batchOauthAuthorizeAccounts"\r\n' +
+    '            :disabled="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">\r\n` +
+    '            {{ oauthBatchButtonLabel }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="batchSetupAccountTwoFactor"\r\n' +
+    '            :disabled="twoFactorSubmitting || twoFactorTaskRunning || !twoFactorSetupAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="twoFactorSubmitting || twoFactorTaskRunning\r\n' +
+    "              ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30 cursor-wait'\r\n" +
+    '              : !twoFactorSetupAccounts.length\r\n' +
+    "                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `                : 'bg-yellow-600/10 text-yellow-300 border-yellow-500/30 hover:bg-yellow-600/20'">\r\n` +
+    '            {{ twoFactorSubmitting || twoFactorTaskRunning\r\n' +
+    "                ? '设置中...'\r\n" +
+    '                : `批量设置2FA (${twoFactorSetupAccounts.length})` }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="batchReloginAccounts"\r\n' +
+    '            :disabled="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">\r\n` +
+    '            {{ batchReloginButtonLabel }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="oauthConfigOpen = true"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="oauthProxyEnabled\r\n' +
+    "              ? 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'\r\n" +
+    `              : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white'">\r\n` +
+    '            OAuth配置\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="refreshAllQuota"\r\n' +
+    '            :disabled="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-amber-600/10 text-amber-300 border-amber-500/30 hover:bg-amber-600/20'">\r\n` +
+    '            {{ refreshQuotaButtonLabel }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="openBatchAccountEditor"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    `            :class="'bg-slate-600/10 text-slate-200 border-slate-500/30 hover:bg-slate-600/20'">\r\n` +
+    '            批量修改账号 ({{ selectedEmails.length }})\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="deleteInvalidCredentials"\r\n' +
+    '            :disabled="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-red-600/10 text-red-300 border-red-500/30 hover:bg-red-600/20'">\r\n` +
+    "            {{ invalidDeleting ? '删除中...' : `删除无效凭证 (${invalidCredentialAccounts.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="batchUpdateExportStatus(true)"\r\n' +
+    '            :disabled="exportStatusUpdating"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="exportStatusUpdating\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">\r\n` +
+    '            标记已导出 ({{ selectedEmails.length }})\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="batchUpdateExportStatus(false)"\r\n' +
+    '            :disabled="exportStatusUpdating"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :c'... 222216 more characters,
+  expected: /const oauthCredentialCompletedEmails = ref\(new Set\(\)\)/,
+  operator: 'match',
+  diff: 'simple'
+}
+
+Node.js v24.14.0
+EXIT_STATUS: 1

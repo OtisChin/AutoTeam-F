@@ -1,0 +1,69 @@
+--- a/web/src/components/Dashboard.vue
++++ b/web/src/components/Dashboard.vue
+@@ -201,14 +201,6 @@
+             @click="clearSelection"
+             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
+             取消选择
+-          </button>
+-          <button @click="emit('refresh')"
+-            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+-            刷新
+-          </button>
+-          <button @click="syncAccounts" :disabled="syncDisabled || syncing"
+-            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition disabled:opacity-50 text-gray-400 hover:text-white">
+-            {{ syncing ? '同步中...' : '同步账号' }}
+           </button>
+           <button @click="syncToAccountHub" :disabled="hubSyncing || !selectedEmails.length"
+             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+@@ -1732,10 +1724,6 @@
+     <div v-else class="space-y-6">
+       <div class="flex items-center justify-between gap-3 mb-3">
+         <h2 class="text-lg font-semibold text-white">Kiro 统计面板</h2>
+-        <button @click="emit('refresh')"
+-          class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+-          刷新
+-        </button>
+       </div>
+       <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+         <div v-for="card in kiroCards" :key="card.label"
+@@ -1863,7 +1851,6 @@
+   accountActionBusy.value
+   || (accountActionMenuAccount.value && actionEmail.value === accountActionMenuAccount.value.email)
+ ))
+-const syncing = ref(false)
+ const hubSyncing = ref(false)
+ const message = ref('')
+ const messageClearScheduler = createMessageClearScheduler()
+@@ -2579,7 +2566,6 @@
+   },
+ )
+ const adminReady = computed(() => !!props.adminStatus?.configured)
+-const syncDisabled = computed(() => false)
+ const loginDisabled = computed(() => false)
+ const kickDisabled = computed(() => !adminReady.value)
+ const deleteDisabled = computed(() => false)
+@@ -4613,24 +4599,6 @@
+   }
+ }
+ 
+-async function syncAccounts() {
+-  if (syncDisabled.value) return
+-  syncing.value = true
+-  message.value = ''
+-  try {
+-    const result = await api.postSyncAccounts()
+-    message.value = result.message || '同步完成'
+-    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+-    emit('refresh')
+-  } catch (e) {
+-    message.value = e.message
+-    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+-  } finally {
+-    syncing.value = false
+-    scheduleMessageClear(8000)
+-  }
+-}
+-
+ async function syncToAccountHub() {
+   const emails = selectedEmails.value
+   if (!emails.length) {

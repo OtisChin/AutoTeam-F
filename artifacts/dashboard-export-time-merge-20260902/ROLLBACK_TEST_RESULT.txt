@@ -1,0 +1,8 @@
+COMMAND=bash /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-export-time-merge-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-export-time-merge-20260902/rollback-test-root-20260902220424
+rollback restored dashboard export time merge files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-export-time-merge-20260902/rollback-test-root-20260902220424
+EXIT_STATUS=0
+HASH_CHECK web\src\components\Dashboard.vue restored=594EDC038161986BD759A4905F940F30725D31E7AA781D7E38FA57D506618755 original=594EDC038161986BD759A4905F940F30725D31E7AA781D7E38FA57D506618755 match=True
+HASH_CHECK web\scripts\regression-dashboard-2fa-column.mjs restored=74698F69BC888A1D55D2B6C4BDB48B3210DD471FF813D61E421D7AC9C3F0B6A8 original=74698F69BC888A1D55D2B6C4BDB48B3210DD471FF813D61E421D7AC9C3F0B6A8 match=True
+ABSENCE_CHECK web\scripts\test-dashboard-export-time-merge.mjs exists=False expected=False
+RESTORED_BEHAVIOR=separate copy restored to original dashboard columns: standalone 导出时间 column present; added merge regression script absent
+RESTORED_STATUS=True

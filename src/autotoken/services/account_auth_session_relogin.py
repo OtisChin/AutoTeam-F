@@ -7,11 +7,14 @@ provide the Codex refresh_token required by CPA.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -128,6 +131,7 @@ def relogin_account_auth_session_once(
         STATUS_ACTIVE,
         STATUS_PENDING,
         STATUS_SESSION_ONLY,
+        get_totp_credentials,
         update_account,
     )
 
@@ -135,6 +139,28 @@ def relogin_account_auth_session_once(
     if not normalized:
         raise ValueError("邮箱不能为空")
     password = str((account or {}).get("password") or "").strip()
+    effective_totp_secret = str(totp_secret or "").strip()
+    if not effective_totp_secret:
+        try:
+            totp_credentials = get_totp_credentials(normalized)
+        except Exception as exc:
+            logger.warning("[补登录] 读取本地2FA密钥失败，将按普通登录继续: email=%s error=%s", normalized, exc)
+            totp_credentials = None
+        if totp_credentials and totp_credentials.get("secret"):
+            effective_totp_secret = str(totp_credentials.get("secret") or "").strip()
+    if effective_totp_secret:
+        logger.info("[补登录] 检测到本地2FA密钥，将使用TOTP完成登录: %s", normalized)
+        if callable(progress_callback):
+            try:
+                progress_callback(
+                    {
+                        "stage": "account_auth_session_totp_detected",
+                        "email": normalized,
+                        "message": "检测到本地2FA密钥，将使用TOTP完成登录",
+                    }
+                )
+            except Exception:
+                pass
 
     requested_mail_provider = str(mail_provider or "").strip().lower()
     account_mail_provider = str((account or {}).get("mail_provider") or "").strip().lower()
@@ -176,7 +202,7 @@ def relogin_account_auth_session_once(
             oauth_phone_sms_country=str(oauth_phone_sms_country or "").strip() or None,
             oauth_phone_sms_max_price=str(oauth_phone_sms_max_price or "").strip() or None,
             oauth_oasis_sms_cdks=str(oauth_oasis_sms_cdks or "").strip() or None,
-            totp_secret=totp_secret,
+            totp_secret=effective_totp_secret or None,
             progress_callback=progress_callback,
             auth_session_only=True,
         )

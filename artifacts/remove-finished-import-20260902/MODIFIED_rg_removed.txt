@@ -1,0 +1,5 @@
+COMMAND: rg -n '导入成品|成品账号导入|finishedImport|importFinishedAccounts|import-finished|finished_account_import|FINISHED_IMPORT|finished import' web src tests go -S
+INPUT: (none)
+OUTPUT:
+NO_MATCHES
+EXIT_STATUS: 0

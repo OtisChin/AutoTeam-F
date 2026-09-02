@@ -1,0 +1,2 @@
+938951D7988A09AAAB68F25FAE78250D0EF630055A5B82F1EC915D5EFA21D215  web\src\components\Dashboard.vue
+NEW_FILE  web\scripts\test-dashboard-oauth-badge.mjs

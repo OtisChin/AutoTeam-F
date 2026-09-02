@@ -264,12 +264,104 @@ def _wrap_flow_stage(flow, method_name: str, start_message: str, done_message: s
     setattr(flow, method_name, wrapped)
 
 
+def _flow_step_summary(flow, result: Any) -> tuple[str, str, bool]:
+    page_type = ""
+    continue_url = ""
+    totp_challenge = False
+    try:
+        extract_page_type = getattr(flow, "_extract_page_type", None)
+        if callable(extract_page_type):
+            page_type = str(extract_page_type(result) or "").strip().lower()
+    except Exception:
+        page_type = ""
+    try:
+        extract_continue = getattr(flow, "_extract_continue_url_from_step", None)
+        normalize = getattr(flow, "_normalize_continue_url", None)
+        if callable(extract_continue):
+            continue_url = str(extract_continue(result) or "").strip()
+        if continue_url and callable(normalize):
+            continue_url = str(normalize(continue_url) or "").strip()
+    except Exception:
+        continue_url = ""
+    try:
+        is_totp = getattr(flow, "_is_totp_challenge_state", None)
+        if callable(is_totp):
+            totp_challenge = bool(is_totp(page_type=page_type, continue_url=continue_url, payload=result))
+    except Exception:
+        totp_challenge = False
+    return page_type, continue_url, totp_challenge
+
+
 def _attach_flow_stage_logs(flow):
     _wrap_flow_stage(flow, "register_password", "提交注册密码", "注册密码已提交")
     _wrap_flow_stage(flow, "send_otp", "触发邮箱验证码", "邮箱验证码已触发")
     _wrap_flow_stage(flow, "verify_otp", "提交邮箱验证码", "邮箱验证码校验通过")
     _wrap_flow_stage(flow, "create_account", "提交账号资料", "账号资料已提交")
-    _wrap_flow_stage(flow, "get_auth_session", "获取 ChatGPT auth_session", "ChatGPT auth_session 已获取")
+
+    authorize_continue = getattr(flow, "authorize_continue", None)
+    if callable(authorize_continue):
+        def authorize_continue_wrapped(*args, **kwargs):
+            screen_hint = str(kwargs.get("screen_hint") or (args[2] if len(args) > 2 else "") or "").strip()
+            result = authorize_continue(*args, **kwargs)
+            page_type, continue_url, totp_challenge = _flow_step_summary(flow, result)
+            logger.info(
+                "[OAuth登陆] authorize/continue 返回: screen_hint=%s page_type=%s continue_url_present=%s totp_challenge=%s",
+                screen_hint or "-",
+                page_type or "-",
+                bool(continue_url),
+                totp_challenge,
+            )
+            return result
+
+        flow.authorize_continue = authorize_continue_wrapped
+
+    login_password_verify = getattr(flow, "login_password_verify", None)
+    if callable(login_password_verify):
+        def login_password_verify_wrapped(*args, **kwargs):
+            logger.info("[OAuth登陆] 提交密码")
+            result = login_password_verify(*args, **kwargs)
+            flow._protocol_password_verified = True
+            page_type, continue_url, totp_challenge = _flow_step_summary(flow, result)
+            logger.info(
+                "[OAuth登陆] 密码校验通过: page_type=%s continue_url_present=%s totp_challenge=%s",
+                page_type or "-",
+                bool(continue_url),
+                totp_challenge,
+            )
+            return result
+
+        flow.login_password_verify = login_password_verify_wrapped
+
+    handle_totp_challenge = getattr(flow, "_handle_totp_challenge", None)
+    if callable(handle_totp_challenge):
+        def handle_totp_challenge_wrapped(*args, **kwargs):
+            page_type = str(kwargs.get("page_type") or "").strip().lower()
+            continue_url = str(kwargs.get("continue_url") or "").strip()
+            logger.info(
+                "[OAuth登陆] 检测到服务端2FA挑战，开始提交TOTP: page_type=%s continue_url_present=%s",
+                page_type or "-",
+                bool(continue_url),
+            )
+            result = handle_totp_challenge(*args, **kwargs)
+            flow._protocol_totp_verified = True
+            logger.info("[OAuth登陆] TOTP校验通过: continue_url_present=%s", bool(result))
+            return result
+
+        flow._handle_totp_challenge = handle_totp_challenge_wrapped
+
+    get_auth_session = getattr(flow, "get_auth_session", None)
+    if callable(get_auth_session):
+        def get_auth_session_wrapped(*args, **kwargs):
+            logger.info("[OAuth登陆] 获取 ChatGPT auth_session")
+            result = get_auth_session(*args, **kwargs)
+            logger.info("[OAuth登陆] ChatGPT auth_session 已获取")
+            if str(getattr(flow, "_totp_secret", "") or "").strip() and not bool(
+                getattr(flow, "_protocol_totp_verified", False)
+            ):
+                logger.info("[OAuth登陆] 本次服务端未返回2FA挑战，未提交TOTP，直接获得有效 auth_session")
+            return result
+
+        flow.get_auth_session = get_auth_session_wrapped
 
     signup = getattr(flow, "signup", None)
     if callable(signup):
@@ -292,6 +384,7 @@ def _attach_flow_stage_logs(flow):
     if callable(kickoff):
         def kickoff_wrapped(*args, **kwargs):
             reason = str(args[0] if args else kwargs.get("reason") or "").strip()
+            flow._protocol_email_otp_used = True
             if reason:
                 logger.info("[OAuth登陆] 触发/重发邮箱验证码: %s", reason)
             else:

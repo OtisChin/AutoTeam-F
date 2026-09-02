@@ -1,0 +1,4 @@
+COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\interfaces\api.py src\autotoken\api_routes\finished_account_import.py src\autotoken\services\finished_account_import.py
+INPUT: (none)
+OUTPUT:
+EXIT_STATUS: 0

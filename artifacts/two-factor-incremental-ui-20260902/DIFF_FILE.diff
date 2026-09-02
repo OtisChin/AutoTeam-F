@@ -1,0 +1,289 @@
+--- original/src/autotoken/core/task_snapshots.py
++++ modified/src/autotoken/core/task_snapshots.py
+@@ -113,6 +113,30 @@
+     }
+ 
+ 
++def compact_setup_2fa_progress_events(progress_events: Any) -> list[dict[str, Any]]:
++    if not isinstance(progress_events, list):
++        return []
++    compact: list[dict[str, Any]] = []
++    for event in progress_events:
++        if not isinstance(event, dict):
++            continue
++        if event.get("stage") != "account_2fa_progress":
++            continue
++        email = str(event.get("email") or "").strip().lower()
++        status = str(event.get("status") or "").strip().lower()
++        if not email or status not in {"enabled", "failed", "skipped"}:
++            continue
++        compact.append(
++            {
++                "stage": "account_2fa_progress",
++                "email": email,
++                "status": status,
++                "reason": str(event.get("reason") or "").strip(),
++            }
++        )
++    return compact
++
++
+ def task_list_snapshot(task: dict[str, Any] | None) -> dict[str, Any]:
+     """Lightweight task snapshot for frequently polled task lists."""
+ 
+@@ -121,6 +145,10 @@
+     progress_events = snapshot.pop("progress_events", None)
+     if isinstance(progress_events, list):
+         snapshot["progress_event_count"] = len(progress_events)
++        if snapshot.get("command") == "setup-2fa":
++            compact_progress_events = compact_setup_2fa_progress_events(progress_events)
++            if compact_progress_events:
++                snapshot["progress_events"] = compact_progress_events
+     snapshot["params"] = compact_task_params(snapshot.get("params"))
+     if (
+         snapshot.get("command") == "setup-2fa"
+
+--- original/src/autotoken/services/account_two_factor.py
++++ modified/src/autotoken/services/account_two_factor.py
+@@ -235,12 +235,15 @@
+                     {"email": fallback_email, "reason": str(exc)},
+                 )
+             completed_results.append((index, status, item))
++            reason = str(item.get("reason") or "") if isinstance(item, dict) else ""
+             emit_progress(
+                 {
+                     "stage": "account_2fa_progress",
+                     "email": email,
+                     "current": len(completed_results),
+                     "total": len(targets),
++                    "status": status,
++                    "reason": reason,
+                     "enabled": sum(1 for _index, item_status, _item in completed_results if item_status == "enabled"),
+                     "skipped": sum(1 for _index, item_status, _item in completed_results if item_status == "skipped"),
+                     "failed": sum(1 for _index, item_status, _item in completed_results if item_status == "failed"),
+
+--- original/web/src/components/Dashboard.vue
++++ modified/web/src/components/Dashboard.vue
+@@ -956,7 +956,7 @@
+               <td class="px-4 py-8 text-center text-gray-500" colspan="15">没有匹配的账号</td>
+             </tr>
+             <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
+-              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorSetupInProgress(acc)]"
++              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorEnabled(acc), accountTwoFactorSetupInProgress(acc)]"
+               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
+               :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">
+               <td class="px-3 py-3">
+@@ -1937,6 +1937,8 @@
+ const twoFactorSubmittingEmails = ref(new Set())
+ const twoFactorPendingTaskIds = ref(new Set())
+ const twoFactorPendingTaskEmails = ref(new Set())
++const twoFactorCompletedEmails = ref(new Set())
++const twoFactorFailedEmails = ref(new Set())
+ const twoFactorTotpDialog = ref({
+   open: false,
+   email: '',
+@@ -2974,18 +2976,59 @@
+   }
+   return tasks
+ })
++const twoFactorProgressTasks = computed(() => {
++  const allTasks = Array.isArray(props.tasks) ? props.tasks : []
++  const tasks = allTasks.filter(task => task?.command === 'setup-2fa')
++  if (props.runningTask?.command === 'setup-2fa') {
++    const runningTaskId = String(props.runningTask.task_id || '')
++    if (!runningTaskId || !tasks.some(task => String(task.task_id || '') === runningTaskId)) {
++      tasks.unshift(props.runningTask)
++    }
++  }
++  return tasks
++})
+ const twoFactorTask = computed(() => twoFactorTasks.value[0] || null)
+ const twoFactorTaskRunning = computed(() => twoFactorTasks.value.length > 0)
+ const twoFactorTaskEmails = computed(() => {
+   const emails = new Set()
++  const completed = twoFactorCompletedEmails.value
++  const failed = twoFactorFailedEmails.value
+   for (const task of twoFactorTasks.value) {
+     for (const email of task?.params?.emails || []) {
+       const normalized = String(email || '').trim().toLowerCase()
+-      if (normalized) emails.add(normalized)
++      if (normalized && !completed.has(normalized) && !failed.has(normalized)) emails.add(normalized)
+     }
+   }
+   return emails
+ })
++
++function applyTwoFactorTaskProgressEvents(tasks) {
++  const pending = new Set(twoFactorPendingTaskEmails.value)
++  const completed = new Set(twoFactorCompletedEmails.value)
++  const failed = new Set(twoFactorFailedEmails.value)
++  for (const task of tasks || []) {
++    for (const event of task?.progress_events || []) {
++      if (event?.stage !== 'account_2fa_progress') continue
++      const email = String(event.email || '').trim().toLowerCase()
++      const status = String(event.status || '').trim().toLowerCase()
++      if (!email) continue
++      if (status === 'enabled' || (status === 'skipped' && String(event.reason || '').trim() === 'already_enabled')) {
++        completed.add(email)
++        failed.delete(email)
++        pending.delete(email)
++      } else if (status === 'failed') {
++        failed.add(email)
++        completed.delete(email)
++        pending.delete(email)
++      } else if (status === 'skipped') {
++        pending.delete(email)
++      }
++    }
++  }
++  twoFactorPendingTaskEmails.value = pending
++  twoFactorCompletedEmails.value = completed
++  twoFactorFailedEmails.value = failed
++}
+ 
+ function clearTwoFactorPendingTask() {
+   if (twoFactorPendingClearTimer !== null) {
+@@ -3003,6 +3046,10 @@
+     clearTwoFactorPendingTask()
+   }, 3000)
+ }
++
++watch(twoFactorProgressTasks, tasks => {
++  applyTwoFactorTaskProgressEvents(tasks)
++}, { deep: true, immediate: true })
+ 
+ watch(twoFactorTasks, tasks => {
+   if (!twoFactorPendingTaskEmails.value.size) return
+@@ -3022,9 +3069,22 @@
+     return
+   }
+   if (!tasks.length) scheduleTwoFactorPendingTaskClear()
+-})
++}, { deep: true, immediate: true })
+ 
+ watch(allAccounts, accounts => {
++  const completed = new Set(twoFactorCompletedEmails.value)
++  const failed = new Set(twoFactorFailedEmails.value)
++  for (const account of accounts) {
++    const email = accountTwoFactorEmailKey(account)
++    if (!email) continue
++    if (account?.two_factor_enabled === true || String(account?.totp_status || '').trim().toLowerCase() === 'enabled') {
++      completed.delete(email)
++      failed.delete(email)
++    }
++  }
++  twoFactorCompletedEmails.value = completed
++  twoFactorFailedEmails.value = failed
++
+   if (!twoFactorPendingTaskEmails.value.size) return
+   const pending = new Set(twoFactorPendingTaskEmails.value)
+   const allFinished = [...pending].every(email => {
+@@ -3684,6 +3744,7 @@
+ function accountTwoFactorEnabled(account) {
+   return account?.two_factor_enabled === true
+     || String(account?.totp_status || '').trim().toLowerCase() === 'enabled'
++    || twoFactorCompletedEmails.value.has(accountTwoFactorEmailKey(account))
+ }
+ 
+ function accountTwoFactorEmailKey(account) {
+@@ -3692,6 +3753,7 @@
+ 
+ function accountTwoFactorSetupInProgress(account) {
+   const email = accountTwoFactorEmailKey(account)
++  if (!email || twoFactorCompletedEmails.value.has(email) || twoFactorFailedEmails.value.has(email)) return false
+   return twoFactorSubmittingEmails.value.has(email)
+     || twoFactorPendingTaskEmails.value.has(email)
+     || twoFactorTaskEmails.value.has(email)
+@@ -4425,6 +4487,15 @@
+   if (!emails.length) return
+ 
+   twoFactorSubmitting.value = true
++  const completed = new Set(twoFactorCompletedEmails.value)
++  const failed = new Set(twoFactorFailedEmails.value)
++  for (const email of emails) {
++    const normalized = email.toLowerCase()
++    completed.delete(normalized)
++    failed.delete(normalized)
++  }
++  twoFactorCompletedEmails.value = completed
++  twoFactorFailedEmails.value = failed
+   twoFactorSubmittingEmails.value = new Set([
+     ...twoFactorSubmittingEmails.value,
+     ...emails.map(email => email.toLowerCase()),
+
+--- original/tests/unit/test_task_snapshots.py
++++ modified/tests/unit/test_task_snapshots.py
+@@ -14,3 +14,38 @@
+ 
+     assert snapshot["params"]["emails"] == ["one@example.com", "two@example.com"]
+     assert snapshot["params"]["emails_count"] == 2
++
++
++def test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state():
++    task = {
++        "task_id": "task-2fa",
++        "command": "setup-2fa",
++        "status": "running",
++        "created_at": 1,
++        "params": {"emails": ["one@example.com", "two@example.com", "three@example.com"]},
++        "progress_events": [
++            {"stage": "account_2fa_account_started", "email": "one@example.com", "message": "start"},
++            {
++                "stage": "account_2fa_progress",
++                "email": "one@example.com",
++                "status": "enabled",
++                "reason": "",
++                "message": "enabled",
++            },
++            {
++                "stage": "account_2fa_progress",
++                "email": "two@example.com",
++                "status": "failed",
++                "reason": "otp_timeout",
++                "message": "failed",
++            },
++            {"stage": "gopay_progress", "email": "ignored@example.com", "status": "enabled"},
++        ],
++    }
++
++    snapshot = task_list_snapshot(task)
++
++    assert snapshot["progress_events"] == [
++        {"stage": "account_2fa_progress", "email": "one@example.com", "status": "enabled", "reason": ""},
++        {"stage": "account_2fa_progress", "email": "two@example.com", "status": "failed", "reason": "otp_timeout"},
++    ]
+
+--- original/web/scripts/regression-dashboard-2fa-actions.mjs
++++ modified/web/scripts/regression-dashboard-2fa-actions.mjs
+@@ -61,6 +61,31 @@
+   /function accountTwoFactorSetupInProgress\(account\)[\s\S]*?twoFactorPendingTaskEmails\.value\.has\(email\)/,
+   'the 2FA button label should include locally pending task emails',
+ )
++assert.match(
++  dashboardSource,
++  /const twoFactorCompletedEmails = ref\(new Set\(\)\)/,
++  'successful account-level 2FA events should be tracked locally before the whole batch ends',
++)
++assert.match(
++  dashboardSource,
++  /const twoFactorFailedEmails = ref\(new Set\(\)\)/,
++  'failed account-level 2FA events should be tracked locally before the whole batch ends',
++)
++assert.match(
++  dashboardSource,
++  /function applyTwoFactorTaskProgressEvents\(tasks\)[\s\S]*status === 'enabled'[\s\S]*completed\.add\(email\)[\s\S]*pending\.delete\(email\)[\s\S]*status === 'failed'[\s\S]*failed\.add\(email\)[\s\S]*pending\.delete\(email\)/,
++  'Dashboard should turn each completed 2FA account into 已设置 and each failed account back into 设置 from task progress events',
++)
++assert.match(
++  dashboardSource,
++  /const twoFactorProgressTasks = computed\(\(\) => \{[\s\S]*task\?\.command === 'setup-2fa'[\s\S]*watch\(twoFactorProgressTasks, tasks => \{[\s\S]*applyTwoFactorTaskProgressEvents\(tasks\)/,
++  'Dashboard should consume setup-2fa progress events even when a task snapshot is no longer running',
++)
++assert.match(
++  dashboardSource,
++  /function accountTwoFactorEnabled\(account\)[\s\S]*twoFactorCompletedEmails\.value\.has\(accountTwoFactorEmailKey\(account\)\)/,
++  'successful 2FA progress should make the account row show 已设置 before the account list reloads',
++)
+ const accountTwoFactorProgressFunction = dashboardSource.match(
+   /function accountTwoFactorSetupInProgress\(account\) \{[\s\S]*?\n\}/,
+ )?.[0] || ''

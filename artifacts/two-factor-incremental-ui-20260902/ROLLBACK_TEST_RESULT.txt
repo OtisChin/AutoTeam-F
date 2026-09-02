@@ -1,0 +1,10 @@
+ROLLBACK_COMMAND: bash -lc "'/mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-incremental-ui-20260902/ROLLBACK.sh' '/mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-incremental-ui-20260902/rollback-test-root'"
+ROLLBACK_OUTPUT: rollback restored 5 files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-incremental-ui-20260902/rollback-test-root
+ROLLBACK_EXIT_STATUS: 0
+RESTORED_HASHES:
+MATCH  EAACE3D9FEA7F978F8BCBB5C992BE4AA78CDC7DA800E17967888F904F36D0905  src\autotoken\core\task_snapshots.py
+MATCH  1EB9A76069EDF240FABA9C4EF247847E2F983A15B4C1FAA8C3B2F7D82A120D65  src\autotoken\services\account_two_factor.py
+MATCH  9BEE9EABB5A71BCC42A513BCFB43ECCF02FFAC42748AA80FD99680CEBFB1B3F1  web\src\components\Dashboard.vue
+MATCH  A89F500E86051DBB59906DAA8A616C356F9BF802752FD5E65524ADC7103A26C9  tests\unit\test_task_snapshots.py
+MATCH  692120143C21DEAA73290656E8D9C76E721DA65820E42D615662EFCF5AE5858A  web\scripts\regression-dashboard-2fa-actions.mjs
+RESTORED_STATUS: original behavior restored on rollback-test-root

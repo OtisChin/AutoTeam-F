@@ -179,6 +179,11 @@
     return values.some(Boolean);
   }
 
+  function isTotpChallenge() {
+    const text = `${window.location.href} ${(document.body && document.body.innerText || "")}`.toLowerCase();
+    return /\bmfa\b|\btotp\b|2fa|two[-\s]?factor|authenticator|身份验证器|认证器|驗證器|双重验证|雙重驗證|两步验证|兩步驗證|二步验证|二步驗證/.test(text);
+  }
+
   async function tick() {
     const config = loadConfig();
     if (!config) return;
@@ -226,7 +231,7 @@
     }
 
     const passwordInput = queryFirst(["input[name='password']", "input[type='password']"]);
-    if (passwordInput && throttle("switch_otp")) {
+    if (passwordInput && !state.totp && throttle("switch_otp")) {
       const clicked = clickAny([
         "一次性验证码", "邮箱验证码", "验证码登录", "验证码登陆", "使用验证码登录", "使用验证码登陆",
         "用验证码登录", "用验证码登陆", "改用验证码", "改用邮箱验证码",
@@ -246,7 +251,15 @@
       return;
     }
 
-    if (state.otp && throttle(`otp_${state.otp}`) && fillCode(String(state.otp))) {
+    if (state.totp && isTotpChallenge() && throttle(`totp_${state.totp}`) && fillCode(String(state.totp))) {
+      await postEvent(config, { type: "totp_filled" });
+      setTimeout(() => {
+        if (codeInputFilled()) clickAny(["continue", "继续", "verify", "验证"]);
+      }, 300);
+      return;
+    }
+
+    if (state.otp && !isTotpChallenge() && throttle(`otp_${state.otp}`) && fillCode(String(state.otp))) {
       await postEvent(config, { type: "otp_filled" });
       setTimeout(() => {
         if (codeInputFilled()) clickAny(["continue", "继续", "verify", "验证"]);

@@ -1,0 +1,13 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit -q
+INPUT: (none)
+OUTPUT:
+........................................................................ [ 94%]
+....                                                                     [100%]
+============================== warnings summary ===============================
+src\autotoken\auth\codex_auth.py:6384
+  D:\code\OpenSource\AutoTeam-F\src\autotoken\auth\codex_auth.py:6384: SyntaxWarning: invalid escape sequence '\s'
+    auth_code = _extract_auth_code_from_url(url)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+76 passed, 1 warning in 6.21s
+EXIT_STATUS: 0

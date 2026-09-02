@@ -1,0 +1,224 @@
+--- a/src/autotoken/services/account_two_factor.py
++++ b/src/autotoken/services/account_two_factor.py
+@@ -3,8 +3,10 @@
+ from __future__ import annotations
+ 
+ import os
++import threading
+ import time
+ from collections.abc import Callable, Iterable
++from concurrent.futures import ThreadPoolExecutor, as_completed
+ from typing import Any
+ 
+ from loguru import logger
+@@ -102,8 +104,9 @@
+     save_metadata: Callable[..., Any] | None = None,
+     otp_waiter: Callable[..., str] | None = None,
+     progress: Callable[[dict[str, Any]], None] | None = None,
++    max_workers: int = 10,
+ ) -> dict[str, Any]:
+-    """Enable TOTP sequentially for existing accounts using saved protocol sessions."""
++    """Enable TOTP for existing accounts using saved protocol sessions."""
+     from autotoken.storage.accounts import load_accounts, save_totp_metadata
+     from autotoken.storage.auth_session_store import load_auth_session
+ 
+@@ -123,34 +126,26 @@
+     enabled: list[dict[str, Any]] = []
+     skipped: list[dict[str, Any]] = []
+     failed: list[dict[str, Any]] = []
++    progress_lock = threading.Lock()
++
++    def emit_progress(event: dict[str, Any]) -> None:
++        with progress_lock:
++            emit(event)
+ 
+     logger.info("[2FA] 协议设置开始：{} 个账号", len(targets))
+ 
+-    for index, email in enumerate(targets, start=1):
+-        logger.info("[2FA] 正在处理账号 {}/{}：{}", index, len(targets), email)
+-        emit(
+-            {
+-                "stage": "account_2fa_account_started",
+-                "email": email,
+-                "current": index,
+-                "total": len(targets),
+-                "message": f"正在设置 2FA：{email} ({index}/{len(targets)})",
+-            }
+-        )
++    def _setup_one(index: int, email: str) -> tuple[int, str, str, dict[str, Any]]:
+         account = accounts_by_email.get(email)
+         if account is None:
+             logger.warning("[2FA] 账号不存在：{}", email)
+-            failed.append({"email": email, "reason": "account_not_found"})
+-            continue
++            return index, email, "failed", {"email": email, "reason": "account_not_found"}
+         if account_two_factor_enabled(account):
+             logger.info("[2FA] 跳过已设置账号：{}", email)
+-            skipped.append({"email": email, "reason": "already_enabled"})
+-            continue
++            return index, email, "skipped", {"email": email, "reason": "already_enabled"}
+         session_data = load_session(email)
+         if not isinstance(session_data, dict) or not session_data:
+             logger.warning("[2FA] 缺少协议会话：{}", email)
+-            failed.append({"email": email, "reason": "auth_session_missing"})
+-            continue
++            return index, email, "failed", {"email": email, "reason": "auth_session_missing"}
+ 
+         try:
+             mail_client = create_mail_client(account)
+@@ -186,38 +181,79 @@
+                 return code
+ 
+             executor = create_executor(email_code_provider=email_code_provider, save_metadata=persist_metadata)
+-            result = executor.enable(email, session_data, progress=emit)
++            result = executor.enable(email, session_data, progress=emit_progress)
+             public_result = result.to_public_dict()
+             if result.status == ChatGPT2FASetupStatus.ENABLED:
+                 logger.info("[2FA] 设置成功：{}", email)
+-                enabled.append({"email": email, "two_factor": public_result})
+-            else:
+-                logger.warning(
+-                    "[2FA] 设置失败：{} reason={}",
+-                    email,
+-                    public_result.get("reason") or public_result.get("status") or "setup_failed",
+-                )
+-                failed.append(
+-                    {
+-                        "email": email,
+-                        "reason": str(public_result.get("reason") or public_result.get("status") or "setup_failed"),
+-                    }
+-                )
++                return index, email, "enabled", {"email": email, "two_factor": public_result}
++            logger.warning(
++                "[2FA] 设置失败：{} reason={}",
++                email,
++                public_result.get("reason") or public_result.get("status") or "setup_failed",
++            )
++            return (
++                index,
++                email,
++                "failed",
++                {
++                    "email": email,
++                    "reason": str(public_result.get("reason") or public_result.get("status") or "setup_failed"),
++                },
++            )
+         except Exception as exc:
+             logger.exception("[2FA] 设置异常：{}", email)
+-            failed.append({"email": email, "reason": str(exc)})
+-        finally:
+-            emit(
++            return index, email, "failed", {"email": email, "reason": str(exc)}
++
++    worker_count = max(1, min(int(max_workers or 1), 10, len(targets) or 1))
++    completed_results: list[tuple[int, str, dict[str, Any]]] = []
++
++    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="account-2fa") as pool:
++        futures = {}
++        for index, email in enumerate(targets, start=1):
++            logger.info("[2FA] 正在处理账号 {}/{}：{}", index, len(targets), email)
++            emit_progress(
++                {
++                    "stage": "account_2fa_account_started",
++                    "email": email,
++                    "current": index,
++                    "total": len(targets),
++                    "message": f"正在设置 2FA：{email} ({index}/{len(targets)})",
++                }
++            )
++            futures[pool.submit(_setup_one, index, email)] = (index, email)
++
++        for future in as_completed(futures):
++            fallback_index, fallback_email = futures[future]
++            try:
++                index, email, status, item = future.result()
++            except Exception as exc:
++                logger.exception("[2FA] 设置异常：{}", fallback_email)
++                index, email, status, item = (
++                    fallback_index,
++                    fallback_email,
++                    "failed",
++                    {"email": fallback_email, "reason": str(exc)},
++                )
++            completed_results.append((index, status, item))
++            emit_progress(
+                 {
+                     "stage": "account_2fa_progress",
+                     "email": email,
+-                    "current": index,
++                    "current": len(completed_results),
+                     "total": len(targets),
+-                    "enabled": len(enabled),
+-                    "skipped": len(skipped),
+-                    "failed": len(failed),
++                    "enabled": sum(1 for _index, item_status, _item in completed_results if item_status == "enabled"),
++                    "skipped": sum(1 for _index, item_status, _item in completed_results if item_status == "skipped"),
++                    "failed": sum(1 for _index, item_status, _item in completed_results if item_status == "failed"),
+                 }
+             )
++
++    for _index, status, item in sorted(completed_results, key=lambda value: value[0]):
++        if status == "enabled":
++            enabled.append(item)
++        elif status == "skipped":
++            skipped.append(item)
++        else:
++            failed.append(item)
+ 
+     logger.info(
+         "[2FA] 协议设置结束：total={} enabled={} skipped={} failed={}",
+--- a/tests/unit/test_account_two_factor_service.py
++++ b/tests/unit/test_account_two_factor_service.py
+@@ -2,6 +2,8 @@
+ from autotoken.api_routes.task_actions import AccountTwoFactorSetupParams, create_task_actions_router
+ from autotoken.services import account_two_factor
+ from autotoken.services.chatgpt_2fa_setup import ChatGPT2FASetupResult, ChatGPT2FASetupStatus
++import threading
++import time
+ 
+ 
+ class _MailClient:
+@@ -44,6 +46,43 @@
+     assert result["failed"] == [{"email": "missing@example.com", "reason": "account_not_found"}]
+     assert progress_events[0]["stage"] == "account_2fa_account_started"
+     assert progress_events[0]["email"] == "new@example.com"
++
++
++def test_protocol_setup_runs_accounts_with_ten_workers():
++    emails = [f"user-{index}@example.com" for index in range(12)]
++    accounts = [{"email": email, "two_factor_enabled": False} for email in emails]
++    lock = threading.Lock()
++    active = 0
++    peak_active = 0
++
++    class ConcurrentExecutor:
++        def __init__(self, **_kwargs):
++            pass
++
++        def enable(self, email, session_data, *, progress=None):
++            nonlocal active, peak_active
++            assert session_data == {"sessionToken": f"session:{email}"}
++            with lock:
++                active += 1
++                peak_active = max(peak_active, active)
++            time.sleep(0.03)
++            with lock:
++                active -= 1
++            return ChatGPT2FASetupResult(ChatGPT2FASetupStatus.ENABLED, email, masked_secret="ABCD…WXYZ")
++
++    result = account_two_factor.setup_accounts_two_factor_protocol(
++        emails,
++        accounts_loader=lambda: accounts,
++        session_loader=lambda email: {"sessionToken": f"session:{email}"},
++        mail_client_factory=lambda _account: _MailClient(),
++        executor_factory=lambda **kwargs: ConcurrentExecutor(**kwargs),
++        save_metadata=lambda **_kwargs: None,
++        otp_waiter=lambda *_args, **_kwargs: "123456",
++    )
++
++    assert result["total"] == 12
++    assert len(result["enabled"]) == 12
++    assert peak_active == 10
+ 
+ 
+ def test_task_route_submits_protocol_2fa_background_job(monkeypatch):

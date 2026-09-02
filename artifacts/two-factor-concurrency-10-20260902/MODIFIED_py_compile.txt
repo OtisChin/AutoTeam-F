@@ -1,0 +1,4 @@
+COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\services\account_two_factor.py tests\unit\test_account_two_factor_service.py
+INPUT: (none)
+OUTPUT:
+EXIT_STATUS: 0

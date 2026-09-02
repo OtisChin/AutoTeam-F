@@ -154,6 +154,19 @@ const server = createServer((request, response) => {
     response.end(accountPayload)
     return
   }
+  const twoFactorTotpMatch = url.pathname.match(/^\/api\/accounts\/([^/]+)\/2fa\/totp$/)
+  if (twoFactorTotpMatch) {
+    const email = decodeURIComponent(twoFactorTotpMatch[1] || '')
+    sendJson(response, {
+      email,
+      enabled: true,
+      secret: 'JBSWY3DPEHPK3PXP',
+      code: '399592',
+      period: 30,
+      remaining: 18,
+    })
+    return
+  }
   if (url.pathname === '/api/tasks') {
     sendJson(response, [])
     return

@@ -1,0 +1,236 @@
+--- original/src/autotoken/core/task_snapshots.py
++++ modified/src/autotoken/core/task_snapshots.py
+@@ -11,6 +11,7 @@
+     "auto_register_count",
+     "checkout_ui_mode",
+     "count",
++    "email",
+     "emails_count",
+     "kind",
+     "link_type",
+@@ -18,6 +19,7 @@
+     "mode",
+     "phone_country_code",
+     "proxy_label",
++    "refresh_auth_session",
+     "task_id",
+     "timeout",
+ }
+@@ -36,7 +38,9 @@
+ }
+ 
+ TASK_LIST_RESULT_ALLOW_KEYS = {
++    "auth_file",
+     "concurrency",
++    "email",
+     "failed",
+     "failure_stage",
+     "max_attempts",
+@@ -137,6 +141,31 @@
+     return compact
+ 
+ 
++def compact_oauth_progress_events(progress_events: Any) -> list[dict[str, Any]]:
++    if not isinstance(progress_events, list):
++        return []
++    compact: list[dict[str, Any]] = []
++    for event in progress_events:
++        if not isinstance(event, dict):
++            continue
++        if event.get("stage") != "account_login_done":
++            continue
++        email = str(event.get("email") or "").strip().lower()
++        if not email:
++            continue
++        compact.append({"stage": "account_login_done", "email": email})
++    return compact
++
++
++def compact_progress_events_for_task(command: Any, progress_events: Any) -> list[dict[str, Any]]:
++    command_text = str(command or "")
++    if command_text == "setup-2fa":
++        return compact_setup_2fa_progress_events(progress_events)
++    if command_text == "login-batch" or command_text.startswith("login:"):
++        return compact_oauth_progress_events(progress_events)
++    return []
++
++
+ def task_list_snapshot(task: dict[str, Any] | None) -> dict[str, Any]:
+     """Lightweight task snapshot for frequently polled task lists."""
+ 
+@@ -145,10 +174,9 @@
+     progress_events = snapshot.pop("progress_events", None)
+     if isinstance(progress_events, list):
+         snapshot["progress_event_count"] = len(progress_events)
+-        if snapshot.get("command") == "setup-2fa":
+-            compact_progress_events = compact_setup_2fa_progress_events(progress_events)
+-            if compact_progress_events:
+-                snapshot["progress_events"] = compact_progress_events
++        compact_progress_events = compact_progress_events_for_task(snapshot.get("command"), progress_events)
++        if compact_progress_events:
++            snapshot["progress_events"] = compact_progress_events
+     snapshot["params"] = compact_task_params(snapshot.get("params"))
+     if (
+         snapshot.get("command") == "setup-2fa"
+
+--- original/src/autotoken/api_routes/account_login.py
++++ modified/src/autotoken/api_routes/account_login.py
+@@ -545,10 +545,13 @@
+                     raise task_result_error(result["message"], task_result=result) from exc
+                 raise
+ 
++        task_params = {"email": email}
++        if bool(params.refresh_auth_session):
++            task_params["refresh_auth_session"] = True
+         return start_task(
+             f"login:{email}",
+             _run,
+-            {"email": email},
++            task_params,
+             task_group=TASK_GROUP_OAUTH,
+             pass_task_id=True,
+             exclusive=bool(params.exclusive),
+
+--- original/web/src/components/Dashboard.vue
++++ modified/web/src/components/Dashboard.vue
+@@ -1948,6 +1948,7 @@
+ const twoFactorPendingTaskEmails = ref(new Set())
+ const twoFactorCompletedEmails = ref(new Set())
+ const twoFactorFailedEmails = ref(new Set())
++const oauthCredentialCompletedEmails = ref(new Set())
+ const twoFactorTotpDialog = ref({
+   open: false,
+   email: '',
+@@ -2953,6 +2954,17 @@
+   const count = oauthBatchActionAccounts.value.length
+   return oauthBatchRunning.value ? `追加OAuth授权 (${count})` : `批量OAuth授权 (${count})`
+ })
++const oauthCredentialProgressTasks = computed(() => {
++  const allTasks = Array.isArray(props.tasks) ? props.tasks : []
++  const tasks = allTasks.filter(isOAuthCredentialTask)
++  if (isOAuthCredentialTask(props.runningTask)) {
++    const runningTaskId = String(props.runningTask.task_id || '')
++    if (!runningTaskId || !tasks.some(task => String(task.task_id || '') === runningTaskId)) {
++      tasks.unshift(props.runningTask)
++    }
++  }
++  return tasks
++})
+ const batchReloginButtonLabel = computed(() => {
+   if (batchReloggingIn.value) return '提交中...'
+   if (reloginBatchRunning.value) return '补登录运行中...'
+@@ -3058,6 +3070,44 @@
+ 
+ watch(twoFactorProgressTasks, tasks => {
+   applyTwoFactorTaskProgressEvents(tasks)
++}, { deep: true, immediate: true })
++
++function isOAuthCredentialTask(task) {
++  const command = String(task?.command || '')
++  if (Boolean(task?.params?.refresh_auth_session)) return false
++  return command === 'login-batch' || command.startsWith('login:')
++}
++
++function oauthCredentialEmailFromTask(task) {
++  const resultEmail = String(task?.result?.email || '').trim().toLowerCase()
++  if (resultEmail) return resultEmail
++  const paramEmail = String(task?.params?.email || '').trim().toLowerCase()
++  if (paramEmail) return paramEmail
++  const command = String(task?.command || '')
++  return command.startsWith('login:') ? command.slice('login:'.length).trim().toLowerCase() : ''
++}
++
++function applyOAuthCredentialTaskProgressEvents(tasks) {
++  const completed = new Set(oauthCredentialCompletedEmails.value)
++  for (const task of tasks || []) {
++    if (!isOAuthCredentialTask(task)) continue
++    for (const event of task?.progress_events || []) {
++      const stage = String(event?.stage || '')
++      if (stage === 'account_login_done') {
++        const email = String(event.email || '').trim().toLowerCase()
++        if (email) completed.add(email)
++      }
++    }
++    if (String(task?.status || '') === 'completed' && String(task?.result?.auth_file || '').trim()) {
++      const email = oauthCredentialEmailFromTask(task)
++      if (email) completed.add(email)
++    }
++  }
++  oauthCredentialCompletedEmails.value = completed
++}
++
++watch(oauthCredentialProgressTasks, tasks => {
++  applyOAuthCredentialTaskProgressEvents(tasks)
+ }, { deep: true, immediate: true })
+ 
+ watch(twoFactorTasks, tasks => {
+@@ -4803,6 +4853,12 @@
+ }
+ 
+ function hasCodexAuthFile(acc) {
++  const email = String(acc?.email || '').trim().toLowerCase()
++  if (email && oauthCredentialCompletedEmails.value.has(email)) return true
++  return accountHasPersistedCodexAuthFile(acc)
++}
++
++function accountHasPersistedCodexAuthFile(acc) {
+   if (acc.has_codex_auth_file !== undefined) return !!acc.has_codex_auth_file
+   const file = String(acc.codex_auth_file || acc.auth_file || '').replace(/\\/g, '/').toLowerCase()
+   return file.includes('/data/auths/') || file.includes('/auths/codex-') || file.includes('data/auths/')
+
+--- original/tests/unit/test_task_snapshots.py
++++ modified/tests/unit/test_task_snapshots.py
+@@ -49,3 +49,24 @@
+         {"stage": "account_2fa_progress", "email": "one@example.com", "status": "enabled", "reason": ""},
+         {"stage": "account_2fa_progress", "email": "two@example.com", "status": "failed", "reason": "otp_timeout"},
+     ]
++
++
++def test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge():
++    task = {
++        "task_id": "task-oauth",
++        "command": "login-batch",
++        "status": "running",
++        "created_at": 1,
++        "params": {"emails": ["one@example.com", "two@example.com"]},
++        "progress_events": [
++            {"stage": "account_login", "email": "one@example.com", "message": "start"},
++            {"stage": "account_login_done", "email": "one@example.com", "message": "done"},
++            {"stage": "account_login_failed", "email": "two@example.com", "message": "failed"},
++        ],
++    }
++
++    snapshot = task_list_snapshot(task)
++
++    assert snapshot["progress_events"] == [
++        {"stage": "account_login_done", "email": "one@example.com"},
++    ]
+
+--- original/web/scripts/test-dashboard-oauth-badge.mjs
++++ modified/web/scripts/test-dashboard-oauth-badge.mjs
+@@ -22,5 +22,25 @@
+   /v-memo="\[[^\"]*hasCodexAuthFile\(acc\)[^\"]*\]"/,
+   'the account row memo should include the OAuth credential badge state',
+ )
++assert.match(
++  dashboardSource,
++  /const oauthCredentialCompletedEmails = ref\(new Set\(\)\)/,
++  'OAuth login completion should be tracked locally so the badge appears before a full page reload',
++)
++assert.match(
++  dashboardSource,
++  /function applyOAuthCredentialTaskProgressEvents\(tasks\)[\s\S]*stage === 'account_login_done'[\s\S]*completed\.add\(email\)/,
++  'Dashboard should mark each account as having OAuth credentials when its login task emits account_login_done',
++)
++assert.match(
++  dashboardSource,
++  /String\(task\?\.status \|\| ''\) === 'completed' && String\(task\?\.result\?\.auth_file \|\| ''\)\.trim\(\)/,
++  'single-account OAuth completion should only light the badge when the task result contains an auth_file',
++)
++assert.match(
++  dashboardSource,
++  /function hasCodexAuthFile\(acc\)[\s\S]*oauthCredentialCompletedEmails\.value\.has/,
++  'the OAuth badge helper should include locally completed OAuth login emails',
++)
+ 
+ console.log('dashboard OAuth badge regression passed')

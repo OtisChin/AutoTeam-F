@@ -1,0 +1,65 @@
+--- original/web/src/components/Dashboard.vue
++++ modified/web/src/components/Dashboard.vue
+@@ -956,7 +956,7 @@
+               <td class="px-4 py-8 text-center text-gray-500" colspan="15">没有匹配的账号</td>
+             </tr>
+             <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
+-              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorEnabled(acc), accountTwoFactorSetupInProgress(acc)]"
++              v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email, twoFactorSubmitting || twoFactorTaskRunning, accountTwoFactorEnabled(acc), accountTwoFactorSetupInProgress(acc), hasCodexAuthFile(acc)]"
+               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
+               :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">
+               <td class="px-3 py-3">
+@@ -969,10 +969,19 @@
+               </td>
+               <td class="px-4 py-3 text-gray-500">{{ accountPageStartIndex + i + 1 }}</td>
+               <td class="px-4 py-3 max-w-56">
+-                <div
+-                  class="w-56 max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-gray-200"
+-                  :title="displayEmail(acc)">
+-                  {{ displayEmailPreview(acc) }}
++                <div class="flex w-56 max-w-full items-center gap-1.5">
++                  <div
++                    class="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-gray-200"
++                    :title="displayEmail(acc)">
++                    {{ displayEmailPreview(acc) }}
++                  </div>
++                  <span
++                    v-if="hasCodexAuthFile(acc)"
++                    title="该账号已有 OAuth 凭证"
++                    aria-label="该账号已有 OAuth 凭证"
++                    class="shrink-0 inline-flex items-center rounded-full border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-cyan-300">
++                    OAuth
++                  </span>
+                 </div>
+                 <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">
+                   Hub: {{ acc.hub_source_name }}
+
+--- original/web/scripts/test-dashboard-oauth-badge.mjs
++++ modified/web/scripts/test-dashboard-oauth-badge.mjs
+@@ -0,0 +1,26 @@
++import assert from 'node:assert/strict'
++import { readFileSync } from 'node:fs'
++import { fileURLToPath } from 'node:url'
++import path from 'node:path'
++
++const here = path.dirname(fileURLToPath(import.meta.url))
++const dashboardSource = readFileSync(path.resolve(here, '../src/components/Dashboard.vue'), 'utf8')
++const accountRowTemplate = dashboardSource.match(/<tr v-for="\(acc, i\) in paginatedAccounts"[\s\S]*?<\/tr>/)?.[0] || ''
++
++assert.match(
++  accountRowTemplate,
++  /displayEmailPreview\(acc\)[\s\S]*v-if="hasCodexAuthFile\(acc\)"[\s\S]*OAuth/,
++  'accounts that already have OAuth credentials should show an OAuth badge next to the account email',
++)
++assert.match(
++  accountRowTemplate,
++  /title="该账号已有 OAuth 凭证"/,
++  'the OAuth badge should explain why it is visible',
++)
++assert.match(
++  accountRowTemplate,
++  /v-memo="\[[^\"]*hasCodexAuthFile\(acc\)[^\"]*\]"/,
++  'the account row memo should include the OAuth credential badge state',
++)
++
++console.log('dashboard OAuth badge regression passed')

@@ -1,0 +1,5 @@
+COMMAND: Push-Location web; node scripts\regression-dashboard-2fa-actions.mjs; Pop-Location
+INPUT: (none)
+OUTPUT:
+dashboard 2FA actions regression passed
+EXIT_STATUS: 0

@@ -1,0 +1,225 @@
+CURRENT: TARGET=Batch 2FA setup / RESULT=changed account setup loop from serial to max 10 concurrent workers / NEXT=commit when ready
+BRANCH: main
+CHANGED_FIELD: setup_accounts_two_factor_protocol concurrency and unit coverage
+CHANGED_PATHS:
+- D:\code\OpenSource\AutoTeam-F\src\autotoken\services\account_two_factor.py
+- D:\code\OpenSource\AutoTeam-F\tests\unit\test_account_two_factor_service.py
+ARTIFACT_PATHS:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-concurrency-10-20260902\MODIFIED_FILE
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-concurrency-10-20260902\DIFF_FILE.diff
+- VERIFICATION.txt: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-concurrency-10-20260902\VERIFICATION.txt
+- ROLLBACK.sh: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-concurrency-10-20260902\ROLLBACK.sh
+ORIGINAL_HASHES:
+E380F94463B18690A534AC87AC511C2D3F155291B6AF390E513676A055D78942  src\autotoken\services\account_two_factor.py
+9AF8B39C0FC2423C0F0BE0C86129E985FB1FF020CA3173CA9B244A5104D3187A  tests\unit\test_account_two_factor_service.py
+
+==== BASELINE_RED_concurrency_test.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_account_two_factor_service.py::test_protocol_setup_runs_accounts_with_ten_workers -q
+INPUT: old sequential service implementation + new concurrency test
+OUTPUT:
+F                                                                        [100%]
+================================== FAILURES ===================================
+_____________ test_protocol_setup_runs_accounts_with_ten_workers ______________
+
+    def test_protocol_setup_runs_accounts_with_ten_workers():
+        emails = [f"user-{index}@example.com" for index in range(12)]
+        accounts = [{"email": email, "two_factor_enabled": False} for email in emails]
+        lock = threading.Lock()
+        active = 0
+        peak_active = 0
+    
+        class ConcurrentExecutor:
+            def __init__(self, **_kwargs):
+                pass
+    
+            def enable(self, email, session_data, *, progress=None):
+                nonlocal active, peak_active
+                assert session_data == {"sessionToken": f"session:{email}"}
+                with lock:
+                    active += 1
+                    peak_active = max(peak_active, active)
+                time.sleep(0.03)
+                with lock:
+                    active -= 1
+                return ChatGPT2FASetupResult(ChatGPT2FASetupStatus.ENABLED, email, masked_secret="ABCD��WXYZ")
+    
+        result = account_two_factor.setup_accounts_two_factor_protocol(
+            emails,
+            accounts_loader=lambda: accounts,
+            session_loader=lambda email: {"sessionToken": f"session:{email}"},
+            mail_client_factory=lambda _account: _MailClient(),
+            executor_factory=lambda **kwargs: ConcurrentExecutor(**kwargs),
+            save_metadata=lambda **_kwargs: None,
+            otp_waiter=lambda *_args, **_kwargs: "123456",
+        )
+    
+        assert result["total"] == 12
+        assert len(result["enabled"]) == 12
+>       assert peak_active == 10
+E       assert 1 == 10
+
+tests\unit\test_account_two_factor_service.py:85: AssertionError
+---------------------------- Captured stderr call -----------------------------
+2026-09-02 20:33:39.908 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:127 - [2FA] Э�����ÿ�ʼ��12 ���˺�
+2026-09-02 20:33:39.909 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 1/12��user-0@example.com
+2026-09-02 20:33:39.939 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-0@example.com
+2026-09-02 20:33:39.939 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 2/12��user-1@example.com
+2026-09-02 20:33:39.969 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-1@example.com
+2026-09-02 20:33:39.969 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 3/12��user-2@example.com
+2026-09-02 20:33:40.000 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-2@example.com
+2026-09-02 20:33:40.000 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 4/12��user-3@example.com
+2026-09-02 20:33:40.030 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-3@example.com
+2026-09-02 20:33:40.030 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 5/12��user-4@example.com
+2026-09-02 20:33:40.061 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-4@example.com
+2026-09-02 20:33:40.061 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 6/12��user-5@example.com
+2026-09-02 20:33:40.091 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-5@example.com
+2026-09-02 20:33:40.092 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 7/12��user-6@example.com
+2026-09-02 20:33:40.122 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-6@example.com
+2026-09-02 20:33:40.122 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 8/12��user-7@example.com
+2026-09-02 20:33:40.152 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-7@example.com
+2026-09-02 20:33:40.152 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 9/12��user-8@example.com
+2026-09-02 20:33:40.183 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-8@example.com
+2026-09-02 20:33:40.183 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 10/12��user-9@example.com
+2026-09-02 20:33:40.214 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-9@example.com
+2026-09-02 20:33:40.214 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 11/12��user-10@example.com
+2026-09-02 20:33:40.244 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-10@example.com
+2026-09-02 20:33:40.244 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:130 - [2FA] ���ڴ����˺� 12/12��user-11@example.com
+2026-09-02 20:33:40.275 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:192 - [2FA] ���óɹ���user-11@example.com
+2026-09-02 20:33:40.275 | INFO     | autotoken.services.account_two_factor:setup_accounts_two_factor_protocol:222 - [2FA] Э�����ý�����total=12 enabled=12 skipped=0 failed=0
+=========================== short test summary info ===========================
+FAILED tests/unit/test_account_two_factor_service.py::test_protocol_setup_runs_accounts_with_ten_workers
+1 failed in 0.86s
+EXIT_STATUS: 1
+
+==== MODIFIED_py_compile.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\services\account_two_factor.py tests\unit\test_account_two_factor_service.py
+INPUT: (none)
+OUTPUT:
+EXIT_STATUS: 0
+
+==== MODIFIED_target_pytest.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_account_two_factor_service.py -q
+INPUT: (none)
+OUTPUT:
+.......                                                                  [100%]
+7 passed in 0.47s
+EXIT_STATUS: 0
+
+==== MODIFIED_unit_pytest.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit -q
+INPUT: (none)
+OUTPUT:
+........................................................................ [ 87%]
+..........                                                               [100%]
+82 passed in 4.81s
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_regressions.txt ====
+COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 test:frontend-regressions
+> node scripts/run-frontend-tests.mjs
+
+account loading lifecycle tests passed
+account loading performance tests passed: rows=20000 compact_bytes=21054283 legacy_bytes=37793426 compact_parse_prepare=63.53ms prepare=30.80ms filter_p95=1.15ms filter_max=1.99ms actions_p95=7.74ms indexed_selection_p95=0.01ms firstPaint=50
+ok - timeout retains the newly entered key
+ok - 5xx retains the newly entered key
+ok - 401 clears the rejected key
+ok - candidate auth precedes storage-owner rotation
+ok - rejected candidate preserves prior recoverable owner
+ok - new key advances the auth epoch
+ok - concurrent Enter cannot race storage ownership
+ok - refresh rejection does not restart polling
+ok - logout advances the auth epoch
+ok - auth epoch change clears previous session state
+ok - new-session timeout cannot fallback to prior-session state
+ok - single-flight work is isolated by auth epoch
+ok - stale auxiliary success cannot commit or restart polling
+ok - stale auxiliary 401 cannot eject the new session
+ok - stale auth-check response cannot commit
+ok - stale dashboard success cannot commit
+ok - stale dashboard 401 cannot eject the new session
+ok - startup refresh rejection does not restart polling
+ok - post-setup refresh rejection does not restart polling
+ok - post-setup generated key owns resumable storage before mount
+ok - startup refuses ownerless browser storage
+ok - login refuses ownerless browser storage
+ok - post-setup refuses ownerless browser storage
+ok - cross-tab identity change invalidates the current epoch
+auth/session isolation regressions passed
+cancel polling recovery contract passed
+CPA file ingest limits passed
+dashboard account load state tests passed
+dashboard message lifecycle passed
+deferred storage regression tests passed
+export commit order passed
+extraction polling recovery tests passed: transient reject -> retry -> terminal snapshot; 404 -> missing; dispose -> stopped
+frontend bundle budget passed: entry=161385 bytes chunks=27
+frontend runtime performance tests passed
+frontend shell design tests passed
+job snapshot persistence performance tests passed: logs=500->200 interval=5000ms
+late payment state persistence contract passed
+ok - polling waits for request completion before scheduling the next timeout
+ok - manual and scheduled refreshes share a single-flight guard
+ok - hidden and unmounted pages stop polling and invalidate late responses
+ok - rendered rows use stable backend-or-composite keys and deduplicate repeats
+ok - incremental polling sends the backend boot epoch with the stable log id
+ok - a process restart resets the id cursor and retains new id 1 and 2 rows
+ok - the live DOM window is hard-capped at one thousand rows
+LogViewer polling and rendering regression contract passed
+long-running API timeout contract passed
+mail account batch contract tests passed: import=20000 auth=1000 batch=2000 boundary=2000/2001
+mail account render-window tests passed: accounts=20000 default=100 max=500 fetched=20000 password=2000
+OAuth phone pool performance contract passed
+Pay153 cancellation deadline, mutation lock, and unknown-outcome contract passed
+payment expiry clock lifecycle contract passed
+payment list render-window contract passed
+payment polling lifecycle contract passed
+payment unknown-outcome safeguards passed
+paypal auto-pay job recovery contract passed
+PayPal late job persistence contract passed
+paypal manual job recovery contract passed
+paypal missing job-id acknowledgement recovery passed
+PayPal polling lifecycle contract passed
+PayPal pre-ACK cancel terminal polling regression passed
+paypal retry backoff and restart recovery contract passed
+polling lifecycle regression contract passed
+ok - Dashboard ignores a late response from the previous provider
+ok - Dashboard keeps the newest response across A→B→A switching
+ok - Dashboard rejects defaults from stale provider loads
+ok - Register ignores a late response from the previous provider
+provider response race regressions passed
+register account polling lifecycle contract passed
+register mail.com pool render-window tests passed: rows=20000 default=100 max=100 selection=full
+register password frontend contract passed
+setup page provider and completion contracts passed
+shared payment polling gate contract passed
+start ACK remount recovery tests passed
+status polling failure classification and bounded recovery contract passed
+storage session isolation tests passed: same owner retained; key switch and post-unmount logout cleared sensitive autotoken state
+blocked browser storage degrades without crashing API module initialization or requests
+TaskPanel single-flight contract passed
+ui primitive focus, keyboard, lifecycle behavior passed
+all frontend scripts passed: 45/45
+EXIT_STATUS: 0
+
+==== MODIFIED_git_diff_check.txt ====
+COMMAND: git diff --check -- src\autotoken\services\account_two_factor.py tests\unit\test_account_two_factor_service.py
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'src/autotoken/services/account_two_factor.py', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0
+
+==== ROLLBACK_test.txt ====
+COMMAND: bash -lc "/mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-concurrency-10-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-concurrency-10-20260902/rollback-test-203453816/work"
+INPUT: copied modified current-task files into D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-concurrency-10-20260902\rollback-test-203453816\work
+OUTPUT:
+rollback restored sequential 2FA setup implementation
+EXIT_STATUS: 0
+VERIFY_HASHES:
+OK E380F94463B18690A534AC87AC511C2D3F155291B6AF390E513676A055D78942  src\autotoken\services\account_two_factor.py
+OK 9AF8B39C0FC2423C0F0BE0C86129E985FB1FF020CA3173CA9B244A5104D3187A  tests\unit\test_account_two_factor_service.py
+RESTORED_BEHAVIOR_STATUS: restored pre-task sequential 2FA behavior in rollback copy
+

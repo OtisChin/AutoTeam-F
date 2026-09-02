@@ -1,0 +1,5 @@
+COMMAND: Push-Location web; node scripts\test-dashboard-oauth-badge.mjs; Pop-Location
+INPUT: (none)
+OUTPUT:
+dashboard OAuth badge regression passed
+EXIT_STATUS: 0

@@ -1,0 +1,7 @@
+COMMAND: git diff --check -- web\src\api.js web\src\components\Dashboard.vue src\autotoken\interfaces\api.py src\autotoken\api_routes\finished_account_import.py src\autotoken\services\finished_account_import.py
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'src/autotoken/interfaces/api.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/api.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0

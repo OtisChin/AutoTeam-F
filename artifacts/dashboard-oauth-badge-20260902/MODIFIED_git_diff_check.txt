@@ -1,0 +1,5 @@
+COMMAND: git diff --check -- web\src\components\Dashboard.vue web\scripts\test-dashboard-oauth-badge.mjs
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0

@@ -1,0 +1,244 @@
+CURRENT: TARGET=Dashboard refresh/sync buttons / RESULT=removed dashboard Refresh and Sync Accounts buttons plus their unused dashboard-only state/handler / NEXT=commit when ready
+BRANCH: main
+CHANGED_FIELD: dashboard account toolbar controls and Kiro panel header refresh control
+CHANGED_PATHS:
+- D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue
+UNCHANGED_BY_THIS_TASK:
+- D:\code\OpenSource\AutoTeam-F\web\src\api.js (restored to this task original hash; postSyncAccounts kept for existing backend/API contracts)
+ARTIFACT_PATHS:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\remove-dashboard-refresh-sync-20260902\MODIFIED_FILE
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\remove-dashboard-refresh-sync-20260902\DIFF_FILE.diff
+- VERIFICATION.txt: D:\code\OpenSource\AutoTeam-F\artifacts\remove-dashboard-refresh-sync-20260902\VERIFICATION.txt
+- ROLLBACK.sh: D:\code\OpenSource\AutoTeam-F\artifacts\remove-dashboard-refresh-sync-20260902\ROLLBACK.sh
+ORIGINAL_HASHES:
+800857EBA8DD8A36BE60006AE99E37EA2EF3B52710C1C19D374CCCA73C3F35B2  web\src\components\Dashboard.vue
+5B207EF9B251E55CEC7938C797541F2FA3D9EBD594AF160F05FB7BE34660C4BA  web\src\api.js
+
+==== BASELINE_frontend_build.txt ====
+COMMAND: Push-Location web; npm run build; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 build
+> vite build
+
+vite v6.4.2 building for production...
+transforming...
+✓ 76 modules transformed.
+rendering chunks...
+computing gzip size...
+../src/autotoken/web/dist/index.html                                     1.31 kB │ gzip:  0.65 kB
+../src/autotoken/web/dist/assets/Dashboard-COix8nT1.css                  0.14 kB │ gzip:  0.13 kB
+../src/autotoken/web/dist/assets/BindCard-Dvijybhd.css                   0.15 kB │ gzip:  0.11 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-4_CgJR3S.css           4.91 kB │ gzip:  0.83 kB
+../src/autotoken/web/dist/assets/index-BN-wWIC3.css                     84.98 kB │ gzip: 15.42 kB
+../src/autotoken/web/dist/assets/pollingRecovery-47vlF5Rs.js             0.96 kB │ gzip:  0.48 kB
+../src/autotoken/web/dist/assets/deferredStorage-BF901Uj3.js             1.52 kB │ gzip:  0.73 kB
+../src/autotoken/web/dist/assets/bindLinkPayload-CIUq3eC4.js             1.85 kB │ gzip:  0.93 kB
+../src/autotoken/web/dist/assets/pollingLifecycle-DrMlogfE.js            2.69 kB │ gzip:  0.88 kB
+../src/autotoken/web/dist/assets/NotificationSoundControl-Bsu71J4T.js    3.42 kB │ gzip:  1.71 kB
+../src/autotoken/web/dist/assets/LogViewer-DFah4uBZ.js                   3.71 kB │ gzip:  1.89 kB
+../src/autotoken/web/dist/assets/TaskHistoryPage-fj4aX2Fw.js             4.01 kB │ gzip:  1.75 kB
+../src/autotoken/web/dist/assets/startAckCas-CtrxxzA9.js                 4.93 kB │ gzip:  1.52 kB
+../src/autotoken/web/dist/assets/OAuthPhoneRecordsPage-CwsMBvIG.js       5.90 kB │ gzip:  2.43 kB
+../src/autotoken/web/dist/assets/OAuthPage-Dc9_ChcL.js                   6.88 kB │ gzip:  2.67 kB
+../src/autotoken/web/dist/assets/TradeManagerPage-Df3oiJ9x.js            9.74 kB │ gzip:  3.70 kB
+../src/autotoken/web/dist/assets/OAuthPhonePoolPage-Dhdj2HP-.js         14.29 kB │ gzip:  4.66 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-DGMLdIAF.js           15.79 kB │ gzip:  5.63 kB
+../src/autotoken/web/dist/assets/BindCardPool-Buvc8Cmb.js               32.18 kB │ gzip:  8.70 kB
+../src/autotoken/web/dist/assets/MailAccountsPage-BCSM5x1D.js           32.82 kB │ gzip:  9.30 kB
+../src/autotoken/web/dist/assets/MomoPage-CScmYSC4.js                   36.47 kB │ gzip: 10.77 kB
+../src/autotoken/web/dist/assets/GCashPhPage-BFxdyHDM.js                37.22 kB │ gzip: 10.89 kB
+../src/autotoken/web/dist/assets/IdealLinkPage-Cg4Txzd3.js              46.23 kB │ gzip: 13.08 kB
+../src/autotoken/web/dist/assets/Settings-COEPhWX8.js                   66.48 kB │ gzip: 12.58 kB
+../src/autotoken/web/dist/assets/IndiaUpiPage-DIsOIGvQ.js               76.54 kB │ gzip: 20.47 kB
+../src/autotoken/web/dist/assets/BrazilPixPage-cz4vRsYj.js              77.47 kB │ gzip: 21.46 kB
+../src/autotoken/web/dist/assets/RegisterAccountPage-DEnOV40B.js        88.48 kB │ gzip: 22.60 kB
+../src/autotoken/web/dist/assets/KakaoPayPage-DpqfwkHP.js              108.97 kB │ gzip: 29.18 kB
+../src/autotoken/web/dist/assets/index-plP5eYtr.js                     161.39 kB │ gzip: 57.81 kB
+../src/autotoken/web/dist/assets/BindCard-CIGAkOGR.js                  162.85 kB │ gzip: 37.09 kB
+../src/autotoken/web/dist/assets/Dashboard-CgwdncUf.js                 163.51 kB │ gzip: 39.58 kB
+../src/autotoken/web/dist/assets/UsPaypalPage-BkHNlV4r.js              185.86 kB │ gzip: 40.48 kB
+✓ built in 2.91s
+EXIT_STATUS: 0
+
+==== BASELINE_git_diff_check.txt ====
+COMMAND: git diff --check -- web\src\components\Dashboard.vue web\src\api.js
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'web/src/api.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0
+
+==== MODIFIED_rg_removed.txt ====
+COMMAND: rg dashboard refresh/sync button references
+INPUT: (none)
+OUTPUT:
+NO_MATCHES
+EXIT_STATUS: 0
+
+==== MODIFIED_dist_sync_removed.txt ====
+COMMAND: rg -n '同步账号|syncAccounts|syncDisabled' src/autotoken/web/dist/assets -g 'Dashboard-*.js' -S
+INPUT: (none)
+OUTPUT:
+NO_MATCHES
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_build.txt ====
+COMMAND: Push-Location web; npm run build; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 build
+> vite build
+
+vite v6.4.2 building for production...
+transforming...
+✓ 76 modules transformed.
+rendering chunks...
+computing gzip size...
+../src/autotoken/web/dist/index.html                                     1.31 kB │ gzip:  0.65 kB
+../src/autotoken/web/dist/assets/Dashboard-COix8nT1.css                  0.14 kB │ gzip:  0.13 kB
+../src/autotoken/web/dist/assets/BindCard-Dvijybhd.css                   0.15 kB │ gzip:  0.11 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-4_CgJR3S.css           4.91 kB │ gzip:  0.83 kB
+../src/autotoken/web/dist/assets/index-BN-wWIC3.css                     84.98 kB │ gzip: 15.42 kB
+../src/autotoken/web/dist/assets/pollingRecovery-47vlF5Rs.js             0.96 kB │ gzip:  0.48 kB
+../src/autotoken/web/dist/assets/deferredStorage-VxQqK-dc.js             1.52 kB │ gzip:  0.73 kB
+../src/autotoken/web/dist/assets/bindLinkPayload-CIUq3eC4.js             1.85 kB │ gzip:  0.93 kB
+../src/autotoken/web/dist/assets/pollingLifecycle-DrMlogfE.js            2.69 kB │ gzip:  0.88 kB
+../src/autotoken/web/dist/assets/NotificationSoundControl-BDZsfhwz.js    3.42 kB │ gzip:  1.71 kB
+../src/autotoken/web/dist/assets/LogViewer-CfHlwOvb.js                   3.71 kB │ gzip:  1.89 kB
+../src/autotoken/web/dist/assets/TaskHistoryPage-C0JUvApb.js             4.01 kB │ gzip:  1.76 kB
+../src/autotoken/web/dist/assets/startAckCas-CtrxxzA9.js                 4.93 kB │ gzip:  1.52 kB
+../src/autotoken/web/dist/assets/OAuthPhoneRecordsPage-Bi9gfGR2.js       5.90 kB │ gzip:  2.43 kB
+../src/autotoken/web/dist/assets/OAuthPage-KleGZOVa.js                   6.88 kB │ gzip:  2.67 kB
+../src/autotoken/web/dist/assets/TradeManagerPage-4znzkDe8.js            9.74 kB │ gzip:  3.70 kB
+../src/autotoken/web/dist/assets/OAuthPhonePoolPage-C_jKyezg.js         14.29 kB │ gzip:  4.66 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-C7MSKK6L.js           15.79 kB │ gzip:  5.63 kB
+../src/autotoken/web/dist/assets/BindCardPool-xOl3uqmm.js               32.18 kB │ gzip:  8.70 kB
+../src/autotoken/web/dist/assets/MailAccountsPage-BGPff8cp.js           32.82 kB │ gzip:  9.31 kB
+../src/autotoken/web/dist/assets/MomoPage-BYkrpSmz.js                   36.47 kB │ gzip: 10.78 kB
+../src/autotoken/web/dist/assets/GCashPhPage-CpCC0npa.js                37.22 kB │ gzip: 10.89 kB
+../src/autotoken/web/dist/assets/IdealLinkPage-6vfwn33b.js              46.23 kB │ gzip: 13.08 kB
+../src/autotoken/web/dist/assets/Settings-BPNU8KSt.js                   66.48 kB │ gzip: 12.58 kB
+../src/autotoken/web/dist/assets/IndiaUpiPage-B2eO5DNv.js               76.54 kB │ gzip: 20.47 kB
+../src/autotoken/web/dist/assets/BrazilPixPage-CEfZu4UI.js              77.47 kB │ gzip: 21.46 kB
+../src/autotoken/web/dist/assets/RegisterAccountPage-CuZgR0wC.js        88.48 kB │ gzip: 22.60 kB
+../src/autotoken/web/dist/assets/KakaoPayPage-P4XkaIF3.js              108.97 kB │ gzip: 29.18 kB
+../src/autotoken/web/dist/assets/index-RhjKMzQP.js                     161.39 kB │ gzip: 57.81 kB
+../src/autotoken/web/dist/assets/Dashboard-BMLUsRFJ.js                 162.50 kB │ gzip: 39.41 kB
+../src/autotoken/web/dist/assets/BindCard-CmjM3cYX.js                  162.85 kB │ gzip: 37.09 kB
+../src/autotoken/web/dist/assets/UsPaypalPage-bCuDg2JE.js              185.86 kB │ gzip: 40.48 kB
+✓ built in 2.69s
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_regressions.txt ====
+COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 test:frontend-regressions
+> node scripts/run-frontend-tests.mjs
+
+account loading lifecycle tests passed
+account loading performance tests passed: rows=20000 compact_bytes=21054283 legacy_bytes=37793426 compact_parse_prepare=68.29ms prepare=33.19ms filter_p95=1.61ms filter_max=2.22ms actions_p95=7.98ms indexed_selection_p95=0.01ms firstPaint=50
+ok - timeout retains the newly entered key
+ok - 5xx retains the newly entered key
+ok - 401 clears the rejected key
+ok - candidate auth precedes storage-owner rotation
+ok - rejected candidate preserves prior recoverable owner
+ok - new key advances the auth epoch
+ok - concurrent Enter cannot race storage ownership
+ok - refresh rejection does not restart polling
+ok - logout advances the auth epoch
+ok - auth epoch change clears previous session state
+ok - new-session timeout cannot fallback to prior-session state
+ok - single-flight work is isolated by auth epoch
+ok - stale auxiliary success cannot commit or restart polling
+ok - stale auxiliary 401 cannot eject the new session
+ok - stale auth-check response cannot commit
+ok - stale dashboard success cannot commit
+ok - stale dashboard 401 cannot eject the new session
+ok - startup refresh rejection does not restart polling
+ok - post-setup refresh rejection does not restart polling
+ok - post-setup generated key owns resumable storage before mount
+ok - startup refuses ownerless browser storage
+ok - login refuses ownerless browser storage
+ok - post-setup refuses ownerless browser storage
+ok - cross-tab identity change invalidates the current epoch
+auth/session isolation regressions passed
+cancel polling recovery contract passed
+CPA file ingest limits passed
+dashboard account load state tests passed
+dashboard message lifecycle passed
+deferred storage regression tests passed
+export commit order passed
+extraction polling recovery tests passed: transient reject -> retry -> terminal snapshot; 404 -> missing; dispose -> stopped
+frontend bundle budget passed: entry=161385 bytes chunks=27
+frontend runtime performance tests passed
+frontend shell design tests passed
+job snapshot persistence performance tests passed: logs=500->200 interval=5000ms
+late payment state persistence contract passed
+ok - polling waits for request completion before scheduling the next timeout
+ok - manual and scheduled refreshes share a single-flight guard
+ok - hidden and unmounted pages stop polling and invalidate late responses
+ok - rendered rows use stable backend-or-composite keys and deduplicate repeats
+ok - incremental polling sends the backend boot epoch with the stable log id
+ok - a process restart resets the id cursor and retains new id 1 and 2 rows
+ok - the live DOM window is hard-capped at one thousand rows
+LogViewer polling and rendering regression contract passed
+long-running API timeout contract passed
+mail account batch contract tests passed: import=20000 auth=1000 batch=2000 boundary=2000/2001
+mail account render-window tests passed: accounts=20000 default=100 max=500 fetched=20000 password=2000
+OAuth phone pool performance contract passed
+Pay153 cancellation deadline, mutation lock, and unknown-outcome contract passed
+payment expiry clock lifecycle contract passed
+payment list render-window contract passed
+payment polling lifecycle contract passed
+payment unknown-outcome safeguards passed
+paypal auto-pay job recovery contract passed
+PayPal late job persistence contract passed
+paypal manual job recovery contract passed
+paypal missing job-id acknowledgement recovery passed
+PayPal polling lifecycle contract passed
+PayPal pre-ACK cancel terminal polling regression passed
+paypal retry backoff and restart recovery contract passed
+polling lifecycle regression contract passed
+ok - Dashboard ignores a late response from the previous provider
+ok - Dashboard keeps the newest response across A→B→A switching
+ok - Dashboard rejects defaults from stale provider loads
+ok - Register ignores a late response from the previous provider
+provider response race regressions passed
+register account polling lifecycle contract passed
+register mail.com pool render-window tests passed: rows=20000 default=100 max=100 selection=full
+register password frontend contract passed
+setup page provider and completion contracts passed
+shared payment polling gate contract passed
+start ACK remount recovery tests passed
+status polling failure classification and bounded recovery contract passed
+storage session isolation tests passed: same owner retained; key switch and post-unmount logout cleared sensitive autotoken state
+blocked browser storage degrades without crashing API module initialization or requests
+TaskPanel single-flight contract passed
+ui primitive focus, keyboard, lifecycle behavior passed
+all frontend scripts passed: 45/45
+EXIT_STATUS: 0
+
+==== MODIFIED_git_diff_check.txt ====
+COMMAND: git diff --check -- web\src\components\Dashboard.vue web\src\api.js
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'web/src/api.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0
+
+==== ROLLBACK_test.txt ====
+COMMAND: bash -lc "/mnt/d/code/OpenSource/AutoTeam-F/artifacts/remove-dashboard-refresh-sync-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/remove-dashboard-refresh-sync-20260902/rollback-test-202221884/work"
+INPUT: copied modified current-task files into D:\code\OpenSource\AutoTeam-F\artifacts\remove-dashboard-refresh-sync-20260902\rollback-test-202221884\work
+OUTPUT:
+rollback restored dashboard refresh/sync button files
+EXIT_STATUS: 0
+VERIFY_HASHES:
+OK 800857EBA8DD8A36BE60006AE99E37EA2EF3B52710C1C19D374CCCA73C3F35B2  web\src\components\Dashboard.vue
+OK 5B207EF9B251E55CEC7938C797541F2FA3D9EBD594AF160F05FB7BE34660C4BA  web\src\api.js
+RESTORED_BEHAVIOR_STATUS: restored pre-task hashes; dashboard refresh/sync buttons and handlers restored in rollback copy
+

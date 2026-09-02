@@ -1,0 +1,5 @@
+COMMAND: git diff --check -- src\autotoken\services\account_two_factor.py tests\unit\test_account_two_factor_service.py
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'src/autotoken/services/account_two_factor.py', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0

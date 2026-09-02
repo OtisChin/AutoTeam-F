@@ -1,0 +1,78 @@
+BRANCH: main
+OBJECT: 仪表盘“导出时间”与“账密导出”列合并
+RESULT: 已将独立“导出时间”列移除；已导出账号的导出时间显示在“已导出”标识下面；未导出账号不显示导出时间。
+
+CHANGED_BRANCH_FIELD:
+- web/src/components/Dashboard.vue: 删除账号表格独立“导出时间”表头和单元格；“账密导出”单元格改为纵向布局，先显示“已导出/未导出”标识，再仅在 acc.credentials_exported 且 accountExportTs(acc) 存在时显示 exportTimeLabel(acc)；空表格 colspan 从 15 调整为 14。
+- web/scripts/test-dashboard-export-time-merge.mjs: 新增回归检查，覆盖无独立“导出时间”列、导出时间位于账密导出状态下方、未保留独立时间单元格、空状态 colspan=14。
+- web/scripts/regression-dashboard-2fa-column.mjs: 同步空状态 colspan=14，并补齐 2FA helper 独立执行时所需的本地完成集合依赖。
+
+SOURCE_PATHS:
+- D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue
+- D:\code\OpenSource\AutoTeam-F\web\scripts\test-dashboard-export-time-merge.mjs
+- D:\code\OpenSource\AutoTeam-F\web\scripts\regression-dashboard-2fa-column.mjs
+
+ARTIFACT_PATHS:
+- MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-export-time-merge-20260902\MODIFIED_FILE.zip
+- DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-export-time-merge-20260902\DIFF_FILE.diff
+- VERIFICATION.txt: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-export-time-merge-20260902\VERIFICATION.txt
+- ROLLBACK.sh: D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-export-time-merge-20260902\ROLLBACK.sh
+
+BASELINE:
+COMMAND: Push-Location web; node scripts\test-dashboard-export-time-merge.mjs; Pop-Location
+INPUT: pre-change Dashboard.vue with standalone 导出时间 column
+LITERAL_OUTPUT_RESULT:
+AssertionError [ERR_ASSERTION]: 导出时间不应再作为独立表头列展示
+Node.js v24.14.0
+EXIT_STATUS=1
+
+MODIFIED:
+1) COMMAND: Push-Location web; node scripts\test-dashboard-export-time-merge.mjs; Pop-Location
+   INPUT: modified Dashboard.vue
+   LITERAL_OUTPUT_RESULT:
+   dashboard export time merge regression passed
+   EXIT_STATUS=0
+2) COMMAND: Push-Location web; node scripts\regression-dashboard-2fa-column.mjs; Pop-Location
+   INPUT: modified Dashboard.vue and regression-dashboard-2fa-column.mjs
+   LITERAL_OUTPUT_RESULT:
+   dashboard 2FA column regression passed
+   EXIT_STATUS=0
+3) COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+   INPUT: modified frontend scripts and Dashboard.vue
+   LITERAL_OUTPUT_RESULT:
+   dashboard export time merge regression passed
+   all frontend scripts passed: 47/47
+   EXIT_STATUS=0
+4) COMMAND: Push-Location web; npm run build; Pop-Location
+   INPUT: modified frontend bundle
+   LITERAL_OUTPUT_RESULT:
+   ✓ built in 2.54s
+   EXIT_STATUS=0
+5) COMMAND: git diff --check -- web\src\components\Dashboard.vue web\scripts\regression-dashboard-2fa-column.mjs web\scripts\test-dashboard-export-time-merge.mjs
+   INPUT: modified files
+   LITERAL_OUTPUT_RESULT:
+   EXIT_STATUS=0
+
+VISUAL_STRUCTURE_CHECK:
+COMMAND: source inspection of D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue lines around account table
+INPUT: modified Dashboard.vue account table template
+LITERAL_OUTPUT_RESULT:
+- table header sequence contains 账密导出 immediately followed by Hub同步; no standalone 导出时间 header.
+- empty state colspan is 14.
+- 账密导出 cell uses inline-flex flex-col; first line is credentialExportLabel(acc); second line is v-if="acc?.credentials_exported && accountExportTs(acc)" with exportTimeLabel(acc).
+- no independent <td> remains for exportTimeLabel(acc).
+EXIT_STATUS=0
+
+ROLLBACK:
+COMMAND: bash /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-export-time-merge-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-export-time-merge-20260902/rollback-test-root-20260902220424
+INPUT: separate copy rooted at D:\code\OpenSource\AutoTeam-F\artifacts\dashboard-export-time-merge-20260902\rollback-test-root-20260902220424
+LITERAL_OUTPUT_RESULT:
+rollback restored dashboard export time merge files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/dashboard-export-time-merge-20260902/rollback-test-root-20260902220424
+EXIT_STATUS=0
+HASH_CHECK web\src\components\Dashboard.vue restored=594EDC038161986BD759A4905F940F30725D31E7AA781D7E38FA57D506618755 original=594EDC038161986BD759A4905F940F30725D31E7AA781D7E38FA57D506618755 match=True
+HASH_CHECK web\scripts\regression-dashboard-2fa-column.mjs restored=74698F69BC888A1D55D2B6C4BDB48B3210DD471FF813D61E421D7AC9C3F0B6A8 original=74698F69BC888A1D55D2B6C4BDB48B3210DD471FF813D61E421D7AC9C3F0B6A8 match=True
+ABSENCE_CHECK web\scripts\test-dashboard-export-time-merge.mjs exists=False expected=False
+RESTORED_BEHAVIOR=separate copy restored to original dashboard columns: standalone 导出时间 column present; added merge regression script absent
+RESTORED_STATUS=True
+
+RESTORED_BEHAVIOR_STATUS: rollback copy restored to original hashes and original behavior/status; current workspace keeps MODIFIED_FILE changed.

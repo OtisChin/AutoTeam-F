@@ -1,0 +1,4 @@
+COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\interfaces\api.py
+INPUT: (none)
+OUTPUT:
+EXIT_STATUS: 0

@@ -1,0 +1,8 @@
+COMMAND: git diff --check -- src\autotoken\core\task_snapshots.py src\autotoken\services\account_two_factor.py web\src\components\Dashboard.vue tests\unit\test_task_snapshots.py web\scripts\regression-dashboard-2fa-actions.mjs
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'src/autotoken/core/task_snapshots.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/autotoken/services/account_two_factor.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/scripts/regression-dashboard-2fa-actions.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0

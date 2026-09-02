@@ -380,7 +380,8 @@ def wait_for_openai_otp(
             if issued_after_ts and received_at and 86400 < (issued_after_ts - received_at):
                 continue
             if (strict_issued_after or _requires_fresh_otp(item, mail_client)) and issued_after_ts and received_at:
-                if received_at < issued_after_ts - 5:
+                stale_tolerance = 0 if strict_issued_after else 5
+                if received_at < issued_after_ts - stale_tolerance:
                     logger.info(
                         "[邮箱验证码] 跳过旧邮件: subject=%s received_at=%s issued_after=%s",
                         str(item.get("subject") or "")[:80],

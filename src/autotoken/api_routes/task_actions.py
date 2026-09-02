@@ -104,6 +104,18 @@ def create_task_actions_router(
             pass_task_id=True,
         )
 
+    @router.get("/api/accounts/{email}/2fa/totp")
+    def get_account_2fa_totp(email: str):
+        """Return locally stored authenticator secret and the current TOTP code."""
+        from autotoken.services.account_two_factor import get_account_totp_view
+
+        try:
+            return get_account_totp_view(email)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.post("/api/tasks/check", status_code=202)
     def post_check(params: CheckParams | None = None):
         """检查所有 active 账号额度（后台执行）。include_standby=True 时追加探测 standby 池。"""

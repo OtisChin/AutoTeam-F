@@ -1,0 +1,34 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py::test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge -q
+INPUT: live OAuth badge regression on pre-change implementation
+OUTPUT:
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge _
+
+    def test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge():
+        task = {
+            "task_id": "task-oauth",
+            "command": "login-batch",
+            "status": "running",
+            "created_at": 1,
+            "params": {"emails": ["one@example.com", "two@example.com"]},
+            "progress_events": [
+                {"stage": "account_login", "email": "one@example.com", "message": "start"},
+                {"stage": "account_login_done", "email": "one@example.com", "message": "done"},
+                {"stage": "account_login_failed", "email": "two@example.com", "message": "failed"},
+            ],
+        }
+    
+        snapshot = task_list_snapshot(task)
+    
+>       assert snapshot["progress_events"] == [
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            {"stage": "account_login_done", "email": "one@example.com"},
+        ]
+E       KeyError: 'progress_events'
+
+tests\unit\test_task_snapshots.py:70: KeyError
+=========================== short test summary info ===========================
+FAILED tests/unit/test_task_snapshots.py::test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge
+1 failed in 0.10s
+EXIT_STATUS: 1

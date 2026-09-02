@@ -1,0 +1,5 @@
+COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\core\task_snapshots.py src\autotoken\services\account_two_factor.py
+INPUT: (none)
+OUTPUT:
+
+EXIT_STATUS: 0

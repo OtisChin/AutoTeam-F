@@ -1,0 +1,471 @@
+CHANGE_SUMMARY
+BRANCH: main
+CHANGED_BRANCH_FIELD: setup-2fa task snapshots now retain compact account_2fa_progress progress_events with email/status/reason; Dashboard consumes each event immediately into twoFactorCompletedEmails/twoFactorFailedEmails so a row changes from 设置中... to 已设置 or back to 设置 per account before the full batch ends.
+SOURCE_PATHS:
+D:\code\OpenSource\AutoTeam-F\src\autotoken\core\task_snapshots.py
+D:\code\OpenSource\AutoTeam-F\src\autotoken\services\account_two_factor.py
+D:\code\OpenSource\AutoTeam-F\web\src\components\Dashboard.vue
+D:\code\OpenSource\AutoTeam-F\tests\unit\test_task_snapshots.py
+D:\code\OpenSource\AutoTeam-F\web\scripts\regression-dashboard-2fa-actions.mjs
+ARTIFACT_PATHS:
+MODIFIED_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-incremental-ui-20260902\MODIFIED_FILE.zip
+DIFF_FILE: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-incremental-ui-20260902\DIFF_FILE.diff
+VERIFICATION: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-incremental-ui-20260902\VERIFICATION.txt
+ROLLBACK: D:\code\OpenSource\AutoTeam-F\artifacts\two-factor-incremental-ui-20260902\ROLLBACK.sh
+
+ORIGINAL_HASHES
+EAACE3D9FEA7F978F8BCBB5C992BE4AA78CDC7DA800E17967888F904F36D0905  src\autotoken\core\task_snapshots.py
+1EB9A76069EDF240FABA9C4EF247847E2F983A15B4C1FAA8C3B2F7D82A120D65  src\autotoken\services\account_two_factor.py
+9BEE9EABB5A71BCC42A513BCFB43ECCF02FFAC42748AA80FD99680CEBFB1B3F1  web\src\components\Dashboard.vue
+A89F500E86051DBB59906DAA8A616C356F9BF802752FD5E65524ADC7103A26C9  tests\unit\test_task_snapshots.py
+692120143C21DEAA73290656E8D9C76E721DA65820E42D615662EFCF5AE5858A  web\scripts\regression-dashboard-2fa-actions.mjs
+
+==== BASELINE_RED_task_snapshot.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py::test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state -q
+INPUT: new incremental 2FA UI tests on current pre-change implementation
+OUTPUT:
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state _
+
+    def test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state():
+        task = {
+            "task_id": "task-2fa",
+            "command": "setup-2fa",
+            "status": "running",
+            "created_at": 1,
+            "params": {"emails": ["one@example.com", "two@example.com", "three@example.com"]},
+            "progress_events": [
+                {"stage": "account_2fa_account_started", "email": "one@example.com", "message": "start"},
+                {
+                    "stage": "account_2fa_progress",
+                    "email": "one@example.com",
+                    "status": "enabled",
+                    "reason": "",
+                    "message": "enabled",
+                },
+                {
+                    "stage": "account_2fa_progress",
+                    "email": "two@example.com",
+                    "status": "failed",
+                    "reason": "otp_timeout",
+                    "message": "failed",
+                },
+                {"stage": "gopay_progress", "email": "ignored@example.com", "status": "enabled"},
+            ],
+        }
+    
+        snapshot = task_list_snapshot(task)
+    
+>       assert snapshot["progress_events"] == [
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            {"stage": "account_2fa_progress", "email": "one@example.com", "status": "enabled", "reason": ""},
+            {"stage": "account_2fa_progress", "email": "two@example.com", "status": "failed", "reason": "otp_timeout"},
+        ]
+E       KeyError: 'progress_events'
+
+tests\unit\test_task_snapshots.py:48: KeyError
+=========================== short test summary info ===========================
+FAILED tests/unit/test_task_snapshots.py::test_setup_2fa_compact_task_keeps_account_completion_events_for_incremental_dashboard_state
+1 failed in 0.09s
+EXIT_STATUS: 1
+
+==== BASELINE_RED_frontend_2fa_actions.txt ====
+COMMAND: Push-Location web; node scripts\regression-dashboard-2fa-actions.mjs; Pop-Location
+INPUT: new incremental 2FA UI tests on current pre-change implementation
+OUTPUT:
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: successful account-level 2FA events should be tracked locally before the whole batch ends
+    at file:///D:/code/OpenSource/AutoTeam-F/web/scripts/regression-dashboard-2fa-actions.mjs:64:8
+    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: '<template>\r\n' +
+    '  <div v-if="status">\r\n' +
+    '    <div v-if="accountsError" class="dashboard-stale-warning" role="status">\r\n' +
+    '      <div>\r\n' +
+    '        <strong>账号数据暂时无法刷新</strong>\r\n' +
+    '        <span>保留上次成功数据<span v-if="lastSuccessfulLabel">（{{ lastSuccessfulLabel }}）</span>，可继续查看和操作。</span>\r\n' +
+    '      </div>\r\n' +
+    '      <button type="button" :disabled="loading" @click="retryAccounts">\r\n' +
+    "        {{ loading ? '正在重试…' : '立即重试' }}\r\n" +
+    '      </button>\r\n' +
+    '    </div>\r\n' +
+    '    <div class="dashboard-tabs">\r\n' +
+    '      <button\r\n' +
+    '        v-for="tab in dashboardTabs"\r\n' +
+    '        :key="tab.value"\r\n' +
+    '        @click="activeDashboardTab = tab.value"\r\n' +
+    '        class="dashboard-tab"\r\n' +
+    '        :class="activeDashboardTab === tab.value\r\n' +
+    "          ? 'dashboard-tab-active'\r\n" +
+    `          : 'dashboard-tab-idle'">\r\n` +
+    '        {{ tab.label }}\r\n' +
+    '      </button>\r\n' +
+    '    </div>\r\n' +
+    '\r\n' +
+    `    <template v-if="activeDashboardTab === 'chatgpt'">\r\n` +
+    '    <div class="dashboard-summary-grid">\r\n' +
+    '      <div v-for="card in cards" :key="card.label" class="dashboard-summary-card">\r\n' +
+    '        <div class="dashboard-summary-label">{{ card.label }}</div>\r\n' +
+    '        <div class="dashboard-summary-value" :class="card.color">{{ card.value }}</div>\r\n' +
+    '      </div>\r\n' +
+    '    </div>\r\n' +
+    '\r\n' +
+    '    <!-- 账号表格 -->\r\n' +
+    '    <div class="dashboard-table-shell">\r\n' +
+    '      <div class="dashboard-table-header">\r\n' +
+    '        <div>\r\n' +
+    '          <h2 class="text-lg font-semibold text-white">账号列表</h2>\r\n' +
+    '          <p class="mt-1 text-xs text-gray-500">批量导出、OAuth授权、补登录、刷新额度和清理无效凭证。</p>\r\n' +
+    '        </div>\r\n' +
+    '        <div class="dashboard-actions">\r\n' +
+    '          <button\r\n' +
+    '            @click="exportAccounts"\r\n' +
+    '            :disabled="!exportableAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="!exportableAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-cyan-600/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-600/20'">\r\n` +
+    '            {{ selectedEmails.length ? `导出选中 (${selectedEmails.length})` : `导出筛选 (${filteredAccounts.length})` }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="openCredentialExport"\r\n' +
+    '            :disabled="!exportableAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="!exportableAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-emerald-600/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-600/20'">\r\n` +
+    '            {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="exportSelectedAccessTokens"\r\n' +
+    '            :disabled="accessTokenExporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="accessTokenExporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">\r\n` +
+    "            {{ accessTokenExporting ? '导出中...' : `导出ac (${selectedEmails.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="openExternalAccountImport"\r\n' +
+    '            :disabled="externalAccountImporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="externalAccountImporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">\r\n` +
+    "            {{ externalAccountImporting ? '导入中...' : '导入账号' }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="openCpaImport"\r\n' +
+    '            :disabled="cpaImporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="cpaImporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-purple-600/10 text-purple-300 border-purple-500/30 hover:bg-purple-600/20'">\r\n` +
+    "            {{ cpaImporting ? '导入中...' : '导入CPA认证' }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\n' +
+    '            @click="exportCpaAuths"\n' +
+    '            :disabled="!cpaExportableAccounts.length || cpaExporting"\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\n' +
+    '            :class="!cpaExportableAccounts.length || cpaExporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-sky-600/10 text-sky-400 border-sky-500/30 hover:bg-sky-600/20'">\r\n` +
+    "            {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="exportSubAuths"\r\n' +
+    '            :disabled="!cpaExportableAccounts.length || subExporting"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="!cpaExportableAccounts.length || subExporting\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-indigo-600/10 text-indigo-300 border-indigo-500/30 hover:bg-indigo-600/20'">\r\n` +
+    "            {{ subExporting ? '导出中...' : `导出Sub2API认证 (${cpaExportableAccounts.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="batchOauthAuthorizeAccounts"\r\n' +
+    '            :disabled="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">\r\n` +
+    '            {{ oauthBatchButtonLabel }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="batchSetupAccountTwoFactor"\r\n' +
+    '            :disabled="twoFactorSubmitting || twoFactorTaskRunning || !twoFactorSetupAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="twoFactorSubmitting || twoFactorTaskRunning\r\n' +
+    "              ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30 cursor-wait'\r\n" +
+    '              : !twoFactorSetupAccounts.length\r\n' +
+    "                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `                : 'bg-yellow-600/10 text-yellow-300 border-yellow-500/30 hover:bg-yellow-600/20'">\r\n` +
+    '            {{ twoFactorSubmitting || twoFactorTaskRunning\r\n' +
+    "                ? '设置中...'\r\n" +
+    '                : `批量设置2FA (${twoFactorSetupAccounts.length})` }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="batchReloginAccounts"\r\n' +
+    '            :disabled="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">\r\n` +
+    '            {{ batchReloginButtonLabel }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="oauthConfigOpen = true"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="oauthProxyEnabled\r\n' +
+    "              ? 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'\r\n" +
+    `              : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white'">\r\n` +
+    '            OAuth配置\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="refreshAllQuota"\r\n' +
+    '            :disabled="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-amber-600/10 text-amber-300 border-amber-500/30 hover:bg-amber-600/20'">\r\n` +
+    '            {{ refreshQuotaButtonLabel }}\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="openBatchAccountEditor"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    `            :class="'bg-slate-600/10 text-slate-200 border-slate-500/30 hover:bg-slate-600/20'">\r\n` +
+    '            批量修改账号 ({{ selectedEmails.length }})\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            @click="deleteInvalidCredentials"\r\n' +
+    '            :disabled="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-red-600/10 text-red-300 border-red-500/30 hover:bg-red-600/20'">\r\n` +
+    "            {{ invalidDeleting ? '删除中...' : `删除无效凭证 (${invalidCredentialAccounts.length})` }}\r\n" +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="batchUpdateExportStatus(true)"\r\n' +
+    '            :disabled="exportStatusUpdating"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :class="exportStatusUpdating\r\n' +
+    "              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'\r\n" +
+    `              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">\r\n` +
+    '            标记已导出 ({{ selectedEmails.length }})\r\n' +
+    '          </button>\r\n' +
+    '          <button\r\n' +
+    '            v-if="selectedEmails.length"\r\n' +
+    '            @click="batchUpdateExportStatus(false)"\r\n' +
+    '            :disabled="exportStatusUpdating"\r\n' +
+    '            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"\r\n' +
+    '            :c'... 218727 more characters,
+  expected: /const twoFactorCompletedEmails = ref\(new Set\(\)\)/,
+  operator: 'match',
+  diff: 'simple'
+}
+
+Node.js v24.14.0
+EXIT_STATUS: 1
+
+==== MODIFIED_py_compile.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m py_compile src\autotoken\core\task_snapshots.py src\autotoken\services\account_two_factor.py
+INPUT: (none)
+OUTPUT:
+
+EXIT_STATUS: 0
+
+==== MODIFIED_target_pytest.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py tests\unit\test_account_two_factor_service.py -q
+INPUT: (none)
+OUTPUT:
+.........                                                                [100%]
+9 passed in 0.50s
+EXIT_STATUS: 0
+
+==== MODIFIED_unit_pytest.txt ====
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit -q
+INPUT: (none)
+OUTPUT:
+........................................................................ [ 86%]
+...........                                                              [100%]
+83 passed in 4.35s
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_2fa_actions.txt ====
+COMMAND: Push-Location web; node scripts\regression-dashboard-2fa-actions.mjs; Pop-Location
+INPUT: (none)
+OUTPUT:
+dashboard 2FA actions regression passed
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_regressions.txt ====
+COMMAND: Push-Location web; npm run test:frontend-regressions; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 test:frontend-regressions
+> node scripts/run-frontend-tests.mjs
+
+account loading lifecycle tests passed
+account loading performance tests passed: rows=20000 compact_bytes=21054283 legacy_bytes=37793426 compact_parse_prepare=73.39ms prepare=37.51ms filter_p95=0.98ms filter_max=1.68ms actions_p95=9.12ms indexed_selection_p95=0.01ms firstPaint=50
+ok - timeout retains the newly entered key
+ok - 5xx retains the newly entered key
+ok - 401 clears the rejected key
+ok - candidate auth precedes storage-owner rotation
+ok - rejected candidate preserves prior recoverable owner
+ok - new key advances the auth epoch
+ok - concurrent Enter cannot race storage ownership
+ok - refresh rejection does not restart polling
+ok - logout advances the auth epoch
+ok - auth epoch change clears previous session state
+ok - new-session timeout cannot fallback to prior-session state
+ok - single-flight work is isolated by auth epoch
+ok - stale auxiliary success cannot commit or restart polling
+ok - stale auxiliary 401 cannot eject the new session
+ok - stale auth-check response cannot commit
+ok - stale dashboard success cannot commit
+ok - stale dashboard 401 cannot eject the new session
+ok - startup refresh rejection does not restart polling
+ok - post-setup refresh rejection does not restart polling
+ok - post-setup generated key owns resumable storage before mount
+ok - startup refuses ownerless browser storage
+ok - login refuses ownerless browser storage
+ok - post-setup refuses ownerless browser storage
+ok - cross-tab identity change invalidates the current epoch
+auth/session isolation regressions passed
+cancel polling recovery contract passed
+CPA file ingest limits passed
+dashboard account load state tests passed
+dashboard message lifecycle passed
+deferred storage regression tests passed
+export commit order passed
+extraction polling recovery tests passed: transient reject -> retry -> terminal snapshot; 404 -> missing; dispose -> stopped
+frontend bundle budget passed: entry=161385 bytes chunks=27
+frontend runtime performance tests passed
+frontend shell design tests passed
+job snapshot persistence performance tests passed: logs=500->200 interval=5000ms
+late payment state persistence contract passed
+ok - polling waits for request completion before scheduling the next timeout
+ok - manual and scheduled refreshes share a single-flight guard
+ok - hidden and unmounted pages stop polling and invalidate late responses
+ok - rendered rows use stable backend-or-composite keys and deduplicate repeats
+ok - incremental polling sends the backend boot epoch with the stable log id
+ok - a process restart resets the id cursor and retains new id 1 and 2 rows
+ok - the live DOM window is hard-capped at one thousand rows
+LogViewer polling and rendering regression contract passed
+long-running API timeout contract passed
+mail account batch contract tests passed: import=20000 auth=1000 batch=2000 boundary=2000/2001
+mail account render-window tests passed: accounts=20000 default=100 max=500 fetched=20000 password=2000
+OAuth phone pool performance contract passed
+Pay153 cancellation deadline, mutation lock, and unknown-outcome contract passed
+payment expiry clock lifecycle contract passed
+payment list render-window contract passed
+payment polling lifecycle contract passed
+payment unknown-outcome safeguards passed
+paypal auto-pay job recovery contract passed
+PayPal late job persistence contract passed
+paypal manual job recovery contract passed
+paypal missing job-id acknowledgement recovery passed
+PayPal polling lifecycle contract passed
+PayPal pre-ACK cancel terminal polling regression passed
+paypal retry backoff and restart recovery contract passed
+polling lifecycle regression contract passed
+ok - Dashboard ignores a late response from the previous provider
+ok - Dashboard keeps the newest response across A→B→A switching
+ok - Dashboard rejects defaults from stale provider loads
+ok - Register ignores a late response from the previous provider
+provider response race regressions passed
+register account polling lifecycle contract passed
+register mail.com pool render-window tests passed: rows=20000 default=100 max=100 selection=full
+register password frontend contract passed
+setup page provider and completion contracts passed
+shared payment polling gate contract passed
+start ACK remount recovery tests passed
+status polling failure classification and bounded recovery contract passed
+storage session isolation tests passed: same owner retained; key switch and post-unmount logout cleared sensitive autotoken state
+blocked browser storage degrades without crashing API module initialization or requests
+TaskPanel single-flight contract passed
+ui primitive focus, keyboard, lifecycle behavior passed
+all frontend scripts passed: 45/45
+EXIT_STATUS: 0
+
+==== MODIFIED_frontend_build.txt ====
+COMMAND: Push-Location web; npm run build; Pop-Location
+INPUT: (none)
+OUTPUT:
+
+> autotoken-web@0.1.0 build
+> vite build
+
+vite v6.4.2 building for production...
+transforming...
+✓ 76 modules transformed.
+rendering chunks...
+computing gzip size...
+../src/autotoken/web/dist/index.html                                     1.31 kB │ gzip:  0.65 kB
+../src/autotoken/web/dist/assets/Dashboard-COix8nT1.css                  0.14 kB │ gzip:  0.13 kB
+../src/autotoken/web/dist/assets/BindCard-Dvijybhd.css                   0.15 kB │ gzip:  0.11 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-4_CgJR3S.css           4.91 kB │ gzip:  0.83 kB
+../src/autotoken/web/dist/assets/index-BN-wWIC3.css                     84.98 kB │ gzip: 15.42 kB
+../src/autotoken/web/dist/assets/pollingRecovery-47vlF5Rs.js             0.96 kB │ gzip:  0.48 kB
+../src/autotoken/web/dist/assets/deferredStorage-DAOW7lBx.js             1.52 kB │ gzip:  0.74 kB
+../src/autotoken/web/dist/assets/bindLinkPayload-CIUq3eC4.js             1.85 kB │ gzip:  0.93 kB
+../src/autotoken/web/dist/assets/pollingLifecycle-DrMlogfE.js            2.69 kB │ gzip:  0.88 kB
+../src/autotoken/web/dist/assets/NotificationSoundControl-CEsXBuTt.js    3.42 kB │ gzip:  1.71 kB
+../src/autotoken/web/dist/assets/LogViewer-DJEo6QE5.js                   3.71 kB │ gzip:  1.89 kB
+../src/autotoken/web/dist/assets/TaskHistoryPage-lMzNcmhv.js             4.01 kB │ gzip:  1.76 kB
+../src/autotoken/web/dist/assets/startAckCas-CtrxxzA9.js                 4.93 kB │ gzip:  1.52 kB
+../src/autotoken/web/dist/assets/OAuthPhoneRecordsPage-BR8IDULc.js       5.90 kB │ gzip:  2.43 kB
+../src/autotoken/web/dist/assets/OAuthPage-PDqYn8YC.js                   6.88 kB │ gzip:  2.67 kB
+../src/autotoken/web/dist/assets/TradeManagerPage-Rin3nvzv.js            9.74 kB │ gzip:  3.70 kB
+../src/autotoken/web/dist/assets/OAuthPhonePoolPage-BBhYLga-.js         14.29 kB │ gzip:  4.66 kB
+../src/autotoken/web/dist/assets/CpaToSub2ApiPage-CzgCHX_m.js           15.79 kB │ gzip:  5.63 kB
+../src/autotoken/web/dist/assets/BindCardPool-BspKOUnA.js               32.18 kB │ gzip:  8.70 kB
+../src/autotoken/web/dist/assets/MailAccountsPage-DRANjy7m.js           32.82 kB │ gzip:  9.31 kB
+../src/autotoken/web/dist/assets/MomoPage-DI5q4s4L.js                   36.47 kB │ gzip: 10.77 kB
+../src/autotoken/web/dist/assets/GCashPhPage-UJ9ya4gJ.js                37.22 kB │ gzip: 10.89 kB
+../src/autotoken/web/dist/assets/IdealLinkPage-BRG8rRgd.js              46.23 kB │ gzip: 13.08 kB
+../src/autotoken/web/dist/assets/Settings-o9I3reuV.js                   66.48 kB │ gzip: 12.58 kB
+../src/autotoken/web/dist/assets/IndiaUpiPage-BPmG685F.js               76.54 kB │ gzip: 20.47 kB
+../src/autotoken/web/dist/assets/BrazilPixPage-D5YpMj9E.js              77.47 kB │ gzip: 21.46 kB
+../src/autotoken/web/dist/assets/RegisterAccountPage-DQmR105T.js        88.48 kB │ gzip: 22.60 kB
+../src/autotoken/web/dist/assets/KakaoPayPage-CNWWIX9A.js              108.97 kB │ gzip: 29.18 kB
+../src/autotoken/web/dist/assets/index-C6rUYQME.js                     161.39 kB │ gzip: 57.82 kB
+../src/autotoken/web/dist/assets/BindCard-TJH7O2As.js                  162.85 kB │ gzip: 37.09 kB
+../src/autotoken/web/dist/assets/Dashboard-kvE7SQbb.js                 163.92 kB │ gzip: 39.73 kB
+../src/autotoken/web/dist/assets/UsPaypalPage-D-wrShqZ.js              185.86 kB │ gzip: 40.48 kB
+✓ built in 2.62s
+EXIT_STATUS: 0
+
+==== MODIFIED_git_diff_check.txt ====
+COMMAND: git diff --check -- src\autotoken\core\task_snapshots.py src\autotoken\services\account_two_factor.py web\src\components\Dashboard.vue tests\unit\test_task_snapshots.py web\scripts\regression-dashboard-2fa-actions.mjs
+INPUT: (none)
+OUTPUT:
+warning: in the working copy of 'src/autotoken/core/task_snapshots.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/autotoken/services/account_two_factor.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/scripts/regression-dashboard-2fa-actions.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/components/Dashboard.vue', LF will be replaced by CRLF the next time Git touches it
+EXIT_STATUS: 0
+
+==== ROLLBACK_TEST_RESULT.txt ====
+ROLLBACK_COMMAND: bash -lc "'/mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-incremental-ui-20260902/ROLLBACK.sh' '/mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-incremental-ui-20260902/rollback-test-root'"
+ROLLBACK_OUTPUT: rollback restored 5 files under /mnt/d/code/OpenSource/AutoTeam-F/artifacts/two-factor-incremental-ui-20260902/rollback-test-root
+ROLLBACK_EXIT_STATUS: 0
+RESTORED_HASHES:
+MATCH  EAACE3D9FEA7F978F8BCBB5C992BE4AA78CDC7DA800E17967888F904F36D0905  src\autotoken\core\task_snapshots.py
+MATCH  1EB9A76069EDF240FABA9C4EF247847E2F983A15B4C1FAA8C3B2F7D82A120D65  src\autotoken\services\account_two_factor.py
+MATCH  9BEE9EABB5A71BCC42A513BCFB43ECCF02FFAC42748AA80FD99680CEBFB1B3F1  web\src\components\Dashboard.vue
+MATCH  A89F500E86051DBB59906DAA8A616C356F9BF802752FD5E65524ADC7103A26C9  tests\unit\test_task_snapshots.py
+MATCH  692120143C21DEAA73290656E8D9C76E721DA65820E42D615662EFCF5AE5858A  web\scripts\regression-dashboard-2fa-actions.mjs
+RESTORED_STATUS: original behavior restored on rollback-test-root
+

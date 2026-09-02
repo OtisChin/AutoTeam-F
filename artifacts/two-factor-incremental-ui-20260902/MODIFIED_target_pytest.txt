@@ -1,0 +1,6 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py tests\unit\test_account_two_factor_service.py -q
+INPUT: (none)
+OUTPUT:
+.........                                                                [100%]
+9 passed in 0.50s
+EXIT_STATUS: 0

@@ -1,0 +1,88 @@
+
+> autotoken-web@0.1.0 test:frontend-regressions
+> node scripts/run-frontend-tests.mjs
+
+account loading lifecycle tests passed
+account loading performance tests passed: rows=20000 compact_bytes=21054283 legacy_bytes=37793426 compact_parse_prepare=68.09ms prepare=31.76ms filter_p95=0.89ms filter_max=1.58ms actions_p95=9.08ms indexed_selection_p95=0.01ms firstPaint=50
+ok - timeout retains the newly entered key
+ok - 5xx retains the newly entered key
+ok - 401 clears the rejected key
+ok - candidate auth precedes storage-owner rotation
+ok - rejected candidate preserves prior recoverable owner
+ok - new key advances the auth epoch
+ok - concurrent Enter cannot race storage ownership
+ok - refresh rejection does not restart polling
+ok - logout advances the auth epoch
+ok - auth epoch change clears previous session state
+ok - new-session timeout cannot fallback to prior-session state
+ok - single-flight work is isolated by auth epoch
+ok - stale auxiliary success cannot commit or restart polling
+ok - stale auxiliary 401 cannot eject the new session
+ok - stale auth-check response cannot commit
+ok - stale dashboard success cannot commit
+ok - stale dashboard 401 cannot eject the new session
+ok - startup refresh rejection does not restart polling
+ok - post-setup refresh rejection does not restart polling
+ok - post-setup generated key owns resumable storage before mount
+ok - startup refuses ownerless browser storage
+ok - login refuses ownerless browser storage
+ok - post-setup refuses ownerless browser storage
+ok - cross-tab identity change invalidates the current epoch
+auth/session isolation regressions passed
+cancel polling recovery contract passed
+CPA file ingest limits passed
+dashboard account load state tests passed
+dashboard export time merge regression passed
+dashboard message lifecycle passed
+dashboard OAuth badge regression passed
+deferred storage regression tests passed
+export commit order passed
+extraction polling recovery tests passed: transient reject -> retry -> terminal snapshot; 404 -> missing; dispose -> stopped
+frontend bundle budget passed: entry=161385 bytes chunks=27
+frontend runtime performance tests passed
+frontend shell design tests passed
+job snapshot persistence performance tests passed: logs=500->200 interval=5000ms
+late payment state persistence contract passed
+ok - polling waits for request completion before scheduling the next timeout
+ok - manual and scheduled refreshes share a single-flight guard
+ok - hidden and unmounted pages stop polling and invalidate late responses
+ok - rendered rows use stable backend-or-composite keys and deduplicate repeats
+ok - incremental polling sends the backend boot epoch with the stable log id
+ok - a process restart resets the id cursor and retains new id 1 and 2 rows
+ok - the live DOM window is hard-capped at one thousand rows
+LogViewer polling and rendering regression contract passed
+long-running API timeout contract passed
+mail account batch contract tests passed: import=20000 auth=1000 batch=2000 boundary=2000/2001
+mail account render-window tests passed: accounts=20000 default=100 max=500 fetched=20000 password=2000
+OAuth phone pool performance contract passed
+Pay153 cancellation deadline, mutation lock, and unknown-outcome contract passed
+payment expiry clock lifecycle contract passed
+payment list render-window contract passed
+payment polling lifecycle contract passed
+payment unknown-outcome safeguards passed
+paypal auto-pay job recovery contract passed
+PayPal late job persistence contract passed
+paypal manual job recovery contract passed
+paypal missing job-id acknowledgement recovery passed
+PayPal polling lifecycle contract passed
+PayPal pre-ACK cancel terminal polling regression passed
+paypal retry backoff and restart recovery contract passed
+polling lifecycle regression contract passed
+ok - Dashboard ignores a late response from the previous provider
+ok - Dashboard keeps the newest response across A→B→A switching
+ok - Dashboard rejects defaults from stale provider loads
+ok - Register ignores a late response from the previous provider
+provider response race regressions passed
+register account polling lifecycle contract passed
+register mail.com pool render-window tests passed: rows=20000 default=100 max=100 selection=full
+register password frontend contract passed
+setup page provider and completion contracts passed
+shared payment polling gate contract passed
+start ACK remount recovery tests passed
+status polling failure classification and bounded recovery contract passed
+storage session isolation tests passed: same owner retained; key switch and post-unmount logout cleared sensitive autotoken state
+blocked browser storage degrades without crashing API module initialization or requests
+TaskPanel single-flight contract passed
+ui primitive focus, keyboard, lifecycle behavior passed
+all frontend scripts passed: 47/47
+EXIT_STATUS=0

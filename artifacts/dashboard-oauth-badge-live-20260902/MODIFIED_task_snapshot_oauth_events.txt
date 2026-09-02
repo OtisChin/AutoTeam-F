@@ -1,0 +1,6 @@
+COMMAND: .\.venv\Scripts\python.exe -m pytest tests\unit\test_task_snapshots.py::test_login_batch_compact_task_keeps_oauth_completion_events_for_live_dashboard_badge -q
+INPUT: (none)
+OUTPUT:
+.                                                                        [100%]
+1 passed in 0.04s
+EXIT_STATUS: 0

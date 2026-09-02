@@ -1,0 +1,9 @@
+COMMAND: bash -lc "/mnt/d/code/OpenSource/AutoTeam-F/artifacts/remove-dashboard-refresh-sync-20260902/ROLLBACK.sh /mnt/d/code/OpenSource/AutoTeam-F/artifacts/remove-dashboard-refresh-sync-20260902/rollback-test-202221884/work"
+INPUT: copied modified current-task files into D:\code\OpenSource\AutoTeam-F\artifacts\remove-dashboard-refresh-sync-20260902\rollback-test-202221884\work
+OUTPUT:
+rollback restored dashboard refresh/sync button files
+EXIT_STATUS: 0
+VERIFY_HASHES:
+OK 800857EBA8DD8A36BE60006AE99E37EA2EF3B52710C1C19D374CCCA73C3F35B2  web\src\components\Dashboard.vue
+OK 5B207EF9B251E55CEC7938C797541F2FA3D9EBD594AF160F05FB7BE34660C4BA  web\src\api.js
+RESTORED_BEHAVIOR_STATUS: restored pre-task hashes; dashboard refresh/sync buttons and handlers restored in rollback copy
