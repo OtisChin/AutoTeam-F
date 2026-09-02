@@ -17,6 +17,7 @@ from base64 import b64decode
 from dataclasses import dataclass
 from datetime import datetime
 from html import unescape
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import unquote_to_bytes, urljoin
 
@@ -27,6 +28,73 @@ from autotoken.core.paths import PROJECT_ROOT, resolve_project_config_path
 from autotoken.mail.base import MailProvider, html_to_visible_text, normalize_email_addr
 
 logger = logging.getLogger(__name__)
+
+
+class _StaticMailCardParser(HTMLParser):
+    """Parse static receive-code pages that render mail fields in card elements."""
+
+    _FIELD_CLASSES = {"fr": "sender", "su": "subject", "dt": "date", "bd": "body"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.cards: list[dict[str, str]] = []
+        self._card: dict[str, list[str]] | None = None
+        self._field = ""
+        self._ignored_depth = 0
+
+    @staticmethod
+    def _classes(attrs: list[tuple[str, str | None]]) -> set[str]:
+        value = next((value for key, value in attrs if key.lower() == "class"), "") or ""
+        return {part.strip().lower() for part in value.split() if part.strip()}
+
+    def _finish_card(self) -> None:
+        if self._card is None:
+            return
+        card = {key: " ".join(parts).strip() for key, parts in self._card.items()}
+        if any(card.values()):
+            self.cards.append(card)
+        self._card = None
+        self._field = ""
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = self._classes(attrs)
+        if "card" in classes:
+            self._finish_card()
+            self._card = {field: [] for field in self._FIELD_CLASSES.values()}
+            return
+        if self._card is None:
+            return
+
+        for class_name, field in self._FIELD_CLASSES.items():
+            if class_name in classes:
+                self._field = field
+                return
+
+        tag_lc = tag.lower()
+        if tag_lc in {"script", "style"}:
+            self._ignored_depth += 1
+        elif self._field == "sender" and ("openai" in tag_lc or "chatgpt" in tag_lc):
+            # Some public mailbox pages embed an obfuscated sender address as
+            # an invalid HTML tag, so HTMLParser reports it as the tag name.
+            sender_hint = tag.replace("_at_", "@").replace("_dot_", ".").replace("_com", ".com", 1)
+            self._card["sender"].append(sender_hint)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_data(self, data: str) -> None:
+        if self._card is not None and self._field and not self._ignored_depth and data.strip():
+            self._card[self._field].append(data.strip())
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style"} and self._ignored_depth:
+            self._ignored_depth -= 1
+
+    def close(self) -> None:
+        super().close()
+        self._finish_card()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -243,6 +311,10 @@ class ICloudMailProvider(MailProvider):
         count: int,
     ) -> list[dict]:
         """Read mail detail JSON from receive-code list pages such as yangyang.website/messages/..."""
+        static_messages = self._messages_from_static_cards(account, html, count=count)
+        if static_messages:
+            return static_messages
+
         detail_base = self._html_js_string(html, "detailBase")
         detail_suffix = self._html_js_string(html, "detailSuffix")
         if not detail_base or not detail_suffix:
@@ -279,6 +351,36 @@ class ICloudMailProvider(MailProvider):
                     }
                     messages.append(message)
                     break
+        return messages
+
+    @classmethod
+    def _messages_from_static_cards(cls, account: ICloudAccount, html: str, *, count: int) -> list[dict]:
+        parser = _StaticMailCardParser()
+        try:
+            parser.feed(str(html or ""))
+            parser.close()
+        except Exception:
+            logger.debug("[icloud] 静态收码卡片解析失败", exc_info=True)
+            return []
+
+        messages: list[dict] = []
+        for index, card in enumerate(parser.cards[: max(1, int(count or 10))]):
+            message = cls._item_to_legacy(
+                account,
+                {
+                    "sender": card.get("sender", ""),
+                    "subject": card.get("subject", ""),
+                    "date": card.get("date", ""),
+                    "body": card.get("body", ""),
+                },
+                index=index,
+            )
+            if message:
+                message["raw"] = {
+                    **(message.get("raw") if isinstance(message.get("raw"), dict) else {}),
+                    "source": "icloud_receive_code_static_card",
+                }
+                messages.append(message)
         return messages
 
     @staticmethod

@@ -22,6 +22,12 @@ function hasCodexAuthFile(account) {
   return file.includes('/data/auths/') || file.includes('/auths/codex-') || file.includes('data/auths/')
 }
 
+function accountTwoFactorStatus(account) {
+  return account?.two_factor_enabled === true || normalizedText(account?.totp_status) === 'enabled'
+    ? 'enabled'
+    : 'disabled'
+}
+
 function inRange(value, range) {
   const start = numericTimestamp(range?.start)
   const end = numericTimestamp(range?.end)
@@ -50,6 +56,7 @@ export function buildAccountSearchIndex(accounts) {
       exportTimestamp: numericTimestamp(account?.credentials_exported_at),
       hubSyncStatus: account?.account_hub_synced ? 'synced' : 'unsynced',
       authStatus: hasCodexAuthFile(account) ? 'has_auth' : 'missing_auth',
+      twoFactorStatus: accountTwoFactorStatus(account),
       bindTimestamp,
       plus: normalizedText(account?.account_type) === 'plus',
     }
@@ -77,6 +84,7 @@ export function filterAccountSearchIndex(index, filters = {}, order = 'asc') {
   const credentialExport = String(filters.credentialExport || '')
   const hubSync = String(filters.hubSync || '')
   const authCredential = String(filters.authCredential || '')
+  const twoFactor = String(filters.twoFactor || '')
   const descending = order === 'desc'
   const matches = []
 
@@ -93,6 +101,7 @@ export function filterAccountSearchIndex(index, filters = {}, order = 'asc') {
     if (!inRange(entry.exportTimestamp, filters.exportRange)) continue
     if (hubSync && entry.hubSyncStatus !== hubSync) continue
     if (authCredential && entry.authStatus !== authCredential) continue
+    if (twoFactor && entry.twoFactorStatus !== twoFactor) continue
     if (!inRange(entry.bindTimestamp, filters.bindRange)) continue
     matches.push(entry.account)
   }

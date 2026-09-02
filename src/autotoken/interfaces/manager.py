@@ -37,7 +37,6 @@ from autotoken.auth.codex_auth import (
     CodexOAuthPhoneRequired,
     CodexProtocolOAuthError,
     MainCodexSyncFlow,
-    _click_primary_auth_button,
     _is_google_redirect,
     check_codex_quota,
     get_quota_exhausted_info,
@@ -64,6 +63,7 @@ from autotoken.mail import TemporaryEmailClient
 from autotoken.services import account_presentation as account_presentation_service
 from autotoken.services import reconcile as reconcile_service
 from autotoken.services import registration, rotation, team_cleanup
+from autotoken.services.chatgpt_2fa_protocol import ChatGPT2FAProtocolSetupExecutor
 from autotoken.services.chatgpt_2fa_setup import ChatGPT2FASetupExecutor, ChatGPT2FASetupStatus
 from autotoken.settings.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autotoken.settings.config import get_playwright_launch_options
@@ -1980,26 +1980,34 @@ def _enable_totp_mfa_after_auth_session(
     email_code_provider=None,
     session_data: dict | None = None,
     progress_callback=None,
+    proxy_url=None,
 ):
-    if not isinstance(result, dict) or page is None:
+    if not isinstance(result, dict):
         return result
     target_email = str(email or result.get("email") or "").strip()
     if not target_email:
         return result
 
-    executor = ChatGPT2FASetupExecutor(
-        page,
-        save_metadata=accounts.save_totp_metadata,
-        mark_recovery_required=accounts.mark_totp_recovery_required,
-        email_code_provider=email_code_provider,
-    )
-
     def _progress(event):
         if callable(progress_callback):
             progress_callback(event)
 
-    setup_result = executor.enable(target_email, progress=_progress)
-    if setup_result.status == ChatGPT2FASetupStatus.SECRET_UNAVAILABLE:
+    if page is None:
+        executor = ChatGPT2FAProtocolSetupExecutor(
+            save_metadata=accounts.save_totp_metadata,
+            email_code_provider=email_code_provider,
+            proxy_url=proxy_url,
+        )
+        setup_result = executor.enable(target_email, session_data or {}, progress=_progress)
+    else:
+        executor = ChatGPT2FASetupExecutor(
+            page,
+            save_metadata=accounts.save_totp_metadata,
+            mark_recovery_required=accounts.mark_totp_recovery_required,
+            email_code_provider=email_code_provider,
+        )
+        setup_result = executor.enable(target_email, progress=_progress)
+    if page is not None and setup_result.status == ChatGPT2FASetupStatus.SECRET_UNAVAILABLE:
         retry_result = _retry_totp_mfa_with_fresh_auth_session(
             target_email,
             session_data=session_data,
@@ -2168,14 +2176,19 @@ def _save_auth_from_session_page(
     )
     logger.info("[注册] auth_session 已保存: %s", auth_file)
     update_account(email, **registration.auth_session_update_fields(last_active_at=time.time()))
-    _detect_registration_trial_eligibility(
-        email,
-        access_token,
-        account_id,
-        page=page,
-        proxy_url=proxy_url,
-        progress_callback=progress_callback,
-    )
+    # 独立注册在浏览器清理后才落盘，此时 page=None。不要为非核心的试用资格
+    # 检测回退到最多多次 30 秒的 HTTP 请求，避免 auth_session 已经保存但任务
+    # 仍长时间保持 running。试用资格会在后续账户概览刷新时查询；只有仍持有
+    # 注册页面的链路才复用该浏览器会话做同步检测。
+    if page is not None:
+        _detect_registration_trial_eligibility(
+            email,
+            access_token,
+            account_id,
+            page=page,
+            proxy_url=proxy_url,
+            progress_callback=progress_callback,
+        )
     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
     _record_outcome(
         "success",
@@ -2201,6 +2214,7 @@ def _save_auth_from_session_page(
             email_code_provider=email_code_provider,
             session_data=data,
             progress_callback=progress_callback,
+            proxy_url=proxy_url,
         )
     return result
 
@@ -2803,6 +2817,16 @@ _DIRECT_CODE_SELECTORS = (
 _DIRECT_CONTINUE_LABELS = ("Continue", "继续", "繼續", "続行")
 _DIRECT_PASSWORD_CONTINUE_LABELS = (*_DIRECT_CONTINUE_LABELS, "Log in", "登录", "登入", "ログイン")
 _DIRECT_CODE_CONTINUE_LABELS = (*_DIRECT_CONTINUE_LABELS, "Verify", "Submit", "验证", "確認")
+_DIRECT_CODE_RESEND_SELECTOR = (
+    'button:has-text("メールを再送信する"), button:has-text("メールを再送信"), '
+    'button:has-text("Resend email"), button:has-text("Resend code"), '
+    'button:has-text("Send again"), button:has-text("重新发送邮件"), '
+    'button:has-text("重新发送验证码"), button:has-text("重發驗證碼"), '
+    'button:has-text("이메일 다시 보내기"), button[name="intent"][value="resend"], '
+    'button[value="resend"], a:has-text("メールを再送信する"), '
+    'a:has-text("Resend email"), a:has-text("Resend code"), '
+    'a:has-text("重新发送邮件"), a:has-text("重新发送验证码")'
+)
 _ABOUT_YOU_BIRTHDAY_TEXT_SELECTORS = (
     'input[name*="birth" i], input[id*="birth" i], '
     'input[placeholder*="Birthday" i], input[aria-label*="Birthday" i], '
@@ -2828,6 +2852,8 @@ _DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
 def _safe_invite_screenshot(page, name):
     from autotoken.auth.invite import screenshot
 
+    if getattr(page, "_autotoken_skip_debug_screenshots", False):
+        return
     try:
         screenshot(page, name)
     except Exception as exc:
@@ -2895,9 +2921,237 @@ def _humanized_click_locator(page, locator, *, label: str = "") -> None:
         locator.click()
 
 
-def _humanized_auth_click(page, anchor_locator, labels) -> None:
+def _humanized_auth_click(page, anchor_locator, labels) -> bool:
     _direct_humanize_delay("click")
-    _click_primary_auth_button(page, anchor_locator, labels)
+    if getattr(page, "_autotoken_direct_dom_mode", False):
+        result = _submit_direct_controlled_form(anchor_locator)
+        if result.get("ok"):
+            logger.info(
+                "[直接注册] Continue 表单已异步提交: method=%s value_len=%s",
+                result.get("reason") or "dom-async",
+                len(str(result.get("value") or "")),
+            )
+            return True
+    return _click_direct_primary_auth_button(anchor_locator, labels)
+
+
+def _submit_direct_controlled_form(anchor_locator) -> dict:
+    """Stabilize a controlled input and schedule its own form submit.
+
+    Adapted from turb-gpt-free-register's Cloak/Roxy path: return from the
+    browser script before clicking so a headless driver never blocks on the
+    submit-triggered SPA navigation or Playwright actionability machinery.
+    """
+    if anchor_locator is None:
+        return {"ok": False, "reason": "missing_anchor"}
+    try:
+        return (
+            anchor_locator.evaluate(
+                r"""(input) => {
+                const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                  && getComputedStyle(el).visibility !== 'hidden'
+                  && getComputedStyle(el).display !== 'none'
+                  && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                if (!input) return {ok:false, reason:'missing_anchor'};
+                const value = String(input.value || '');
+                const form = input.closest('form');
+                if (!form) return {ok:false, reason:'missing_form', value};
+
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                input.scrollIntoView?.({block:'center', inline:'nearest'});
+                input.focus();
+                if (setter) setter.call(input, value); else input.value = value;
+                try {
+                  input.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:value}));
+                } catch (_) {
+                  input.dispatchEvent(new Event('input', {bubbles:true}));
+                }
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+                input.dispatchEvent(new FocusEvent('blur', {bubbles:true}));
+                input.blur();
+                input.focus();
+
+                const bad = /google|apple|microsoft|github|facebook|saml|sso|oauth|social|provider|resend/;
+                const attrs = el => [
+                  el.id, el.name, el.type, el.value, el.getAttribute('data-dd-action-name'),
+                  el.getAttribute('data-login-web-auth-control'), el.getAttribute('data-provider'),
+                  el.getAttribute('aria-label'), el.getAttribute('formaction')
+                ].filter(Boolean).join(' ').toLowerCase();
+                const controls = [...form.querySelectorAll('button,input[type="submit"]')].filter(visible);
+                const submit = controls.find(el => (el.getAttribute('type') || '').toLowerCase() === 'submit' && !bad.test(attrs(el)))
+                  || controls.find(el => !bad.test(attrs(el))) || null;
+                if (!submit) return {ok:false, reason:'missing_safe_submit', value};
+                submit.scrollIntoView?.({block:'center', inline:'nearest'});
+                setTimeout(() => {
+                  try {
+                    input.focus();
+                    input.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, cancelable:true, key:'Enter', code:'Enter'}));
+                    input.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, cancelable:true, key:'Enter', code:'Enter'}));
+                    if (!submit.disabled) submit.click();
+                    else if (typeof form.requestSubmit === 'function') form.requestSubmit();
+                  } catch (_) {
+                    try { if (typeof form.requestSubmit === 'function') form.requestSubmit(); } catch (_) {}
+                  }
+                }, 80);
+                return {
+                  ok:true,
+                  reason:'stable_async_enter_click',
+                  value,
+                  submitDisabled: !!submit.disabled,
+                  url: location.href
+                };
+            }"""
+            )
+            or {"ok": False, "reason": "empty_result"}
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _click_direct_primary_auth_button(anchor_locator, labels) -> bool:
+    """Click the anchor's own auth form without Playwright actionability waits.
+
+    RoxyBrowser CDP sessions can spend the global Playwright timeout waiting for
+    navigation after a click even though the submit control is ready.  Bound the
+    action and skip navigation waiting while constraining it to the input's form.
+    """
+    if anchor_locator is None:
+        return False
+
+    # Playwright already has the exact input locator. Click the primary submit in
+    # its own form and keep the real actionability check: force=True can report
+    # success while a transition layer receives the pointer event instead of the
+    # button. no_wait_after still prevents a slow Roxy CDP navigation wait.
+    try:
+        form = anchor_locator.locator("xpath=ancestor::form[1]")
+        button = form.locator(
+            'button[data-dd-action-name="Continue"], '
+            'button[data-login-web-auth-control="true"][type="submit"]:not([value="resend"]), '
+            'button[type="submit"]:not([name="intent"][value="resend"]), '
+            'input[type="submit"]:not([value="resend"])'
+        ).first
+        if button.is_visible(timeout=500) and button.is_enabled(timeout=500):
+            try:
+                button.click(timeout=2000, no_wait_after=True)
+                logger.info("[直接注册] Continue 点击已确认: method=playwright-actionable-no-wait")
+                return True
+            except Exception as exc:
+                logger.debug("[直接注册] Continue 可操作性点击失败，改用同步 DOM click: %s", exc)
+
+            # A short-lived overlay can keep the real pointer click from reaching
+            # the button. Invoke click synchronously (never via setTimeout) and
+            # confirm that the button received a click or its form dispatched a
+            # submit event before reporting success.
+            confirmation = button.evaluate(
+                r"""(el) => {
+                    let clicked = false;
+                    let submitDispatched = false;
+                    const form = el.form || el.closest('form');
+                    el.addEventListener('click', () => { clicked = true; }, {once: true});
+                    if (form) {
+                        form.addEventListener(
+                            'submit',
+                            () => { submitDispatched = true; },
+                            {once: true}
+                        );
+                    }
+                    el.click();
+                    return {clicked, submitDispatched};
+                }"""
+            )
+            if isinstance(confirmation, dict) and (
+                confirmation.get("clicked") or confirmation.get("submitDispatched")
+            ):
+                logger.info(
+                    "[直接注册] Continue 点击已确认: method=dom-sync "
+                    "click=%s submit=%s",
+                    bool(confirmation.get("clicked")),
+                    bool(confirmation.get("submitDispatched")),
+                )
+                return True
+    except Exception as exc:
+        logger.debug("[直接注册] Playwright direct submit fallback: %s", exc)
+
+    try:
+        anchor_locator.press("Enter", timeout=2000, no_wait_after=True)
+        logger.info("[直接注册] Continue 提交键已发送: method=enter-no-wait")
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_direct_input_value(locator, expected: str) -> bool:
+    """Verify the controlled auth input retained its value before submit."""
+    value = str(expected or "")
+    try:
+        state = locator.evaluate(
+            r"""(input, value) => {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                input.focus();
+                if (setter) setter.call(input, value); else input.value = value;
+                try {
+                    input.dispatchEvent(new InputEvent('beforeinput', {
+                        bubbles: true, cancelable: true, inputType: 'insertText', data: value
+                    }));
+                } catch (_) {}
+                try {
+                    input.dispatchEvent(new InputEvent('input', {
+                        bubbles: true, inputType: 'insertText', data: value
+                    }));
+                } catch (_) {
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                }
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+                input.dispatchEvent(new FocusEvent('blur', {bubbles: true}));
+                input.blur();
+                input.focus();
+                return {value: input.value};
+            }""",
+            value,
+        )
+        if str((state or {}).get("value") or "") != value:
+            locator.fill(value, timeout=2500)
+        return locator.input_value(timeout=1000) == value
+    except Exception:
+        return False
+
+
+def _retry_direct_auth_submit(page, _selectors, expected_value: str, labels) -> bool:
+    """Refill the current controlled input and quickly resubmit a stalled auth step."""
+    anchor = _first_visible_editable_locator(page, _selectors, timeout=800)
+    if anchor is None or not _ensure_direct_input_value(anchor, expected_value):
+        return False
+    if getattr(page, "_autotoken_direct_dom_mode", False):
+        return bool(_submit_direct_controlled_form(anchor).get("ok"))
+    return _click_direct_primary_auth_button(anchor, labels)
+
+
+def _direct_code_submit_policy() -> tuple[int, int]:
+    """Return bounded code-submit waits so one missed click cannot stall a worker."""
+    try:
+        wait_seconds = int(os.environ.get("REGISTER_DIRECT_CODE_SUBMIT_WAIT_SECONDS", "12") or 12)
+    except (TypeError, ValueError):
+        wait_seconds = 12
+    try:
+        attempts = int(os.environ.get("REGISTER_DIRECT_CODE_SUBMIT_ATTEMPTS", "2") or 2)
+    except (TypeError, ValueError):
+        attempts = 2
+    return max(3, min(45, wait_seconds)), max(1, min(3, attempts))
+
+
+def _direct_roxy_force_new_profile() -> bool:
+    """Use one clean profile per account unless explicitly configured otherwise."""
+    return _env_flag("REGISTER_ROXYBROWSER_FORCE_NEW_PROFILE", True)
+
+
+def _direct_register_retry_delay(use_remote_browser: bool) -> int:
+    """Keep transient Roxy/Cloak retries quick while preserving the local default."""
+    default = 5 if use_remote_browser else 30
+    try:
+        delay = int(os.environ.get("REGISTER_DIRECT_RETRY_DELAY_SECONDS", str(default)) or default)
+    except (TypeError, ValueError):
+        delay = default
+    return max(0, min(120, delay))
 
 
 def _page_excerpt(page, limit=240):
@@ -3155,6 +3409,189 @@ def _fill_about_you_birthday_text_input(page, desired=None) -> bool:
             return False
 
 
+def _fill_direct_about_you_profile_dom(page, *, name: str, birthday: dict, age: str) -> dict:
+    """Fill the Cloak about-you form in one native DOM transaction.
+
+    This follows turb-gpt-free-register's headless profile strategy: use native
+    value setters plus input/change/blur events so React Aria retains Japanese
+    age fields instead of visually showing a value that form state rejects.
+    """
+    year = str((birthday or {}).get("year") or "").strip()
+    month = str((birthday or {}).get("month") or "").strip().zfill(2)
+    day = str((birthday or {}).get("day") or "").strip().zfill(2)
+    payload = {
+        "name": str(name or "").strip(),
+        "birthday": f"{year}-{month}-{day}",
+        "year": year,
+        "month": month,
+        "day": day,
+        "age": str(age or "").strip(),
+    }
+    try:
+        return (
+            page.evaluate(
+                r"""(data) => {
+                const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                  && getComputedStyle(el).visibility !== 'hidden'
+                  && getComputedStyle(el).display !== 'none'
+                  && !el.disabled && !el.readOnly;
+                const setValue = (el, value) => {
+                  if (!el) return false;
+                  el.scrollIntoView?.({block:'center', inline:'nearest'});
+                  el.focus?.();
+                  const tag = String(el.tagName || '').toLowerCase();
+                  const proto = tag === 'select' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+                  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                  if (setter) setter.call(el, String(value)); else el.value = String(value);
+                  if (tag === 'select') {
+                    [...el.options].forEach(opt => { opt.selected = String(opt.value) === String(value); });
+                  }
+                  try {
+                    el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:String(value)}));
+                  } catch (_) {
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                  }
+                  el.dispatchEvent(new Event('change', {bubbles:true}));
+                  el.dispatchEvent(new FocusEvent('blur', {bubbles:true}));
+                  el.blur?.();
+                  return String(el.value || '') === String(value);
+                };
+
+                const nameInput = [...document.querySelectorAll(
+                  'input[name="name"],input[name="fullName"],input[name="full_name"],input[autocomplete="name"]'
+                )].find(visible);
+                const nameOk = setValue(nameInput, data.name);
+
+                let birthMode = '';
+                const ageInput = [...document.querySelectorAll(
+                  'input[name="age"],input#age,input[id$="-age"],input[type="number"],input[placeholder*="年齢"],input[aria-label*="年齢"]'
+                )].find(visible);
+                if (ageInput && setValue(ageInput, data.age)) {
+                  birthMode = 'age';
+                } else {
+                  const dateInput = [...document.querySelectorAll(
+                    'input[name="birthdate"],input[type="date"],input[name="birthday"]'
+                  )].find(el => visible(el) || String(el.getAttribute('type') || '').toLowerCase() === 'date');
+                  if (dateInput && setValue(dateInput, data.birthday)) birthMode = 'birthday';
+                }
+
+                if (!birthMode) {
+                  const choose = (selectors, values) => {
+                    for (const selector of selectors) {
+                      for (const el of [...document.querySelectorAll(selector)]) {
+                        if (!visible(el)) continue;
+                        for (const value of values) {
+                          if (el.tagName === 'SELECT' && ![...el.options].some(o => String(o.value) === String(value))) continue;
+                          if (setValue(el, value)) return true;
+                        }
+                      }
+                    }
+                    return false;
+                  };
+                  const yOk = choose(['select[name="year"]','input[name="year"]','select[id*="year"]'], [data.year]);
+                  const mOk = choose(['select[name="month"]','input[name="month"]','select[id*="month"]'], [String(Number(data.month)), data.month]);
+                  const dOk = choose(['select[name="day"]','input[name="day"]','select[id*="day"]'], [String(Number(data.day)), data.day]);
+                  if (yOk && mOk && dOk) birthMode = 'ymd';
+                }
+
+                const spinNeeded = !birthMode
+                  && !!document.querySelector('[role="spinbutton"][data-type="year"]')
+                  && !!document.querySelector('[role="spinbutton"][data-type="month"]')
+                  && !!document.querySelector('[role="spinbutton"][data-type="day"]');
+                return {
+                  ok: !!nameOk && (!!birthMode || spinNeeded),
+                  name: nameInput?.value || '',
+                  age: ageInput?.value || '',
+                  birthMode: birthMode || (spinNeeded ? 'spinbutton_needed' : 'missing'),
+                  url: location.href
+                };
+            }""",
+                payload,
+            )
+            or {"ok": False, "reason": "empty_result"}
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _submit_direct_profile_form_dom(page) -> dict:
+    """Schedule the enabled about-you form submit and return immediately."""
+    try:
+        return (
+            page.evaluate(
+                r"""() => {
+                const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                  && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+                const form = [...document.querySelectorAll('form')].find(visible);
+                if (!form) return {ok:false, reason:'missing_form'};
+                const submit = [...form.querySelectorAll('button[type="submit"],input[type="submit"]')]
+                  .find(el => visible(el) && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true');
+                if (!submit && typeof form.requestSubmit !== 'function') return {ok:false, reason:'missing_submit'};
+                setTimeout(() => {
+                  try {
+                    if (submit) submit.click();
+                    else form.requestSubmit();
+                  } catch (_) {
+                    try { form.requestSubmit(); } catch (_) {}
+                  }
+                }, 80);
+                return {ok:true, reason:submit ? 'async_submit_click' : 'async_request_submit'};
+            }"""
+            )
+            or {"ok": False, "reason": "empty_result"}
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _direct_profile_dom_state(page) -> dict:
+    try:
+        return (
+            page.evaluate(
+                r"""() => {
+                const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                const inputs = [...document.querySelectorAll('input')].filter(visible).map(el => ({
+                  name: el.name || '', type: el.type || '', value: el.value || '',
+                  invalid: String(el.getAttribute('aria-invalid') || '').toLowerCase() === 'true'
+                }));
+                const errors = [...document.querySelectorAll(
+                  '.react-aria-FieldError,[slot="errorMessage"],[id$="-error"],[role="alert"],[class*="error"]'
+                )].filter(visible).map(el => String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+                return {url:location.href, inputs, errors:errors.slice(0,8)};
+            }"""
+            )
+            or {}
+        )
+    except Exception:
+        return {}
+
+
+def _direct_email_otp_dom_state(page) -> dict:
+    """Read explicit OTP validation markers without relying on localized body text."""
+    try:
+        return (
+            page.evaluate(
+                r"""() => {
+                const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                const otpInputs = [...document.querySelectorAll(
+                  'input[name*="code" i],input[name*="otp" i],input[autocomplete="one-time-code"],input[inputmode="numeric"]'
+                )].filter(visible);
+                const errors = [...document.querySelectorAll(
+                  '.react-aria-FieldError,[slot="errorMessage"],[id$="-error"],[role="alert"],[class*="error"]'
+                )].filter(visible).map(el => String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+                return {
+                  invalid: otpInputs.some(el => String(el.getAttribute('aria-invalid') || '').toLowerCase() === 'true') || errors.length > 0,
+                  errors: errors.slice(0,8),
+                  values: otpInputs.map(el => String(el.value || ''))
+                };
+            }"""
+            )
+            or {"invalid": False, "errors": [], "values": []}
+        )
+    except Exception:
+        return {"invalid": False, "errors": [], "values": []}
+
+
 def _accept_direct_about_you_required_consents(page) -> int:
     """Accept required about-you consent checkboxes, including Korean localized forms."""
 
@@ -3214,7 +3651,7 @@ def _accept_direct_about_you_required_consents(page) -> int:
 
 def _detect_direct_register_step(page):
     url = (page.url or "").lower()
-    if _is_google_redirect(page):
+    if "accounts.google.com" in url:
         return "google"
 
     if "create-account-enroll-passkey" in url or "enroll-passkey" in url:
@@ -3226,6 +3663,18 @@ def _detect_direct_register_step(page):
         return "password"
     if "chatgpt.com" in url and "auth" not in url:
         return "completed"
+
+    # URL-known states must be handled before DOM probes.  Locator probes over a
+    # remote RoxyBrowser CDP connection can each consume their full timeout.
+    if "email-verification" in url:
+        return "code"
+    if "log-in-or-create-account" in url or "/auth/login" in url:
+        return "email"
+    if "create-account" in url or "password" in url:
+        return "password"
+
+    if _is_google_redirect(page):
+        return "google"
 
     try:
         if _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=300):
@@ -3251,13 +3700,61 @@ def _detect_direct_register_step(page):
     except Exception:
         pass
 
-    if "email-verification" in url:
-        return "code"
-    if "log-in-or-create-account" in url or url.endswith("/auth/login"):
-        return "email"
-    if "create-account" in url or "password" in url:
-        return "password"
     return "unknown"
+
+
+def _switch_direct_signup_to_password(page, *, timeout=15):
+    """Switch a passwordless signup OTP page to the password creation branch."""
+
+    click_result = {}
+    try:
+        click_result = page.evaluate(
+            r"""() => {
+                const visible = el => {
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.visibility !== 'hidden' && style.display !== 'none'
+                      && rect.width > 0 && rect.height > 0
+                      && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                };
+                const controls = [...document.querySelectorAll('a,button,[role="link"],[role="button"]')];
+                const control = controls.find(el => {
+                    if (!visible(el)) return false;
+                    const href = String(el.getAttribute('href') || '').toLowerCase();
+                    const attrs = [
+                        href, el.id, el.getAttribute('aria-label'), el.getAttribute('title'),
+                        el.getAttribute('data-testid'), el.getAttribute('data-login-web-auth-control'),
+                        el.getAttribute('data-dd-action-name'), el.className
+                    ].join(' ').toLowerCase();
+                    return href.includes('/create-account/password')
+                      || attrs.includes('/create-account/password');
+                });
+                if (!control) return {clicked:false, reason:'password_signup_control_missing'};
+                const href = String(control.getAttribute('href') || '/create-account/password');
+                control.scrollIntoView({block:'center', inline:'center'});
+                control.click();
+                return {clicked:true, href};
+            }"""
+        ) or {}
+    except Exception as exc:
+        logger.debug("[直接注册] 密码注册入口 DOM 点击失败，改用地址跳转: %s", exc)
+
+    if not click_result.get("clicked"):
+        # The current passwordless signup page often has no password branch.
+        # Forcing /create-account/password loses the server-side transaction
+        # and can land Roxy/Cloak on chrome-error://chromewebdata/. Continue
+        # with the OTP page unless an explicit password control is present.
+        logger.info("[直接注册] 邮箱验证码页没有密码注册入口，继续验证码流程")
+        return _detect_direct_register_step(page)
+
+    logger.info("[直接注册] 邮箱验证码页已点击“使用密码继续”")
+
+    return _wait_for_direct_register_step(
+        page,
+        {"password", "code", "profile", "completed", "google", "email"},
+        timeout=timeout,
+    )
 
 
 def _wait_for_direct_register_step(page, allowed_steps, timeout=15):
@@ -3358,18 +3855,34 @@ def _wait_for_direct_step_change(page, current_step, timeout=15):
 def _submit_direct_code_and_wait(page, anchor, *, timeout=45, max_attempts=3):
     attempts = max(1, int(max_attempts or 1))
     wait_seconds = max(1, int(timeout or 45))
-    last_step = "code"
+    # Auto-submit, when present, fires immediately after the last digit. Keep a
+    # one-second grace period instead of delaying every explicit submit by 4s.
+    last_step = _wait_for_direct_step_change(page, "code", timeout=min(1, wait_seconds))
+    if last_step != "code":
+        logger.info("[直接注册] 验证码自动提交后状态: %s | URL: %s", last_step, page.url)
+        return last_step
     for attempt in range(1, attempts + 1):
-        clicked = _click_primary_auth_button(page, anchor, _DIRECT_CODE_CONTINUE_LABELS)
-        if not clicked:
+        if attempt > 1:
+            refreshed_anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
+            if refreshed_anchor is not None:
+                anchor = refreshed_anchor
+        if anchor is not None:
+            if getattr(page, "_autotoken_direct_dom_mode", False):
+                submit_result = _submit_direct_controlled_form(anchor)
+                logger.info(
+                    "[直接注册] 无头验证码表单提交: ok=%s method=%s",
+                    bool(submit_result.get("ok")),
+                    submit_result.get("reason") or "unknown",
+                )
+            else:
+                _click_direct_primary_auth_button(anchor, _DIRECT_CODE_CONTINUE_LABELS)
+        else:
             try:
-                if anchor is not None:
-                    anchor.press("Enter")
-                else:
-                    page.keyboard.press("Enter")
+                page.keyboard.press("Enter")
             except Exception:
                 pass
-        last_step = _wait_for_direct_step_change(page, "code", timeout=wait_seconds)
+        attempt_wait = min(2, wait_seconds) if attempt < attempts else wait_seconds
+        last_step = _wait_for_direct_step_change(page, "code", timeout=attempt_wait)
         logger.info(
             "[直接注册] 提交验证码后状态: %s | URL: %s | attempt=%s/%s",
             last_step,
@@ -3381,8 +3894,164 @@ def _submit_direct_code_and_wait(page, anchor, *, timeout=45, max_attempts=3):
             return last_step
         if attempt < attempts:
             logger.warning("[直接注册] 验证码提交后仍停留在验证码页，准备重试提交 | URL: %s", page.url)
-            time.sleep(1)
+            time.sleep(0.5)
+    if last_step == "code":
+        # The navigation can land immediately after the final bounded wait. A
+        # short settle check prevents a stale `code` result from rejecting an
+        # already-loaded about-you page.
+        settled_step = _wait_for_direct_step_change(page, "code", timeout=min(2, wait_seconds))
+        if settled_step != "code":
+            logger.info("[直接注册] 验证码提交后延迟跳转状态: %s | URL: %s", settled_step, page.url)
+        last_step = settled_step
     return last_step
+
+
+def _click_direct_code_resend(page) -> bool:
+    """Request a fresh code without waiting for the resulting navigation."""
+    try:
+        control = page.locator(_DIRECT_CODE_RESEND_SELECTOR).first
+        if control.is_visible(timeout=1000) and control.is_enabled(timeout=1000):
+            control.click(timeout=2000, no_wait_after=True)
+            logger.info("[直接注册] 已点击重新发送邮箱验证码")
+            return True
+    except Exception as exc:
+        logger.debug("[直接注册] 重新发送邮箱验证码控件不可用: %s", exc)
+    return False
+
+
+def _wait_for_direct_verification_code(
+    mail_client,
+    *,
+    email: str,
+    account_id,
+    timeout: int,
+    issued_after: float | None,
+    exclude_codes: set[str],
+    strict_issued_after: bool = False,
+) -> str:
+    """Wait for an email OTP and convert provider timeout into a normal miss."""
+    from autotoken.mail import base as mail_base
+
+    try:
+        return str(
+            mail_base.wait_for_openai_otp(
+                mail_client,
+                email,
+                account_id=account_id,
+                timeout=timeout,
+                issued_after=issued_after,
+                exclude_codes=set(exclude_codes),
+                strict_issued_after=strict_issued_after,
+            )
+            or ""
+        ).strip()
+    except TimeoutError as exc:
+        logger.warning("[直接注册] 等待邮箱验证码超时，按本次注册失败处理: %s", exc)
+        return ""
+
+
+def _resend_and_wait_for_direct_code(
+    page,
+    mail_client,
+    *,
+    email: str,
+    account_id,
+    used_codes: set[str],
+    timeout: int,
+) -> str:
+    """Replace a rejected/stale OTP with one issued by an explicit resend."""
+    if not _click_direct_code_resend(page):
+        return ""
+
+    resend_requested_at = time.time()
+    excluded_before_wait = set(used_codes)
+    logger.info(
+        "[直接注册] 旧验证码未推进，等待重新发送的新验证码: email=%s timeout=%ss",
+        email,
+        timeout,
+    )
+    fresh_code = _wait_for_direct_verification_code(
+        mail_client,
+        email=email,
+        account_id=account_id,
+        timeout=timeout,
+        issued_after=resend_requested_at,
+        exclude_codes=excluded_before_wait,
+        strict_issued_after=True,
+    )
+    if not fresh_code or fresh_code in excluded_before_wait:
+        return ""
+    used_codes.add(fresh_code)
+    return fresh_code
+
+
+def _complete_direct_about_you_dom(page, *, identity_name: str, identity_bday: dict, identity_age: str) -> bool:
+    """Bounded Cloak headless about-you flow adapted from the reference implementation."""
+    from autotoken.auth.invite import assert_not_blocked
+
+    for attempt in range(1, 3):
+        if "about-you" not in (page.url or "").lower():
+            return True
+
+        fill_result = _fill_direct_about_you_profile_dom(
+            page,
+            name=identity_name,
+            birthday=identity_bday,
+            age=identity_age,
+        )
+        if fill_result.get("birthMode") == "spinbutton_needed":
+            spin_ok = _fill_about_you_birthday_by_meta(page, desired=identity_bday)
+            fill_result["ok"] = bool(fill_result.get("name")) and spin_ok
+            fill_result["birthMode"] = "spinbutton" if spin_ok else "spinbutton_failed"
+        logger.info(
+            "[直接注册] 无头资料页稳定填充: attempt=%s/2 ok=%s mode=%s name=%s age=%s",
+            attempt,
+            bool(fill_result.get("ok")),
+            fill_result.get("birthMode") or "missing",
+            bool(fill_result.get("name")),
+            fill_result.get("age") or "",
+        )
+        if not fill_result.get("ok"):
+            logger.warning("[直接注册] 无头资料页字段未稳定，准备重试: %s", fill_result)
+            time.sleep(0.5)
+            continue
+
+        _accept_direct_about_you_required_consents(page)
+        submit_result = _submit_direct_profile_form_dom(page)
+        logger.info("[直接注册] 无头资料页异步提交: %s", submit_result)
+        if not submit_result.get("ok"):
+            time.sleep(0.5)
+            continue
+
+        next_step = _wait_for_direct_step_change(page, "profile", timeout=12)
+        logger.info("[直接注册] 无头资料提交后状态: %s | URL: %s", next_step, page.url)
+        assert_not_blocked(page, "about_you_submit")
+        if next_step != "profile":
+            return True
+
+        state = _direct_profile_dom_state(page)
+        has_invalid = bool(state.get("errors")) or any(bool(item.get("invalid")) for item in state.get("inputs") or [])
+        logger.warning(
+            "[直接注册] 无头资料页提交后仍停留: invalid=%s state=%s",
+            has_invalid,
+            state,
+        )
+        if has_invalid:
+            continue
+
+        # Reference headless flow stops re-clicking a submitted profile form.
+        # Open ChatGPT once to let the callback/session settle instead of
+        # spending another 35 seconds on a page with no validation error.
+        try:
+            logger.info("[直接注册] 无头资料页已提交且无校验错误，主动进入 ChatGPT 读取登录态")
+            page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=10000)
+            if _detect_direct_register_step(page) == "completed":
+                return True
+        except Exception as exc:
+            logger.warning("[直接注册] 无头资料页主动跳转失败: %s", exc)
+
+    logger.warning("[直接注册] 无头 about-you 页面仍未完成 | URL: %s | state=%s", page.url, _direct_profile_dom_state(page))
+    return False
 
 
 def _complete_direct_about_you(page):
@@ -3399,6 +4068,14 @@ def _complete_direct_about_you(page):
         identity_age = str(max(18, _dt.date.today().year - int(identity_bday["year"])))
     except Exception:
         identity_age = random_age()
+
+    if getattr(page, "_autotoken_direct_dom_mode", False):
+        return _complete_direct_about_you_dom(
+            page,
+            identity_name=identity_name,
+            identity_bday=identity_bday,
+            identity_age=identity_age,
+        )
 
     # 字段顺序只尝试 3 种排列，但全部使用相同的随机生日值
     birthday_orders = [
@@ -3603,6 +4280,17 @@ def _register_direct_once(
             browser = cloak_runtime.browser
             context = cloak_runtime.context
             page = cloak_runtime.page
+            page._autotoken_direct_dom_mode = True
+            if not _env_flag("REGISTER_CLOAK_DEBUG_SCREENSHOTS", False):
+                # Cloak's screenshot implementation can ignore Playwright's
+                # timeout and block a headless worker for about a minute. These
+                # captures are diagnostic only, so keep them opt-in.
+                page._autotoken_skip_debug_screenshots = True
+            try:
+                page.set_default_timeout(5000)
+                page.set_default_navigation_timeout(45000)
+            except Exception:
+                pass
             logger.info("[直接注册] 使用 CloakBrowser 无头模式")
         elif use_roxybrowser:
             from autotoken.roxybrowser_client import RoxyBrowserClient, pick_roxybrowser_endpoint
@@ -3614,7 +4302,7 @@ def _register_direct_once(
                 window_name=f"autotoken-register-{random.randint(100000, 999999)}",
                 proxy_url=proxy_url,
                 clear_profile_data=True,
-                force_new_profile=_env_flag("REGISTER_ROXYBROWSER_FORCE_NEW_PROFILE", True),
+                force_new_profile=_direct_roxy_force_new_profile(),
             )
             stack.callback(_cleanup_roxybrowser)
             p = sync_playwright().start()
@@ -3644,6 +4332,7 @@ def _register_direct_once(
             page = context.new_page()
         auth_context_state = _new_auth_context_capture_state()
         used_email_codes: set[str] = set()
+        verification_requested_at: float | None = None
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
 
@@ -3698,7 +4387,7 @@ def _register_direct_once(
         if not goto_ok:
             raise RuntimeError(_friendly_goto_error(last_goto_exc))
 
-        time.sleep(5)
+        time.sleep(2 if (use_roxybrowser or use_cloakbrowser) else 5)
 
         _wait_for_cloudflare_challenge(page, stage="打开登录页后", timeout=60)
 
@@ -3773,12 +4462,28 @@ def _register_direct_once(
                     continue
 
                 _humanized_fill(page, email_input, email, field_name="email")
+                if not _ensure_direct_input_value(email_input, email):
+                    logger.warning("[直接注册] 邮箱输入值未保留，立即重新填写 | URL: %s", page.url)
+                    continue
                 time.sleep(0.5)
                 logger.info("[直接注册] 邮箱已填入，点击 Continue... (attempt %d)", attempt + 1)
                 _safe_invite_screenshot(page, f"direct_02b_email_filled_{attempt}.png")
-                _humanized_auth_click(page, email_input, _DIRECT_CONTINUE_LABELS)
+                if verification_requested_at is None:
+                    verification_requested_at = time.time()
+                if not _humanized_auth_click(page, email_input, _DIRECT_CONTINUE_LABELS):
+                    logger.warning("[直接注册] Continue 未触发，立即重新定位按钮 | URL: %s", page.url)
+                    continue
 
-                next_step = _wait_for_direct_step_change(page, "email", timeout=15)
+                next_step = _wait_for_direct_step_change(page, "email", timeout=2)
+                if next_step == "email":
+                    if _retry_direct_auth_submit(
+                        page,
+                        _DIRECT_EMAIL_SELECTORS,
+                        email,
+                        _DIRECT_CONTINUE_LABELS,
+                    ):
+                        logger.info("[直接注册] 首次邮箱提交未推进，已快速补交稳定邮箱表单")
+                    next_step = _wait_for_direct_step_change(page, "email", timeout=10)
                 logger.info("[直接注册] 点击 Continue 后状态: %s | URL: %s", next_step, page.url)
                 _safe_invite_screenshot(page, f"direct_02c_after_continue_{attempt}.png")
 
@@ -3836,6 +4541,12 @@ def _register_direct_once(
         logger.info("[直接注册] 密码页检测状态: %s | URL: %s", password_step, page.url)
         _safe_invite_screenshot(page, "direct_03b_before_password.png")
 
+        if password_step == "code":
+            # Current browser signup is passwordless: the OTP page owns the
+            # active server transaction. Switching to create-account/password
+            # invalidates that transaction in both Roxy and Cloak.
+            logger.info("[直接注册] 已进入邮箱验证码页，继续 passwordless OTP 流程")
+
         try:
             for attempt in range(2):
                 if _detect_direct_register_step(page) != "password":
@@ -3853,6 +4564,9 @@ def _register_direct_once(
 
                 logger.info("[直接注册] 设置密码")
                 _humanized_fill(page, pwd_input, password, field_name="password")
+                if not _ensure_direct_input_value(pwd_input, password):
+                    logger.warning("[直接注册] 密码输入值未保留，立即重新填写 | URL: %s", page.url)
+                    continue
                 time.sleep(0.5)
                 _humanized_auth_click(page, pwd_input, _DIRECT_PASSWORD_CONTINUE_LABELS)
                 next_step = _wait_for_direct_step_change(page, "password", timeout=15)
@@ -3913,19 +4627,14 @@ def _register_direct_once(
             code_timeout = _direct_register_code_timeout(mail_client, email)
             provider_name = _mail_client_provider_name(mail_client)
             logger.info("[直接注册] 等待验证码... provider=%s timeout=%ss", provider_name or "<unknown>", code_timeout)
-            verification_code = None
-            start_t = time.time()
-            while time.time() - start_t < code_timeout:
-                emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
-                for em in emails:
-                    verification_code = mail_client.extract_verification_code(em)
-                    if verification_code:
-                        break
-                if verification_code:
-                    break
-                elapsed = int(time.time() - start_t)
-                print(f"\r  等待验证码... ({elapsed}s)", end="", flush=True)
-                time.sleep(3)
+            verification_code = _wait_for_direct_verification_code(
+                mail_client,
+                email=email,
+                account_id=cloudmail_account_id,
+                timeout=code_timeout,
+                issued_after=verification_requested_at,
+                exclude_codes=used_email_codes,
+            )
 
             if verification_code:
                 used_email_codes.add(str(verification_code).strip())
@@ -3936,13 +4645,69 @@ def _register_direct_once(
                     return _finish(False)
                 time.sleep(0.5)
                 anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
+                code_submit_wait, code_submit_attempts = _direct_code_submit_policy()
                 post_code_step = _submit_direct_code_and_wait(
                     page,
                     anchor,
-                    timeout=int(os.environ.get("REGISTER_DIRECT_CODE_SUBMIT_WAIT_SECONDS", "45") or 45),
-                    max_attempts=int(os.environ.get("REGISTER_DIRECT_CODE_SUBMIT_ATTEMPTS", "3") or 3),
+                    timeout=code_submit_wait,
+                    max_attempts=code_submit_attempts,
                 )
                 _wait_for_cloudflare_challenge(page, stage="提交邮箱验证码后", timeout=90)
+                if post_code_step == "code":
+                    live_post_code_step = _detect_direct_register_step(page)
+                    if live_post_code_step in {"password", "profile", "completed"}:
+                        logger.info(
+                            "[直接注册] 验证码提交后实时状态已推进: %s | URL: %s",
+                            live_post_code_step,
+                            page.url,
+                        )
+                        post_code_step = live_post_code_step
+                resend_allowed = True
+                if post_code_step == "code" and getattr(page, "_autotoken_direct_dom_mode", False):
+                    otp_state = _direct_email_otp_dom_state(page)
+                    if not otp_state.get("invalid"):
+                        logger.info(
+                            "[直接注册] 无头验证码页无明确错误，按参考流程继续等待跳转: state=%s",
+                            otp_state,
+                        )
+                        post_code_step = _wait_for_direct_step_change(page, "code", timeout=16)
+                        if post_code_step == "code":
+                            otp_state = _direct_email_otp_dom_state(page)
+                    resend_allowed = bool(otp_state.get("invalid"))
+                    if post_code_step == "code" and not resend_allowed:
+                        logger.warning(
+                            "[直接注册] 无头验证码提交后仍未跳转但无校验错误，不重发以免作废已接受验证码"
+                        )
+                if post_code_step == "code" and resend_allowed:
+                    # iCloud/generic receive-code pages can keep an already
+                    # consumed message and synthesize a current timestamp for
+                    # it. The same code can therefore be selected on a later
+                    # registration run. Ask the auth page to issue a new code,
+                    # then exclude every code already submitted in this run.
+                    fresh_code = _resend_and_wait_for_direct_code(
+                        page,
+                        mail_client,
+                        email=email,
+                        account_id=cloudmail_account_id,
+                        used_codes=used_email_codes,
+                        timeout=min(code_timeout, 60),
+                    )
+                    if fresh_code:
+                        logger.info("[直接注册] 输入重新发送的新验证码: %s", fresh_code)
+                        if _fill_direct_verification_code(page, fresh_code):
+                            time.sleep(0.5)
+                            fresh_anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
+                            post_code_step = _submit_direct_code_and_wait(
+                                page,
+                                fresh_anchor,
+                                timeout=code_submit_wait,
+                                max_attempts=code_submit_attempts,
+                            )
+                            _wait_for_cloudflare_challenge(page, stage="提交重新发送的邮箱验证码后", timeout=90)
+                            if post_code_step == "code":
+                                live_post_code_step = _detect_direct_register_step(page)
+                                if live_post_code_step in {"password", "profile", "completed"}:
+                                    post_code_step = live_post_code_step
                 if post_code_step == "password":
                     pwd_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=5000)
                     if not pwd_input:
@@ -4133,6 +4898,7 @@ def create_account_direct(
     )
     register_attempts = 0
     duplicate_swaps = 0
+    protocol_totp_codes: set[str] = set()
 
     def _record_outcome(status, **extra):
         registration.replace_direct_registration_outcome(
@@ -4143,6 +4909,22 @@ def create_account_direct(
             duplicate_swaps=duplicate_swaps,
             **extra,
         )
+
+    def _protocol_totp_email_code_provider(target_email: str, *, issued_after=None, exclude_codes=None) -> str:
+        excluded = set(protocol_totp_codes)
+        excluded.update(str(code or "").strip() for code in (exclude_codes or set()) if str(code or "").strip())
+        code = _wait_for_direct_verification_code(
+            mail_client,
+            email=target_email,
+            account_id=account_id,
+            timeout=_direct_register_code_timeout(mail_client, target_email),
+            issued_after=issued_after,
+            exclude_codes=excluded,
+            strict_issued_after=True,
+        )
+        if code:
+            protocol_totp_codes.add(code)
+        return code
 
     if registration_flow == "phone_cpa":
         provider_label = str(oauth_phone_sms_provider or os.environ.get("OAUTH_PHONE_SMS_PROVIDER") or "phone_pool")
@@ -4612,6 +5394,7 @@ def create_account_direct(
                             out_outcome=out_outcome,
                             mail_provider=_mail_client_provider_name(mail_client) or None,
                             enable_totp_mfa=enable_totp_mfa,
+                            email_code_provider=_protocol_totp_email_code_provider,
                             progress_callback=progress_callback,
                             proxy_url=proxy_url,
                         )
@@ -4704,22 +5487,25 @@ def create_account_direct(
             break
 
         if register_attempts < MAX_REGISTER_ATTEMPTS:
+            retry_delay = _direct_register_retry_delay(use_roxybrowser or use_cloakbrowser)
             if check_team_membership:
-                logger.warning("[直接注册] 注册失败且账号不在 Team 中，30 秒后重试: %s", email)
+                logger.warning("[直接注册] 注册失败且账号不在 Team 中，%d 秒后重试: %s", retry_delay, email)
             else:
                 logger.warning(
-                    "[直接注册] 注册失败，30 秒后重试: %s | reason=%s",
+                    "[直接注册] 注册失败，%d 秒后重试: %s | reason=%s",
+                    retry_delay,
                     email,
                     last_failure_reason or "未知错误",
                 )
             _progress(
                 "register_retry_wait",
-                f"注册未完成，30 秒后重试: {email}",
+                f"注册未完成，{retry_delay} 秒后重试: {email}",
                 email=email,
                 level="warn",
                 reason=last_failure_reason or "未知错误",
             )
-            time.sleep(30)
+            if retry_delay:
+                time.sleep(retry_delay)
 
     if not success:
         logger.error(

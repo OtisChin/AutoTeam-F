@@ -2146,8 +2146,9 @@ class AuthFlow:
                 self._existing_email_verification_mode = (payload.get("email_verification_mode", "") or "").strip()
                 self._existing_page_type = page_type
                 if self._existing_email_verification_mode == "passwordless_signup":
-                    logger.info("检测到 passwordless signup，切换到邮箱 OTP 注册流程")
+                    logger.info("检测到 passwordless signup，切换到密码创建流程")
                     self._is_existing_account = False
+                    return True
                 else:
                     logger.info("检测到已有账号，切换到 OTP 登录流程")
                     self._is_existing_account = True
@@ -2179,11 +2180,17 @@ class AuthFlow:
         password = self._default_password_from_email(email)
         self.result.password = password
 
-        # 先访问 create-account/password 页面（HAR 确认需要此步建立服务端状态）
+        # 新版注册先落到 email-verification，需要像页面上的“使用密码继续”链接一样
+        # 导航到 create-account/password，建立密码注册所需的服务端状态。
         try:
+            password_referer = (
+                "https://auth.openai.com/email-verification"
+                if self._existing_email_verification_mode == "passwordless_signup"
+                else "https://auth.openai.com/create-account"
+            )
             pw_page = self.session.get(
                 "https://auth.openai.com/create-account/password",
-                headers=self._common_headers("https://auth.openai.com/create-account"),
+                headers=self._common_headers(password_referer),
                 timeout=15,
             )
             logger.info(f"create-account/password 页面: {pw_page.status_code}")

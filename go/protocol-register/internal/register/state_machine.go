@@ -245,7 +245,14 @@ func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResp
 	if err := a.api.FollowContinue(a.ctx, authStep.ContinueURL); err != nil {
 		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
 	}
-	if authStep.PageType == "create_account_password" {
+	passwordSignup := authStep.PageType == "create_account_password" ||
+		(authStep.PageType == "email_otp_verification" && authStep.EmailVerificationMode == "passwordless_signup")
+	if authStep.PageType == "email_otp_verification" && authStep.EmailVerificationMode == "passwordless_signup" {
+		if err := a.api.BeginPasswordSignup(a.ctx); err != nil {
+			return "", a.authFailure(err, "open_password_signup", "register_failed", true)
+		}
+	}
+	if passwordSignup {
 		passwordToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "username_password_create", a.metadata)
 		if err != nil {
 			return "", a.authFailure(err, "register_password", "register_failed", true)

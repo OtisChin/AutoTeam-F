@@ -163,6 +163,14 @@ func (c *Client) RegisterPassword(ctx context.Context, email, password, sentinel
 	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/user/register", map[string]any{"password": password, "username": email}, nil, headers)
 }
 
+func (c *Client) BeginPasswordSignup(ctx context.Context) error {
+	target, err := c.resolveURL(c.BaseURL+"/create-account/password", c.BaseURL)
+	if err != nil {
+		return err
+	}
+	return c.navigate(ctx, target, c.BaseURL+"/email-verification")
+}
+
 func (c *Client) SendEmailOTP(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodGet, c.BaseURL+"/api/accounts/email-otp/send", nil, nil, c.authAPIHeaders(c.BaseURL+"/create-account/password"))
 }

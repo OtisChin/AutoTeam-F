@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const page = readFileSync(new URL('../src/components/RegisterAccountPage.vue', import.meta.url), 'utf8')
+const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 
 function section(start, end) {
   const from = page.indexOf(start)
@@ -17,6 +18,16 @@ assert.match(
   'RegisterAccountPage should own a cancellable polling lifecycle',
 )
 assert.match(page, /const registerPolling = createPollingLifecycle\(\)/)
+assert.match(
+  page,
+  /const REGISTER_POLL_INTERVAL_MS = 1500/,
+  'active registration logs and counters should synchronize within 1.5 seconds',
+)
+assert.match(
+  app,
+  /const ACTIVE_POLL_INTERVAL_MS = 1500/,
+  'global running-task state should synchronize within 1.5 seconds',
+)
 
 const polling = section('async function runRegisterPolling', 'onMounted(() =>')
 assert.doesNotMatch(polling, /setInterval/, 'register polling should schedule after completed requests instead of overlapping intervals')

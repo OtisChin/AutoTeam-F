@@ -170,7 +170,7 @@ def assert_not_blocked(page, step):
 def screenshot(page, name):
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
     path = f"{SCREENSHOT_DIR}/{name}"
-    page.screenshot(path=path, full_page=True)
+    page.screenshot(path=path, full_page=False, timeout=5000)
     logger.debug("[截图] %s", path)
 
 

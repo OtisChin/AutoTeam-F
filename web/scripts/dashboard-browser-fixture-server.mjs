@@ -22,6 +22,8 @@ const accounts = Array.from({ length: rowCount }, (_, index) => ({
   account_type: index % 4 === 0 ? 'plus' : 'free',
   seat_type: index % 4 === 0 ? 'plus' : 'free',
   trial_eligible: index % 13 === 0,
+  two_factor_enabled: index % 2 === 0,
+  totp_status: index % 2 === 0 ? 'enabled' : 'disabled',
   is_main_account: index === 0,
   created_at: nowSeconds - index * 60,
   registered_at: nowSeconds - index * 60,

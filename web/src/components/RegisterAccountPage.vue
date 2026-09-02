@@ -1705,7 +1705,7 @@ let mailProviderWatchReady = false
 let registerPageMounted = false
 let registerInitTimers = []
 const REGISTER_LOG_FETCH_LIMIT = 300
-const REGISTER_POLL_INTERVAL_MS = 5000
+const REGISTER_POLL_INTERVAL_MS = 1500
 const registerPolling = createPollingLifecycle()
 let registerPollingToken = null
 const statCards = computed(() => {

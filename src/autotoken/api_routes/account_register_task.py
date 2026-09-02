@@ -7,6 +7,19 @@ from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
 
+def _resolve_registration_password(value: str | None, *, generator: Callable[[], str] | None = None) -> str:
+    """Use the submitted password or generate one when the field is blank."""
+
+    provided = str(value or "").strip()
+    if provided:
+        return provided
+    if generator is None:
+        from autotoken.core.identity import random_password
+
+        generator = random_password
+    return str(generator() or "").strip()
+
+
 def _parse_proxy_pool(raw: str, *, normalize_proxy_url: Callable[[str], str]) -> list[str]:
     """把代理池文本解析成规范化代理列表。
 
@@ -140,7 +153,6 @@ def create_account_register_task_router(
     @router.post("/api/tasks/add", status_code=202)
     def post_add(params: ManualRegisterParams | None = None):
         """注册账号（后台执行，注册成功后继续执行 personal OAuth 并生成 auth_file）"""
-        from autotoken.core.identity import random_password
         from autotoken.interfaces.manager import cmd_register_accounts
         from autotoken.settings.runtime_config import get_register_domain, get_register_domains
         from autotoken.settings.setup_wizard import get_mail_provider
@@ -162,7 +174,7 @@ def create_account_register_task_router(
                 continue
             seen_luckmail_domains.add(key)
             luckmail_preferred_domains.append(cleaned)
-        resolved_password = password or random_password()
+        resolved_password = _resolve_registration_password(password)
         mode = (params.mode or "single").strip().lower()
         count = max(1, int(params.count or 1))
         concurrency = max(1, min(20, int(params.concurrency or 1)))

@@ -6,7 +6,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from autotoken.services.task_runtime import TASK_GROUP_QUOTA, TASK_GROUP_TEAM
+from autotoken.api_routes.input_limits import validate_list_payload_limit
+from autotoken.services.task_runtime import TASK_GROUP_OAUTH, TASK_GROUP_QUOTA, TASK_GROUP_TEAM
 
 
 class TaskParams(BaseModel):
@@ -27,8 +28,41 @@ class ReplaceParams(BaseModel):
     reason: str = "manual"
 
 
+class AccountTwoFactorSetupParams(BaseModel):
+    emails: list[str]
+
+
 def create_task_actions_router(*, start_task: Callable[..., dict[str, Any]]) -> APIRouter:
     router = APIRouter()
+
+    @router.post("/api/accounts/2fa/setup", status_code=202)
+    def post_accounts_2fa_setup(params: AccountTwoFactorSetupParams):
+        """Enable authenticator TOTP for existing accounts over saved protocol sessions."""
+        from autotoken.core.normalization import normalized_email
+        from autotoken.services.account_two_factor import setup_accounts_two_factor_protocol
+
+        validate_list_payload_limit(params.emails, max_items=1_000, label="批量设置2FA")
+        emails = []
+        seen = set()
+        for value in params.emails:
+            email = normalized_email(value)
+            if not email or email in seen:
+                continue
+            seen.add(email)
+            emails.append(email)
+        if not emails:
+            raise HTTPException(status_code=400, detail="emails 不能为空")
+
+        def _run(_task_id: str):
+            return setup_accounts_two_factor_protocol(emails)
+
+        return start_task(
+            "setup-2fa",
+            _run,
+            {"emails": emails},
+            task_group=TASK_GROUP_OAUTH,
+            pass_task_id=True,
+        )
 
     @router.post("/api/tasks/check", status_code=202)
     def post_check(params: CheckParams | None = None):

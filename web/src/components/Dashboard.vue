@@ -121,6 +121,19 @@
             {{ oauthBatchButtonLabel }}
           </button>
           <button
+            @click="batchSetupAccountTwoFactor"
+            :disabled="twoFactorSubmitting || twoFactorTaskRunning || !twoFactorSetupAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="twoFactorSubmitting || twoFactorTaskRunning || !twoFactorSetupAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+            {{ twoFactorSubmitting
+              ? '提交中...'
+              : twoFactorTaskRunning
+                ? '2FA设置中...'
+                : `批量设置2FA (${twoFactorSetupAccounts.length})` }}
+          </button>
+          <button
             @click="batchReloginAccounts"
             :disabled="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -775,6 +788,13 @@
             </option>
           </select>
           <select
+            v-model="twoFactorFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部2FA状态</option>
+            <option value="enabled">已设置 ({{ twoFactorCounts.enabled }})</option>
+            <option value="disabled">未设置 ({{ twoFactorCounts.disabled }})</option>
+          </select>
+          <select
             v-model="trialFilter"
             class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
             <option value="">全部试用资格</option>
@@ -886,7 +906,7 @@
             </option>
           </select>
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || trialFilter || bindProviderFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || twoFactorFilter || trialFilter || bindProviderFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -921,6 +941,7 @@
               <th class="px-4 py-3 font-medium min-w-56">邮箱</th>
               <th class="px-4 py-3 font-medium">账号类型</th>
               <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap">2FA</th>
               <th class="px-4 py-3 font-medium">绑定渠道</th>
               <th class="px-4 py-3 font-medium">账密导出</th>
               <th class="px-4 py-3 font-medium">导出时间</th>
@@ -949,7 +970,7 @@
           </thead>
           <tbody>
             <tr v-if="!filteredAccounts.length">
-              <td class="px-4 py-8 text-center text-gray-500" colspan="14">没有匹配的账号</td>
+              <td class="px-4 py-8 text-center text-gray-500" colspan="15">没有匹配的账号</td>
             </tr>
             <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
               v-memo="[acc, accountPageStartIndex, isSelected(acc.email), accountActionBusy && actionEmail === acc.email]"
@@ -992,6 +1013,24 @@
                   <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(acc.status)"></span>
                   {{ statusLabel(acc.status) }}
                 </span>
+              </td>
+              <td class="px-4 py-3">
+                <span
+                  v-if="accountTwoFactorEnabled(acc)"
+                  class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                  已设置
+                </span>
+                <button
+                  v-else
+                  type="button"
+                  @click="setupAccountTwoFactor(acc)"
+                  :disabled="twoFactorSubmitting || twoFactorTaskRunning"
+                  class="inline-flex items-center px-2 py-0.5 rounded-md border text-xs font-medium whitespace-nowrap transition"
+                  :class="twoFactorSubmitting || twoFactorTaskRunning
+                    ? 'border-gray-700 bg-gray-800 text-gray-500 cursor-not-allowed'
+                    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'">
+                  {{ twoFactorTaskEmails.has(String(acc.email || '').toLowerCase()) ? '设置中...' : '设置' }}
+                </button>
               </td>
               <td class="px-4 py-3">
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
@@ -1873,6 +1912,7 @@ const emailFilter = ref('')
 const deferredEmailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
+const twoFactorFilter = ref('')
 const trialFilter = ref('')
 const bindProviderFilter = ref('')
 const registerDateFilter = ref('')
@@ -1920,6 +1960,7 @@ const subExporting = ref(false)
 const accessTokenExporting = ref(false)
 const exportStatusUpdating = ref(false)
 const batchOauthAuthorizing = ref(false)
+const twoFactorSubmitting = ref(false)
 const batchReloggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
@@ -2577,6 +2618,10 @@ const editableBindProviderOptions = [
 const allAccounts = computed(() => props.status?.accounts || [])
 const accountFacets = computed(() => buildAccountFacets(allAccounts.value))
 const accountSearchIndex = computed(() => buildAccountSearchIndex(allAccounts.value))
+const twoFactorCounts = computed(() => allAccounts.value.reduce((counts, account) => {
+  counts[accountTwoFactorEnabled(account) ? 'enabled' : 'disabled'] += 1
+  return counts
+}, { enabled: 0, disabled: 0 }))
 
 function accountBindProviderFilterLabel(value) {
   const normalized = String(value || '').trim().toLowerCase()
@@ -2736,6 +2781,7 @@ watch(
     emailFilter,
     statusFilter,
     accountTypeFilter,
+    twoFactorFilter,
     trialFilter,
     bindProviderFilter,
     registerDateFilter,
@@ -2782,6 +2828,7 @@ const filteredAccounts = computed(() => {
     email: deferredEmailFilter.value,
     status: statusFilter.value,
     accountType: accountTypeFilter.value,
+    twoFactor: twoFactorFilter.value,
     trial: trialFilter.value,
     bindProvider: bindProviderFilter.value,
     registerRange: registerTimeRange.value,
@@ -2858,6 +2905,7 @@ const selectableEmails = computed(() => accountSelectionIndex.value.selectableEm
 const selectedEmails = computed(() => selectedAccounts.value.map(account => account.email))
 const scopedAccounts = computed(() => selectedAccounts.value.length ? selectedAccounts.value : filteredAccounts.value)
 const exportableAccounts = computed(() => scopedAccounts.value)
+const twoFactorSetupAccounts = computed(() => scopedAccounts.value.filter(account => !accountTwoFactorEnabled(account)))
 const accountActions = computed(() => buildScopedAccountActions(scopedAccounts.value, {
   canOauthAuthorize,
   canRelogin,
@@ -2921,6 +2969,16 @@ const refreshQuotaTask = computed(() => {
   return task
 })
 const refreshQuotaRunning = computed(() => !!refreshQuotaTask.value)
+const twoFactorTask = computed(() => {
+  const task = props.runningTask
+  if (!task || task.command !== 'setup-2fa') return null
+  if (!['running', 'pending'].includes(String(task.status || ''))) return null
+  return task
+})
+const twoFactorTaskRunning = computed(() => !!twoFactorTask.value)
+const twoFactorTaskEmails = computed(() => new Set(
+  (twoFactorTask.value?.params?.emails || []).map(email => String(email || '').trim().toLowerCase()),
+))
 const refreshQuotaProgress = computed(() => {
   const progress = refreshQuotaTask.value?.progress || {}
   const current = Number(progress.current || 0)
@@ -3231,6 +3289,7 @@ function clearFilters() {
   emailFilter.value = ''
   statusFilter.value = ''
   accountTypeFilter.value = ''
+  twoFactorFilter.value = ''
   trialFilter.value = ''
   bindProviderFilter.value = ''
   registerDateFilter.value = ''
@@ -3624,6 +3683,11 @@ function statusLabel(s) {
 function normalizedStatus(status) {
   const normalized = String(status || '').trim().toLowerCase()
   return ['personal', 'plus'].includes(normalized) ? 'active' : normalized
+}
+
+function accountTwoFactorEnabled(account) {
+  return account?.two_factor_enabled === true
+    || String(account?.totp_status || '').trim().toLowerCase() === 'enabled'
 }
 
 function accountTypeClass(type) {
@@ -4248,6 +4312,40 @@ async function batchUpdateExportStatus(exported) {
     exportStatusUpdating.value = false
     scheduleMessageClear(8000)
   }
+}
+
+async function submitAccountTwoFactorSetup(accounts, scopeLabel) {
+  if (twoFactorSubmitting.value || twoFactorTaskRunning.value) return
+  const emails = (accounts || [])
+    .filter(account => !accountTwoFactorEnabled(account))
+    .map(account => String(account?.email || '').trim())
+    .filter(Boolean)
+  if (!emails.length) return
+
+  twoFactorSubmitting.value = true
+  message.value = ''
+  try {
+    const result = await api.setupAccountsTwoFactor(emails)
+    message.value = `已提交${scopeLabel}2FA设置任务: ${result.task_id}，账号 ${emails.length} 个`
+    messageClass.value = 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+    emit('task-started')
+    emit('refresh')
+  } catch (error) {
+    message.value = error.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    twoFactorSubmitting.value = false
+    scheduleMessageClear(8000)
+  }
+}
+
+function setupAccountTwoFactor(account) {
+  return submitAccountTwoFactorSetup([account], `${String(account?.email || '').trim()} 的`)
+}
+
+function batchSetupAccountTwoFactor() {
+  const scope = selectedEmails.value.length ? '选中账号' : '筛选账号'
+  return submitAccountTwoFactorSetup(twoFactorSetupAccounts.value, `${scope}批量`)
 }
 
 async function batchOauthAuthorizeAccounts() {

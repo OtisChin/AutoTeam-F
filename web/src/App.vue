@@ -317,7 +317,7 @@ const startupError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
 const IDLE_POLL_INTERVAL_MS = 600000
-const ACTIVE_POLL_INTERVAL_MS = 3000
+const ACTIVE_POLL_INTERVAL_MS = 1500
 const IDLE_POLLING_ENABLED = false
 const TASK_PANEL_POSITION_KEY = 'autotoken_task_panel_position'
 const savedPage = (() => {
@@ -528,6 +528,7 @@ function taskCommandLabel(command) {
     'bind-card': '绑卡任务',
     'gopay-bind': 'GoPay 绑定',
     'login-batch': '批量OAuth授权/补登录',
+    'setup-2fa': '协议设置2FA',
     'refresh-quota': '刷新额度',
     check: '额度检测',
     rotate: '账号轮换',

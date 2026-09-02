@@ -162,6 +162,7 @@ export const api = {
   appendLoginAccountsBatch: (emails, taskId = '') => request('POST', '/accounts/login-batch/append', { emails, task_id: taskId }),
   loginMailAccountsAuthSession: (emails) => request('POST', '/mail-accounts/login-auth-session', { emails }),
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
+  setupAccountsTwoFactor: (emails) => request('POST', '/accounts/2fa/setup', { emails }),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   getAccountAccessToken: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/access-token`),
   exportAccountAccessTokens: (emails) => request('POST', '/accounts/export-access-tokens', { emails }),

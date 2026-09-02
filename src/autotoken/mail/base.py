@@ -12,10 +12,12 @@ from __future__ import annotations
 import email as email_pkg
 import html as html_lib
 import logging
+import os
 import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from email.header import decode_header, make_header
 from typing import Any
 
@@ -30,6 +32,62 @@ _VERIFICATION_CODE_PATTERNS = (
     r"(?:temporary\s+(?:openai|chatgpt)\s+login\s+code(?:\s+is)?|verification\s+code(?:\s+is)?|login\s+code(?:\s+is)?|code(?:\s+is)?|临时验证码|一次性验证码|验证码(?:为|是)?)\D{0,80}(\d{6})",
     r"(?:openai|chatgpt)?\s*(?:临时验证码|一次性验证码|验证码|验证代码|登录代码|登入代码|代码)(?:为|是|以继续)?\D{0,80}(\d{6})",
     r"\b(\d{6})\b",
+)
+
+_OTP_CODE_KEYS = (
+    "verification_code",
+    "verificationCode",
+    "verify_code",
+    "verifyCode",
+    "email_code",
+    "mail_code",
+    "otp",
+    "otp_code",
+    "code",
+)
+
+_MESSAGE_SUBJECT_KEYS = ("subject", "mail_subject", "title")
+_MESSAGE_SENDER_KEYS = ("sendEmail", "from", "fromEmail", "mail_from", "sender", "fromName", "sendName")
+_MESSAGE_BODY_KEYS = (
+    "text",
+    "plain_text",
+    "body_text",
+    "text_body",
+    "mail_text",
+    "mail_body",
+    "mail_content",
+    "content",
+    "message",
+    "body",
+    "snippet",
+    "summary",
+    "preview",
+    "bodyPreview",
+    "bodyText",
+    "html",
+    "html_body",
+    "body_html",
+    "mail_html",
+    "raw_html",
+)
+
+_NON_OTP_SUBJECT_MARKERS = (
+    "new sign-in",
+    "new sign in",
+    "new login",
+    "account activity",
+    "security alert",
+    "安全提醒",
+    "新登录",
+    "新登入",
+)
+
+_GENERIC_OTP_MARKERS = (
+    "verification code",
+    "login code",
+    "one-time code",
+    "one time code",
+    "otp",
 )
 
 
@@ -145,6 +203,235 @@ def html_to_visible_text(value: Any) -> str:
 
 def normalize_email_addr(value: Any) -> str:
     return normalized_email(value)
+
+
+def _message_values(email_data: dict, keys: tuple[str, ...]) -> list[str]:
+    """Collect compatible mail fields from the normalized item and its raw payload."""
+    if not isinstance(email_data, dict):
+        return []
+    containers = [email_data]
+    raw = email_data.get("raw")
+    if isinstance(raw, dict):
+        containers.append(raw)
+        nested_mail = raw.get("mail")
+        if isinstance(nested_mail, dict):
+            containers.append(nested_mail)
+
+    values: list[str] = []
+    for item in containers:
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, dict):
+                nested_items = [value]
+                email_address = value.get("emailAddress")
+                if isinstance(email_address, dict):
+                    nested_items.append(email_address)
+                for nested_item in nested_items:
+                    for nested_key in ("address", "email", "name"):
+                        nested = nested_item.get(nested_key)
+                        if nested is not None and str(nested).strip():
+                            values.append(str(nested).strip())
+            elif value is not None and str(value).strip():
+                values.append(str(value).strip())
+    return values
+
+
+def is_openai_otp_message(email_data: dict) -> bool:
+    """Identify OpenAI OTP mail by structured identity before localized wording.
+
+    Browser mode is deliberately irrelevant here: Roxy, Cloak and protocol
+    registration all pass provider-normalized mail dictionaries through this
+    one classifier.
+    """
+    if not isinstance(email_data, dict):
+        return False
+
+    subjects = _message_values(email_data, _MESSAGE_SUBJECT_KEYS)
+    subject_text = "\n".join(subjects).lower()
+    if any(marker in subject_text for marker in _NON_OTP_SUBJECT_MARKERS):
+        return False
+
+    if _message_values(email_data, _OTP_CODE_KEYS):
+        return True
+
+    senders = "\n".join(_message_values(email_data, _MESSAGE_SENDER_KEYS)).lower()
+    if "openai" in senders or "chatgpt" in senders:
+        return True
+
+    body = "\n".join(_message_values(email_data, _MESSAGE_BODY_KEYS)).lower()
+    identity_text = f"{subject_text}\n{body}"
+    if "openai" in identity_text or "chatgpt" in identity_text:
+        return True
+
+    return any(marker in identity_text for marker in _GENERIC_OTP_MARKERS)
+
+
+def _parse_message_timestamp(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        return timestamp / 1000 if timestamp > 10_000_000_000 else timestamp
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    if text.isdigit():
+        return _parse_message_timestamp(int(text))
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+    ):
+        try:
+            return datetime.strptime(text.replace("Z", "+0000"), fmt).timestamp()
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _message_received_at(email_data: dict) -> float:
+    timestamp_keys = (
+        "received_at",
+        "receive_time",
+        "receivedAt",
+        "create_time",
+        "createTime",
+        "date",
+        "time",
+        "timestamp",
+        "code_time",
+    )
+    for value in _message_values(email_data, timestamp_keys):
+        timestamp = _parse_message_timestamp(value)
+        if timestamp:
+            return timestamp
+    return 0.0
+
+
+def _requires_fresh_otp(email_data: dict, mail_client: Any = None) -> bool:
+    provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+    if provider in {"icloud", "generic-api", "generic_api", "genericapi"}:
+        return True
+    for value in _message_values(email_data, ("provider", "source")):
+        item_provider = value.lower()
+        if item_provider == "icloud" or item_provider.startswith("icloud_"):
+            return True
+        if item_provider in {"generic-api", "generic_api", "genericapi"} or item_provider.startswith("generic_api_"):
+            return True
+    return False
+
+
+def wait_for_openai_otp(
+    mail_client,
+    email: str,
+    *,
+    account_id: str | int | None = None,
+    timeout: int = 60,
+    issued_after: float | None = None,
+    exclude_codes: set[str] | list[str] | tuple[str, ...] | None = None,
+    strict_issued_after: bool = False,
+) -> str:
+    """Shared OpenAI email OTP polling for browser and protocol registration."""
+    target = str(email or "").strip()
+    deadline = time.time() + max(1, int(timeout or 60))
+    issued_after_ts = float(issued_after or 0)
+    excluded = {str(value or "").strip() for value in (exclude_codes or []) if str(value or "").strip()}
+    last_seen = ""
+    last_no_code_signature = ""
+    next_wait_log_at = 0.0
+    logger.info("[邮箱验证码] 等待 OpenAI 验证码: email=%s timeout=%ss", target, int(timeout or 60))
+    try:
+        initial_delay = max(0.0, float(os.environ.get("OPENAI_EMAIL_OTP_INITIAL_DELAY", "3") or "3"))
+    except (TypeError, ValueError):
+        initial_delay = 3.0
+    if initial_delay > 0:
+        time.sleep(min(initial_delay, max(0.0, deadline - time.time())))
+
+    while time.time() < deadline:
+        try:
+            try:
+                emails = mail_client.search_emails_by_recipient(target, size=10, account_id=account_id)
+            except TypeError:
+                emails = mail_client.search_emails_by_recipient(target, size=10)
+        except Exception as exc:
+            logger.warning("[邮箱验证码] 查询失败，稍后重试: %s", exc)
+            emails = []
+
+        if time.time() >= next_wait_log_at:
+            logger.info("[邮箱验证码] 正在查询: email=%s matched=%d", target, len(emails or []))
+            next_wait_log_at = time.time() + 15
+
+        email_items = [
+            item
+            for _, item in sorted(
+                enumerate(emails or []),
+                key=lambda pair: (
+                    1 if _message_received_at(pair[1]) else 0,
+                    _message_received_at(pair[1]) or -pair[0],
+                ),
+                reverse=True,
+            )
+        ]
+        for item in email_items:
+            if not isinstance(item, dict):
+                continue
+            received_at = _message_received_at(item)
+            if issued_after_ts and received_at and 86400 < (issued_after_ts - received_at):
+                continue
+            if (strict_issued_after or _requires_fresh_otp(item, mail_client)) and issued_after_ts and received_at:
+                if received_at < issued_after_ts - 5:
+                    logger.info(
+                        "[邮箱验证码] 跳过旧邮件: subject=%s received_at=%s issued_after=%s",
+                        str(item.get("subject") or "")[:80],
+                        int(received_at),
+                        int(issued_after_ts),
+                    )
+                    continue
+
+            try:
+                code = str(mail_client.extract_verification_code(item) or "").strip()
+            except Exception:
+                code = ""
+            if code:
+                if not is_openai_otp_message(item):
+                    logger.info(
+                        "[邮箱验证码] 跳过非 OpenAI 邮件中的数字: subject=%s received_at=%s",
+                        str(item.get("subject") or "")[:80],
+                        received_at or "",
+                    )
+                    continue
+                if code in excluded:
+                    logger.info("[邮箱验证码] 跳过已使用验证码: %s***len=%d", code[:1], len(code))
+                    continue
+                logger.info("[邮箱验证码] 已收到验证码: %s***len=%d", code[:1], len(code))
+                return code
+
+            raw = item.get("raw")
+            raw_keys = sorted(raw.keys())[:12] if isinstance(raw, dict) else []
+            item_keys = sorted(item.keys())[:12]
+            signature = (
+                f"{item.get('id') or item.get('message_id') or ''}|"
+                f"{item.get('subject') or ''}|{item_keys}|{raw_keys}"
+            )
+            if signature != last_no_code_signature:
+                logger.info(
+                    "[邮箱验证码] 候选邮件未解析出验证码: subject=%s received_at=%s keys=%s raw_keys=%s",
+                    str(item.get("subject") or "")[:80],
+                    received_at or "",
+                    item_keys,
+                    raw_keys,
+                )
+                last_no_code_signature = signature
+            if not last_seen:
+                last_seen = str(item.get("subject") or item.get("text") or item.get("content") or "")[:180]
+
+        time.sleep(3)
+
+    detail = f"未收到 OpenAI 邮箱验证码: {target}"
+    if last_seen:
+        detail += f"；最近邮件摘要: {last_seen}"
+    raise TimeoutError(detail)
 
 
 # ----------------------------------------------------------------------- ABC
