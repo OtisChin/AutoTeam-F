@@ -27,6 +27,10 @@ _CHATGPT_ORIGIN = "https://chatgpt.com"
 _AUTH_ORIGIN = "https://auth.openai.com"
 _MFA_ENROLL_URL = f"{_CHATGPT_ORIGIN}/backend-api/accounts/mfa/enroll"
 _MFA_ACTIVATE_URL = f"{_CHATGPT_ORIGIN}/backend-api/accounts/mfa/user/activate_enrollment"
+# NextAuth chunks oversized session JWEs into ``<name>.0``/``<name>.1``. The
+# unchunked cookie carried over from the saved auth session then shadows the
+# fresh chunked cookie, so ``/api/auth/session`` reads a stale session.
+_LEGACY_SESSION_COOKIE = "__Secure-next-auth.session-token"
 
 
 class ChatGPT2FAProtocolSetupExecutor:
@@ -264,16 +268,34 @@ class ChatGPT2FAProtocolSetupExecutor:
         _require_ok(response, "complete password reauthentication callback")
 
     def _fetch_refreshed_access_token(self, http: Any, user_agent: str) -> str:
+        token = self._read_session_access_token(http, user_agent)
+        if not token:
+            # A stale unchunked session cookie from the saved auth session can
+            # shadow the freshly chunked cookie set by the OAuth callback.
+            self._clear_legacy_session_cookie(http)
+            token = self._read_session_access_token(http, user_agent)
+        if not token:
+            raise RuntimeError("refreshed ChatGPT session did not include accessToken")
+        return token
+
+    def _read_session_access_token(self, http: Any, user_agent: str) -> str:
         response = http.get(
             f"{_CHATGPT_ORIGIN}/api/auth/session",
             headers=_chatgpt_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"),
             timeout=self.timeout,
         )
         _require_ok(response, "fetch refreshed ChatGPT session")
-        token = str(_response_json(response).get("accessToken") or "").strip()
-        if not token:
-            raise RuntimeError("refreshed ChatGPT session did not include accessToken")
-        return token
+        return str(_response_json(response).get("accessToken") or "").strip()
+
+    @staticmethod
+    def _clear_legacy_session_cookie(http: Any) -> None:
+        delete = getattr(getattr(http, "cookies", None), "delete", None)
+        if not callable(delete):
+            return
+        try:
+            delete(_LEGACY_SESSION_COOKIE)
+        except Exception:
+            pass
 
     def _enroll(
         self,
