@@ -2150,18 +2150,19 @@ def _detect_registration_trial_eligibility(
     progress_callback=None,
     timeout_seconds: float = 20.0,
 ) -> dict:
-    """注册成功后检测该账号是否有 0 元试用资格并固化到账号记录。
+    """注册成功后检测该账号是否有 Plus 0 元试用资格并固化到账号记录。
 
-    优先在注册浏览器页面里直接 fetch 订阅接口（走注册代理 + 完整 cookie/sentinel 会话，
-    与注册时看到的优惠一致）；页面不可用时回退到 HTTP 订阅查询。
-    `available_plans` 非空 或 account_check 的 eligible_offers 存在即视为可试用。
+    优先在注册浏览器页面里直接 fetch account-check 接口（走注册代理 + 完整
+    cookie/sentinel 会话，与注册时看到的优惠一致）；页面不可用时回退到 HTTP 查询。
+    只把 `eligible_promo_campaigns.plus.id == plus-1-month-free` 视为可试用。
     检测失败不阻塞注册，返回空 dict。
     """
     result = {"trial_eligible": False, "trial_checked_at": time.time()}
     try:
         from autotoken.api_routes.account_overview import (
-            normalize_chatgpt_subscription,
-            query_chatgpt_subscription,
+            CHATGPT_ACCOUNT_CHECK_PATH,
+            normalize_chatgpt_trial_eligibility,
+            query_chatgpt_account_check,
         )
 
         if not access_token or not account_id:
@@ -2173,18 +2174,33 @@ def _detect_registration_trial_eligibility(
         used_browser = False
         if page is not None:
             try:
-                query = f"?account_id={account_id}"
                 fetch_script = (
-                    "async () => {"
-                    "  const resp = await fetch('https://chatgpt.com/backend-api/subscriptions"
-                    f"{query}', {{ credentials: 'include', cache: 'no-store', "
-                    "headers: { accept: 'application/json' } });"
+                    "async (args) => {"
+                    "  const path = args.path;"
+                    "  const query = '?timezone_offset_min=' + new Date().getTimezoneOffset();"
+                    "  const resp = await fetch('https://chatgpt.com' + path + query, {"
+                    "    credentials: 'include', cache: 'no-store',"
+                    "    headers: {"
+                    "      accept: 'application/json',"
+                    "      Authorization: 'Bearer ' + args.accessToken,"
+                    "      'ChatGPT-Account-ID': args.accountId,"
+                    "      'x-openai-target-path': path,"
+                    "      'x-openai-target-route': path"
+                    "    }"
+                    "  });"
                     "  const text = await resp.text();"
                     "  let data = {}; try { data = JSON.parse(text || '{}'); } catch {}"
                     "  return { status: resp.status, data, raw: text.slice(0, 400) };"
                     "}"
                 )
-                page_result = page.evaluate(fetch_script)
+                page_result = page.evaluate(
+                    fetch_script,
+                    {
+                        "path": CHATGPT_ACCOUNT_CHECK_PATH,
+                        "accessToken": access_token,
+                        "accountId": account_id,
+                    },
+                )
                 if isinstance(page_result, dict) and int(page_result.get("status") or 0) < 400:
                     page_data = page_result.get("data")
                     if isinstance(page_data, dict):
@@ -2196,7 +2212,7 @@ def _detect_registration_trial_eligibility(
 
         if raw is None:
             try:
-                query_result = query_chatgpt_subscription(
+                query_result = query_chatgpt_account_check(
                     access_token, account_id=account_id, proxy_url=str(proxy_url or "").strip()
                 )
                 raw = query_result.get("raw") if isinstance(query_result, dict) else None
@@ -2206,20 +2222,10 @@ def _detect_registration_trial_eligibility(
 
         if not isinstance(raw, dict):
             return result
-        normalized = normalize_chatgpt_subscription(raw, account_id=account_id)
-        available_plans = normalized.get("available_plans") if isinstance(normalized, dict) else []
-        if not isinstance(available_plans, list):
-            available_plans = []
-        available_plans = [str(item) for item in available_plans if str(item or "").strip()]
-        eligible = bool(available_plans)
-        result.update(
-            {
-                "trial_eligible": eligible,
-                "trial_available_plans": available_plans,
-                "trial_checked_at": time.time(),
-                "trial_detection_source": "browser" if used_browser else "http",
-            }
-        )
+        result.update(normalize_chatgpt_trial_eligibility(raw, account_id=account_id))
+        result["trial_detection_source"] = "browser_account_check" if used_browser else "http_account_check"
+        eligible = bool(result.get("trial_eligible"))
+        available_plans = [str(item) for item in (result.get("trial_available_plans") or []) if str(item or "").strip()]
         from autotoken.storage.accounts import update_account
 
         update_account(
@@ -2227,16 +2233,31 @@ def _detect_registration_trial_eligibility(
             trial_eligible=eligible,
             trial_available_plans=available_plans,
             trial_checked_at=result["trial_checked_at"],
+            trial_detection_source=result.get("trial_detection_source") or "",
+            trial_detection_reason=result.get("trial_detection_reason") or "",
+            trial_status=result.get("trial_status") or "",
+            trial_label=result.get("trial_label") or "",
+            trial_promo_campaign_id=result.get("trial_promo_campaign_id") or "",
         )
-        logger.info("[注册] %s 试用资格检测完成: eligible=%s plans=%s", email, eligible, available_plans)
+        logger.info(
+            "[注册] %s 试用资格检测完成: eligible=%s status=%s campaign=%s",
+            email,
+            eligible,
+            result.get("trial_status") or "",
+            result.get("trial_promo_campaign_id") or "",
+        )
         if callable(progress_callback):
             try:
                 progress_callback(
                     {
                         "stage": "register_trial_detected",
                         "message": (
-                            f"账号{'可' if eligible else '不可'} 0 元试用"
-                            + (f" ({', '.join(available_plans)})" if available_plans else "")
+                            f"账号{'可' if eligible else '不可'}领取 Plus 试用"
+                            + (
+                                f" ({result.get('trial_promo_campaign_id')})"
+                                if result.get("trial_promo_campaign_id")
+                                else ""
+                            )
                         ),
                         "trial_eligible": eligible,
                         "email": email,
@@ -5294,6 +5315,28 @@ def create_account_direct(
                     )
             else:
                 last_failure_status = ""
+
+        if not success and last_failure_status == "phone_blocked":
+            failure_reason = last_failure_reason or "OpenAI 明确要求手机号验证"
+            logger.warning("[直接注册] %s 需要手机号验证，停止重试当前邮箱", email)
+            _discard_email("phone_blocked")
+            record_failure(
+                email,
+                "phone_blocked",
+                failure_reason,
+                register_attempts=register_attempts,
+                duplicate_swaps=duplicate_swaps,
+            )
+            _record_outcome("phone_blocked", reason=failure_reason, step="create_account")
+            _progress(
+                "phone_blocked",
+                f"OpenAI 要求手机号验证，已停止重试当前邮箱: {email}",
+                email=email,
+                level="warn",
+                reason=failure_reason,
+                step="create_account",
+            )
+            return None
 
         if success:
             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)

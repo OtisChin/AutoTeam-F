@@ -161,6 +161,8 @@ export const api = {
   appendLoginAccountsBatch: (emails, taskId = '') => request('POST', '/accounts/login-batch/append', { emails, task_id: taskId }),
   loginMailAccountsAuthSession: (emails) => request('POST', '/mail-accounts/login-auth-session', { emails }),
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
+  getPromoOfferCheckOptions: () => request('GET', '/accounts/promo-offer-check/options'),
+  checkPromoOffers: (payload) => request('POST', '/accounts/promo-offer-check', payload, { timeoutMs: 0 }),
   setupAccountsTwoFactor: (emails) => request('POST', '/accounts/2fa/setup', { emails }),
   getAccountTwoFactorTotp: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/2fa/totp`),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),

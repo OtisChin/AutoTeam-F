@@ -3,6 +3,7 @@
 import os
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
@@ -77,8 +78,8 @@ def create_account_refresh_quota_router(
                 STATUS_FAIL,
                 STATUS_PERSONAL,
                 STATUS_PLUS,
-                STATUS_STASHED,
                 STATUS_STANDBY,
+                STATUS_STASHED,
                 update_account,
             )
 
@@ -124,14 +125,6 @@ def create_account_refresh_quota_router(
                     return False
                 message = str(acc.get("last_bind_message") or "").strip().lower()
                 return "token_expired" in message
-
-            def _is_token_revoked_quota_failure(acc: dict | None) -> bool:
-                if not isinstance(acc, dict):
-                    return False
-                if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
-                    return False
-                message = str(acc.get("last_bind_message") or "").strip().lower()
-                return "token_revoked" in message or "invalidated oauth token" in message
 
             def _clear_quota_401_discard_marker(update_payload: dict, acc: dict | None) -> None:
                 if not isinstance(acc, dict):
@@ -219,6 +212,43 @@ def create_account_refresh_quota_router(
                 if normalized.get("active") is False and normalized.get("paid") is False:
                     return ACCOUNT_TYPE_FREE, True
                 return plan_type, True
+
+            def _trial_eligibility_update_fields(
+                access_token: str,
+                account_id: str,
+                auth_data: dict,
+                email: str,
+            ) -> dict:
+                if not access_token:
+                    return {}
+                try:
+                    from autotoken.api_routes.account_overview import (
+                        normalize_chatgpt_trial_eligibility,
+                        query_chatgpt_account_check,
+                    )
+
+                    result = query_chatgpt_account_check(
+                        access_token,
+                        account_id=account_id,
+                        device_id=str(auth_data.get("device_id") or auth_data.get("deviceId") or "").strip()
+                        or str(uuid.uuid5(uuid.NAMESPACE_DNS, f"autoteam-check-plus:{email}")),
+                    )
+                    trial = normalize_chatgpt_trial_eligibility(result.get("raw") or {}, account_id=account_id)
+                except Exception as exc:
+                    logger.debug("[刷新额度] Plus 试用资格检测失败: account_id=%s error=%s", account_id, exc)
+                    return {}
+                return {
+                    "trial_eligible": bool(trial.get("trial_eligible")),
+                    "trial_available_plans": [
+                        str(item) for item in (trial.get("trial_available_plans") or []) if str(item or "").strip()
+                    ],
+                    "trial_checked_at": trial.get("trial_checked_at") or time.time(),
+                    "trial_detection_source": "refresh_quota_account_check",
+                    "trial_detection_reason": trial.get("trial_detection_reason") or "",
+                    "trial_status": trial.get("trial_status") or "",
+                    "trial_label": trial.get("trial_label") or "",
+                    "trial_promo_campaign_id": trial.get("trial_promo_campaign_id") or "",
+                }
 
             def _quota_with_subscription_plan(info: dict | None, plan_type: str) -> dict | None:
                 if not isinstance(info, dict) or plan_type not in {
@@ -383,7 +413,6 @@ def create_account_refresh_quota_router(
                 if (
                     str(acc.get("status") or "").strip().lower() == STATUS_FAIL
                     and not _is_token_expired_quota_failure(acc)
-                    and not _is_token_revoked_quota_failure(acc)
                 ):
                     return {
                         "kind": "skipped",
@@ -480,8 +509,12 @@ def create_account_refresh_quota_router(
                             account_id=account_id,
                             info=info,
                             current_account_type=account_type,
-                        )
-                    update_payload = {"last_quota": info, "last_quota_check_at": now_ts}
+                    )
+                    update_payload = {
+                        "last_quota": info,
+                        "last_quota_check_at": now_ts,
+                        **_trial_eligibility_update_fields(access_token, account_id, auth_data, email),
+                    }
                     _apply_plan_type(
                         update_payload,
                         info,
@@ -508,11 +541,13 @@ def create_account_refresh_quota_router(
                     }
 
                 if status == "exhausted":
+                    account_id = _account_id_from_auth_data(auth_data)
                     quota_info = quota_result_quota_info(info) or {}
                     update_payload = {
                         "quota_exhausted_at": now_ts,
                         "quota_resets_at": quota_result_resets_at(info) or int(now_ts + 18000),
                         "last_quota_check_at": now_ts,
+                        **_trial_eligibility_update_fields(access_token, account_id, auth_data, email),
                     }
                     if quota_info:
                         update_payload["last_quota"] = quota_info
@@ -620,25 +655,59 @@ def create_account_refresh_quota_router(
                         or auth_error_detail_lower.startswith("token_revoked")
                         or "invalidated oauth token" in auth_error_detail_lower
                     ):
+                        auth_error_message = (
+                            f"刷新额度返回 {auth_error_detail}，账号已标记为 Fail/废弃"
+                            if auth_error_detail
+                            else "刷新额度返回 token_revoked，账号已标记为 Fail/废弃"
+                        )
+                        update_payload = {
+                            "status": STATUS_FAIL,
+                            "discarded_at": now_ts,
+                            "discarded_reason": "quota_refresh_401",
+                            "last_quota_check_at": now_ts,
+                            "last_bind_status": "failed",
+                            "last_bind_failure_stage": "auth_token_revoked",
+                            "last_bind_message": auth_error_message,
+                        }
+                        failed_item = {
+                            "kind": "failed",
+                            "email": email,
+                            "index": index,
+                            "reason": "auth_error",
+                            "attempts": attempts,
+                            "update": update_payload,
+                            "message": (
+                                f"刷新额度返回 token_revoked，已标记 Fail/废弃: {email}"
+                                if not auth_error_detail
+                                else f"刷新额度返回 {auth_error_detail}，已标记 Fail/废弃: {email}"
+                            ),
+                        }
+                        if auth_error_detail:
+                            failed_item["error_detail"] = auth_error_detail
+                        return failed_item
+                    if (
+                        auth_error_code == "auth_revoked"
+                        or auth_error_detail_lower.startswith("auth_revoked")
+                    ):
                         return {
                             "kind": "network_error",
                             "email": email,
                             "index": index,
-                            "reason": "token_revoked",
+                            "reason": "auth_revoked",
                             "attempts": attempts,
                             "update": {
                                 "status": "auth_revoked",
                                 "last_quota_check_at": now_ts,
                                 "last_bind_status": "failed",
-                                "last_bind_failure_stage": "auth_token_revoked",
+                                "last_bind_failure_stage": "auth_revoked",
                                 "last_bind_message": (
                                     f"刷新额度返回 {auth_error_detail}，账号掉授权，未标记废弃"
                                     if auth_error_detail
-                                    else "刷新额度返回 token_revoked，账号掉授权，未标记废弃"
+                                    else "刷新额度返回 auth_revoked，账号掉授权，未标记废弃"
                                 ),
                             },
                             "message": (
-                                f"刷新额度返回 token_revoked，账号掉授权，未标记废弃: {email}"
+                                f"刷新额度返回 auth_revoked，账号掉授权，未标记废弃: {email}"
                                 if not auth_error_detail
                                 else f"刷新额度返回 {auth_error_detail}，账号掉授权，未标记废弃: {email}"
                             ),

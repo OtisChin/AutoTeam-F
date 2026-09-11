@@ -49,6 +49,9 @@ ACCOUNT_SOURCE_AUTH_SESSION_STUB = "auth_session_stub"
 TOTP_STATUS_DISABLED = "disabled"
 TOTP_STATUS_ENABLED = "enabled"
 TOTP_STATUS_RECOVERY_REQUIRED = "recovery_required"
+# Fields that only exist in the private account view and are stripped by
+# ``_public_account``. Bulk writes must never silently drop them.
+_PRIVATE_ACCOUNT_FIELDS = ("totp_secret", "totp_otpauth_uri")
 _accounts_write_lock = threading.RLock()
 
 
@@ -118,6 +121,21 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("kakao_link_job_id", "")
     acc.setdefault("credentials_exported", False)
     acc.setdefault("credentials_exported_at", None)
+    acc.setdefault("trial_eligible", False)
+    acc.setdefault("trial_available_plans", [])
+    acc.setdefault("trial_checked_at", None)
+    acc.setdefault("trial_detection_source", "")
+    acc.setdefault("trial_detection_reason", "")
+    acc.setdefault("trial_status", "")
+    acc.setdefault("trial_label", "")
+    acc.setdefault("trial_promo_campaign_id", "")
+    acc.setdefault("promo_checked_at", None)
+    acc.setdefault("promo_selected_methods", [])
+    acc.setdefault("promo_payment_methods", [])
+    acc.setdefault("promo_payment_status", "")
+    acc.setdefault("promo_payment_state", "")
+    acc.setdefault("promo_payment_routes", [])
+    acc.setdefault("promo_payment_error", "")
     acc.setdefault("account_source", ACCOUNT_SOURCE_MANAGED)
     acc.setdefault("two_factor_enabled", False)
     acc.setdefault("totp_status", TOTP_STATUS_DISABLED)
@@ -222,14 +240,44 @@ def load_accounts():
         return [_row_to_account(row) for row in rows]
 
 
+def _restore_private_fields(account: dict, existing_by_email: dict[str, dict]) -> dict:
+    """Carry over private-only fields when a public account view is written back.
+
+    ``load_accounts`` returns the public view, which strips ``totp_secret`` and
+    ``totp_otpauth_uri`` via ``_public_account``. Bulk replacements through
+    ``save_accounts`` would otherwise erase every account's stored 2FA secret.
+    Only fields missing from the incoming record are restored, so callers can
+    still clear a secret by passing an explicit empty value.
+    """
+    if not isinstance(account, dict):
+        return account
+    email = _normalized_email(account.get("email"))
+    existing = existing_by_email.get(email) if email else None
+    if not existing:
+        return account
+    restored = None
+    for field in _PRIVATE_ACCOUNT_FIELDS:
+        if field not in account and existing.get(field):
+            if restored is None:
+                restored = dict(account)
+            restored[field] = existing[field]
+    return restored if restored is not None else account
+
+
 def save_accounts(accounts):
     """保存账号列表"""
     with _accounts_write_lock:
         sqlite_store.initialize(_db_path())
         with sqlite_store.connect(_db_path()) as conn:
+            existing_by_email: dict[str, dict] = {}
+            for row in conn.execute("SELECT * FROM accounts").fetchall():
+                existing = _row_to_account(row, include_private=True)
+                email = _normalized_email(existing.get("email"))
+                if email:
+                    existing_by_email[email] = existing
             conn.execute("DELETE FROM accounts")
             for account in accounts or []:
-                _upsert_account(conn, account)
+                _upsert_account(conn, _restore_private_fields(account, existing_by_email))
     _invalidate_payment_account_caches()
 
 
@@ -280,7 +328,9 @@ def find_account(accounts, email):
     return None
 
 
-def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, mail_provider=None, mailapi_url=None):
+def add_account(
+    email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, mail_provider=None, mailapi_url=None
+):
     """添加新账号。seat_type 取值见 SEAT_CHATGPT / SEAT_CODEX / SEAT_UNKNOWN。"""
     normalized = _normalized_email(email)
     if not normalized:
@@ -370,7 +420,9 @@ def ensure_session_only_account(email):
                     # A stale stub marker must not downgrade an account that has
                     # already been upgraded or has a real CPA/Codex auth file.
                     account_type = str(existing.get("account_type") or "").strip().lower()
-                    if account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM} or existing.get("auth_file"):
+                    if account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM} or existing.get(
+                        "auth_file"
+                    ):
                         desired = {
                             "status": STATUS_ACTIVE,
                             "account_source": ACCOUNT_SOURCE_MANAGED,
@@ -449,11 +501,7 @@ def reconcile_auth_session_accounts(
         for raw_email, path in (indexed_auth_files or {}).items()
         if (email := _normalized_email(raw_email))
     }
-    gopay = {
-        email
-        for value in (gopay_success_emails or set())
-        if (email := _normalized_email(value))
-    }
+    gopay = {email for value in (gopay_success_emails or set()) if (email := _normalized_email(value))}
     reconciled = {}
     changed = False
 
@@ -512,8 +560,7 @@ def reconcile_auth_session_accounts(
                     _upsert_account(conn, account)
                     changed = True
                 elif (
-                    str(account.get("account_source") or "").strip().lower()
-                    == ACCOUNT_SOURCE_AUTH_SESSION_STUB
+                    str(account.get("account_source") or "").strip().lower() == ACCOUNT_SOURCE_AUTH_SESSION_STUB
                     or str(account.get("status") or "").strip().lower() == STATUS_SESSION_ONLY
                 ):
                     account_type = str(account.get("account_type") or "").strip().lower()
@@ -561,12 +608,7 @@ def reconcile_auth_session_accounts(
                     f"SELECT * FROM accounts WHERE email IN ({placeholders})",
                     chunk,
                 ).fetchall()
-                persisted.update(
-                    {
-                        str(row["email"] or "").strip().lower(): _row_to_account(row)
-                        for row in rows
-                    }
-                )
+                persisted.update({str(row["email"] or "").strip().lower(): _row_to_account(row) for row in rows})
             reconciled = {email: persisted[email] for email in targets if email in persisted}
 
     if changed:
@@ -655,10 +697,7 @@ def update_accounts_export_status_batch(emails, *, exported: bool, exported_at: 
                     chunk,
                 ).fetchall()
                 existing.update(
-                    {
-                        _normalized_email(row["email"]): _row_to_account(row, include_private=True)
-                        for row in rows
-                    }
+                    {_normalized_email(row["email"]): _row_to_account(row, include_private=True) for row in rows}
                 )
 
             for email in targets:
@@ -693,12 +732,7 @@ def update_accounts_export_status_batch(emails, *, exported: bool, exported_at: 
                     f"SELECT * FROM accounts WHERE email IN ({placeholders})",
                     chunk,
                 ).fetchall()
-                persisted.update(
-                    {
-                        _normalized_email(row["email"]): _row_to_account(row)
-                        for row in rows
-                    }
-                )
+                persisted.update({_normalized_email(row["email"]): _row_to_account(row) for row in rows})
 
     if updated_emails:
         _invalidate_payment_account_caches()
@@ -789,6 +823,7 @@ def get_next_reusable_account():
     if standby:
         return standby[0]
     return None
+
 
 def save_totp_metadata(
     email: str,

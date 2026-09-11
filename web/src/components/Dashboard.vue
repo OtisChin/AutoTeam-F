@@ -151,6 +151,15 @@
             {{ refreshQuotaButtonLabel }}
           </button>
           <button
+            @click="openPromoOfferCheck"
+            :disabled="promoOfferSubmitting || promoOfferRunning || !promoOfferAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="promoOfferSubmitting || promoOfferRunning || !promoOfferAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+            {{ promoOfferButtonLabel }}
+          </button>
+          <button
             v-if="selectedEmails.length"
             @click="openBatchAccountEditor"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -987,16 +996,37 @@
                 </div>
               </td>
               <td class="px-4 py-3">
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                  :class="accountTypeClass(acc.account_type)">
-                  {{ accountTypeLabel(acc.account_type) }}
-                </span>
-                <span
-                  v-if="acc.trial_eligible"
-                  class="ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
-                  title="注册时检测到该账号可 0 元试用（available_plans 非空）">
-                  可试用
-                </span>
+                <div class="inline-flex flex-col items-start gap-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                      :class="accountTypeClass(acc.account_type)">
+                      {{ accountTypeLabel(acc.account_type) }}
+                    </span>
+                    <span
+                      v-if="acc.trial_eligible"
+                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                      title="检测到该账号可领 Plus 试用">
+                      可试用
+                    </span>
+                  </div>
+                  <div
+                    v-if="acc.trial_eligible && promoPaymentMethodLabels(acc).length"
+                    class="flex flex-wrap items-center gap-1"
+                    :title="promoPaymentTitle(acc)">
+                    <span
+                      v-for="method in promoPaymentMethodLabels(acc)"
+                      :key="`${acc.email || ''}-${method}`"
+                      class="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+                      :class="promoPaymentMethodClass(method)">
+                      <span
+                        aria-hidden="true"
+                        class="inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-current/15 px-1 text-[8px] font-bold leading-none">
+                        {{ promoPaymentMethodIcon(method) }}
+                      </span>
+                      {{ promoPaymentMethodDisplayName(method) }}
+                    </span>
+                  </div>
+                </div>
               </td>
               <td class="px-4 py-3">
                 <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium"
@@ -1680,6 +1710,59 @@ Pro2x-0906@nbclas.com----EaD5zylT23wAJv----MSRVASZAW32OYTLQOUXK625IXPCMKPAW"
         </div>
       </AccessibleModal>
 
+      <!-- 查优惠弹窗 -->
+      <AccessibleModal v-if="promoOfferOpen" label="查优惠" @close="closePromoOfferCheck">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg overflow-hidden">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-start justify-between gap-3">
+            <div>
+              <h3 class="text-white font-semibold">查优惠</h3>
+              <div class="text-xs text-gray-500 mt-0.5">
+                {{ selectedEmails.length ? `将检测 ${promoOfferAccounts.length} 个选中账号` : `将检测 ${promoOfferAccounts.length} 个筛选账号` }}
+              </div>
+            </div>
+            <button type="button" aria-label="关闭查优惠" @click="closePromoOfferCheck" class="text-gray-400 hover:text-white text-lg">&times;</button>
+          </div>
+          <div class="p-4 space-y-4">
+            <div class="text-xs text-gray-400 leading-relaxed rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+              会按所选支付方式自动切换国家代理；每个账号先检测试用资格，有“可领 Plus 试用”后再检测支付方式。
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <label
+                v-for="option in promoPaymentOptions"
+                :key="option.value"
+                class="flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200 hover:border-emerald-500/40">
+                <input
+                  type="checkbox"
+                  class="accent-emerald-500"
+                  :checked="promoOfferSelectedMethods.includes(option.value)"
+                  @change="togglePromoOfferMethod(option.value)" />
+                <span class="font-mono text-xs">{{ option.label }}</span>
+                <span class="text-[11px] text-gray-500">{{ option.route }}</span>
+              </label>
+            </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-xs text-gray-500 leading-relaxed">
+              代理来源优先复用“OAuth配置”中的单条代理/代理池/API，并按方式改成对应国家；未启用 OAuth 代理时默认走 cliproxy 按国家取代理。
+            </div>
+          </div>
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+            <button
+              @click="closePromoOfferCheck"
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              取消
+            </button>
+            <button
+              @click="submitPromoOfferCheck"
+              :disabled="promoOfferSubmitting || promoOfferRunning || !promoOfferAccounts.length || !promoOfferSelectedMethods.length"
+              class="px-4 py-2 text-sm rounded-lg border transition"
+              :class="promoOfferSubmitting || promoOfferRunning || !promoOfferAccounts.length || !promoOfferSelectedMethods.length
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'">
+              {{ promoOfferSubmitting ? '提交中...' : '开始检测' }}
+            </button>
+          </div>
+        </div>
+      </AccessibleModal>
+
       <!-- 账密导出弹窗 -->
       <AccessibleModal v-if="credentialExportOpen" label="导出账密 TXT" @close="closeCredentialExport">
         <div class="credential-export-panel bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden">
@@ -1838,6 +1921,14 @@ const dashboardTabs = [
   { value: 'chatgpt', label: 'ChatGPT' },
   { value: 'kiro', label: 'Kiro' },
 ]
+const promoPaymentOptions = [
+  { value: 'paypal', label: 'paypal', route: 'US' },
+  { value: 'momo', label: 'momo', route: 'VN' },
+  { value: 'gcash', label: 'gcash', route: 'PH' },
+  { value: 'grabpay', label: 'grabpay', route: 'SG' },
+  { value: 'kakao_pay', label: 'kakao_pay', route: 'KR' },
+  { value: 'gopay', label: 'gopay', route: 'ID' },
+]
 const ACCOUNT_HUB_SYNC_MAX_EMAILS = 1000
 const ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1000
 const DEFAULT_ACCOUNT_PAGE_SIZE = 50
@@ -1970,6 +2061,11 @@ const twoFactorTotpRequestId = ref(0)
 let twoFactorPendingClearTimer = null
 const batchReloggingIn = ref(false)
 const quotaRefreshing = ref(false)
+const promoOfferOpen = ref(false)
+const promoOfferSubmitting = ref(false)
+const promoOfferSelectedMethods = ref(['paypal', 'momo', 'gcash', 'grabpay', 'kakao_pay', 'gopay'])
+const pendingPromoOfferTaskId = ref('')
+const lastPromoOfferTaskId = ref('')
 const invalidDeleting = ref(false)
 const oauthConfigOpen = ref(false)
 const oauthConfigTab = ref('proxy')
@@ -2987,6 +3083,43 @@ const refreshQuotaTask = computed(() => {
   return task
 })
 const refreshQuotaRunning = computed(() => !!refreshQuotaTask.value)
+const promoOfferAccounts = computed(() => refreshableQuotaAccounts.value)
+function isActivePromoOfferTask(task) {
+  return task?.command === 'promo-offer-check'
+    && ['running', 'pending'].includes(String(task.status || ''))
+}
+const promoOfferTask = computed(() => {
+  const activeTasks = Array.isArray(props.tasks) ? props.tasks : []
+  const task = activeTasks.find(isActivePromoOfferTask)
+  if (task) return task
+  return isActivePromoOfferTask(props.runningTask) ? props.runningTask : null
+})
+const promoOfferRunning = computed(() => !!promoOfferTask.value)
+const promoOfferProgress = computed(() => {
+  const progress = promoOfferTask.value?.progress || {}
+  const current = Number(progress.current || 0)
+  const total = Number(progress.total || promoOfferTask.value?.result?.total || promoOfferAccounts.value.length || 0)
+  return {
+    current: Number.isFinite(current) ? current : 0,
+    total: Number.isFinite(total) ? total : 0,
+  }
+})
+const promoOfferButtonLabel = computed(() => {
+  if (promoOfferRunning.value) {
+    const { current, total } = promoOfferProgress.value
+    return total > 0 ? `查优惠中 (${current}/${total})` : '查优惠中...'
+  }
+  if (promoOfferSubmitting.value) return '提交中...'
+  return selectedEmails.value.length
+    ? `查选中优惠 (${promoOfferAccounts.value.length})`
+    : `查优惠 (${promoOfferAccounts.value.length})`
+})
+const promoOfferResultTask = computed(() =>
+  (Array.isArray(props.tasks) ? props.tasks : []).find(task => {
+    if (task?.command !== 'promo-offer-check') return false
+    return !['running', 'pending'].includes(String(task?.status || ''))
+  }) || null
+)
 function isActiveTwoFactorTask(task) {
   return task?.command === 'setup-2fa'
     && ['running', 'pending'].includes(String(task.status || ''))
@@ -3256,6 +3389,69 @@ watch(
       () => !refreshQuotaRunning.value && taskId === lastRefreshQuotaTaskId.value,
     )
   }
+)
+
+function promoOfferResultCount(result, key) {
+  const value = result?.[key]
+  if (Array.isArray(value)) return value.length
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+function formatPromoOfferResultSummary(task) {
+  const result = task?.result || {}
+  const progress = task?.progress || {}
+  const total = Number(result.total ?? progress.total ?? 0)
+  const eligible = promoOfferResultCount(result, 'eligible') || Number(progress.eligible || 0)
+  const ineligible = promoOfferResultCount(result, 'ineligible') || Number(progress.ineligible || 0)
+  const paymentAvailable = promoOfferResultCount(result, 'payment_available') || Number(progress.payment_available || 0)
+  const failed = promoOfferResultCount(result, 'failed') || Number(progress.failed || 0)
+  const missing = promoOfferResultCount(result, 'missing')
+  const totalText = Number.isFinite(total) && total > 0 ? `，共 ${total} 个` : ''
+  return `查优惠完成${totalText}: 可试用 ${Number.isFinite(eligible) ? eligible : 0}，支付方式命中 ${Number.isFinite(paymentAvailable) ? paymentAvailable : 0}，不可试用 ${Number.isFinite(ineligible) ? ineligible : 0}，失败 ${Number.isFinite(failed) ? failed : 0}${missing ? `，不存在 ${missing}` : ''}`
+}
+
+watch(
+  promoOfferTask,
+  (task) => {
+    if (!task) return
+    const progress = task.progress || {}
+    const current = Number(progress.current || 0)
+    const total = Number(progress.total || task.result?.total || 0)
+    const eligible = Number(progress.eligible || 0)
+    const paymentAvailable = Number(progress.payment_available || 0)
+    const failed = Number(progress.failed || 0)
+    const progressText = Number.isFinite(total) && total > 0 ? `${Number.isFinite(current) ? current : 0}/${total}` : '进行中'
+    message.value = `查优惠中 (${progressText}): 可试用 ${Number.isFinite(eligible) ? eligible : 0}，支付方式命中 ${Number.isFinite(paymentAvailable) ? paymentAvailable : 0}，失败 ${Number.isFinite(failed) ? failed : 0}`
+    messageClass.value = 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+  },
+  { deep: true },
+)
+
+watch(
+  promoOfferResultTask,
+  (task) => {
+    if (!task || task.command !== 'promo-offer-check') return
+    const taskId = String(task.task_id || '')
+    if (!pendingPromoOfferTaskId.value) {
+      if (taskId) lastPromoOfferTaskId.value = taskId
+      return
+    }
+    if (pendingPromoOfferTaskId.value && taskId !== pendingPromoOfferTaskId.value) return
+    if (taskId && taskId === lastPromoOfferTaskId.value) return
+    lastPromoOfferTaskId.value = taskId
+    if (String(task.status || '') === 'failed') {
+      message.value = `查优惠失败: ${task.error || task.result?.message || taskId || '后台任务失败'}`
+      messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+    } else {
+      message.value = formatPromoOfferResultSummary(task)
+      messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+      emit('refresh')
+    }
+    pendingPromoOfferTaskId.value = ''
+    scheduleMessageClear(15000, () => !promoOfferRunning.value && taskId === lastPromoOfferTaskId.value)
+  },
+  { deep: true },
 )
 const allSelectableChecked = computed(() =>
   selectableEmails.value.length > 0 && selectedEmails.value.length === selectableEmails.value.length
@@ -4676,6 +4872,149 @@ async function batchReloginAccounts() {
     batchReloggingIn.value = false
     scheduleMessageClear(8000)
   }
+}
+
+function togglePromoOfferMethod(value) {
+  const method = String(value || '').trim()
+  if (!method) return
+  const current = new Set(promoOfferSelectedMethods.value)
+  if (current.has(method)) current.delete(method)
+  else current.add(method)
+  promoOfferSelectedMethods.value = promoPaymentOptions
+    .map(option => option.value)
+    .filter(option => current.has(option))
+}
+
+function openPromoOfferCheck() {
+  if (!promoOfferAccounts.value.length) return
+  promoOfferOpen.value = true
+}
+
+function closePromoOfferCheck() {
+  if (promoOfferSubmitting.value) return
+  promoOfferOpen.value = false
+}
+
+function buildPromoOfferProxyPayload() {
+  if (!oauthProxyEnabled.value) {
+    return { proxy_api_enabled: true, proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy' }
+  }
+  if (oauthProxyMode.value === 'single') {
+    return {
+      proxy_api_enabled: false,
+      ...(oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}),
+      proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
+    }
+  }
+  if (oauthProxyMode.value === 'pool') {
+    return {
+      proxy_api_enabled: false,
+      ...(oauthProxyPoolText.value ? { proxy_pool_text: oauthProxyPoolText.value } : {}),
+      proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
+    }
+  }
+  return {
+    proxy_api_enabled: true,
+    proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
+    ...(oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}),
+  }
+}
+
+async function submitPromoOfferCheck() {
+  const emails = promoOfferAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (promoOfferSubmitting.value || promoOfferRunning.value || !emails.length || !promoOfferSelectedMethods.value.length) return
+  promoOfferSubmitting.value = true
+  message.value = ''
+  try {
+    const result = await api.checkPromoOffers({
+      emails,
+      methods: promoOfferSelectedMethods.value,
+      concurrency: 4,
+      verify_proxy_country: true,
+      ...buildPromoOfferProxyPayload(),
+    })
+    pendingPromoOfferTaskId.value = String(result.task_id || '')
+    const scope = selectedEmails.value.length ? '选中' : '筛选'
+    message.value = `已提交查${scope}优惠任务: ${result.task_id}，账号 ${emails.length} 个，方式 ${promoOfferSelectedMethods.value.join(' / ')}`
+    messageClass.value = 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+    promoOfferOpen.value = false
+    emit('task-started')
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    promoOfferSubmitting.value = false
+    scheduleMessageClear(8000, () => !pendingPromoOfferTaskId.value && !promoOfferRunning.value)
+  }
+}
+
+function promoPaymentMethodLabels(account) {
+  const methods = Array.isArray(account?.promo_payment_methods) ? account.promo_payment_methods : []
+  const seen = new Set()
+  return methods
+    .map(item => promoPaymentMethodKey(item))
+    .filter((method) => {
+      if (!method || seen.has(method)) return false
+      seen.add(method)
+      return true
+    })
+}
+
+function promoPaymentMethodKey(method) {
+  const key = String(method || '').trim().toLowerCase().replace(/[-\s]+/g, '_')
+  return {
+    kakao: 'kakao_pay',
+    go_pay: 'gopay',
+    grab_pay: 'grabpay',
+  }[key] || key
+}
+
+function promoPaymentMethodDisplayName(method) {
+  const key = promoPaymentMethodKey(method)
+  return {
+    paypal: 'PayPal',
+    momo: 'Momo',
+    gcash: 'GCash',
+    grabpay: 'GrabPay',
+    kakao_pay: 'Kakao Pay',
+    gopay: 'GoPay',
+  }[key] || String(method || '').trim()
+}
+
+function promoPaymentMethodIcon(method) {
+  const key = promoPaymentMethodKey(method)
+  return {
+    paypal: 'P',
+    momo: 'M',
+    gcash: 'G',
+    grabpay: 'Grab',
+    kakao_pay: 'K',
+    gopay: 'Go',
+  }[key] || 'Pay'
+}
+
+function promoPaymentMethodClass(method) {
+  const key = promoPaymentMethodKey(method)
+  return {
+    paypal: 'border-blue-500/25 bg-blue-500/10 text-blue-300',
+    momo: 'border-pink-500/25 bg-pink-500/10 text-pink-300',
+    gcash: 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300',
+    grabpay: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300',
+    kakao_pay: 'border-yellow-500/25 bg-yellow-500/10 text-yellow-300',
+    gopay: 'border-indigo-500/25 bg-indigo-500/10 text-indigo-300',
+  }[key] || 'border-sky-500/25 bg-sky-500/10 text-sky-300'
+}
+
+function promoPaymentTitle(account) {
+  const methods = promoPaymentMethodLabels(account)
+  const routes = Array.isArray(account?.promo_payment_routes) ? account.promo_payment_routes : []
+  const routeText = routes
+    .filter(route => route?.status === 'available')
+    .map(route => `${route.method || ''}/${route.country || ''}`.replace(/\/$/, ''))
+    .filter(Boolean)
+    .join('，')
+  return `优惠支付方式: ${methods.join(' / ')}${routeText ? `；线路 ${routeText}` : ''}`
 }
 
 async function refreshAllQuota() {

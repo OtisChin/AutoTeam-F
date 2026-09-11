@@ -307,11 +307,14 @@ func (a *registrationAttempt) runFinalAuthPhase(deviceID, code string) (map[stri
 	a.progress.Add("otp_verified", "email OTP verified", nil)
 	createToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "create_account", a.metadata)
 	if err != nil {
-		return nil, a.authFailure(err, "create_account", "phone_blocked", false)
+		return nil, a.authFailure(err, "create_account", "register_failed", true)
 	}
 	createStep, err := a.api.CreateAccount(a.ctx, createToken, "Alex Chen", "1993-01-01")
 	if err != nil {
-		return nil, a.authFailure(err, "create_account", "phone_blocked", false)
+		return nil, a.authFailure(err, "create_account", "register_failed", true)
+	}
+	if createStep.RequiresPhoneVerification() {
+		return nil, a.failure("phone_blocked", errors.New("phone verification required"), "create_account", false)
 	}
 	if err := a.api.FollowContinue(a.ctx, createStep.ContinueURL); err != nil {
 		return nil, a.authFailure(err, "create_account_redirect", "register_failed", false)
@@ -357,6 +360,8 @@ func (e *HTTPRegisterEngine) sentinelToken(ctx context.Context, client *http.Cli
 
 func authFailure(email string, err error, step, fallbackStatus string, fallbackRetryable bool, events []model.Event, metadata map[string]string) model.RegisterResponse {
 	switch {
+	case errors.Is(err, openai.ErrPhoneRequired):
+		return fail(email, "phone_blocked", err.Error(), step, false, events, metadata)
 	case errors.Is(err, openai.ErrChallengeUnavailable):
 		return fail(email, "challenge_unavailable", err.Error(), step, false, events, metadata)
 	case errors.Is(err, openai.ErrInvalidAuthState):

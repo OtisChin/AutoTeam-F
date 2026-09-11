@@ -16,7 +16,10 @@ import (
 	"autoteam-f/protocol-register/internal/fingerprint"
 )
 
-var ErrInvalidAuthState = errors.New("invalid auth state")
+var (
+	ErrInvalidAuthState = errors.New("invalid auth state")
+	ErrPhoneRequired    = errors.New("phone verification required")
+)
 
 const maxJSONResponseBytes = 1 << 20
 
@@ -54,13 +57,25 @@ func (r authStepResponse) createAccountStep() (AuthStep, error) {
 		ContinueURL:           strings.TrimSpace(r.ContinueURL),
 		EmailVerificationMode: strings.TrimSpace(r.Page.Payload.EmailVerificationMode),
 	}
-	if step.PageType != "" && step.PageType != "external_url" {
+	if step.PageType != "" && step.PageType != "external_url" && step.PageType != "add_phone" {
 		return AuthStep{}, fmt.Errorf("%w: unsupported create-account page", ErrInvalidAuthState)
 	}
 	if !validContinueURL(step.ContinueURL) {
 		return AuthStep{}, fmt.Errorf("%w: continuation missing or invalid", ErrInvalidAuthState)
 	}
 	return step, nil
+}
+
+func (s AuthStep) RequiresPhoneVerification() bool {
+	if strings.EqualFold(strings.TrimSpace(s.PageType), "add_phone") {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(s.ContinueURL))
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(strings.ToLower(parsed.Path), "/")
+	return path == "/add-phone" || path == "/verify-phone" || path == "/phone-verification"
 }
 
 type Client struct {
@@ -265,12 +280,15 @@ func (c *Client) do(ctx context.Context, method, targetURL string, body io.Reade
 	if contentTypeErr != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
 		return ErrInvalidAuthState
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %d", method, req.URL.Path, resp.StatusCode)
-	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJSONResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("%s response read failed", method)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if len(raw) <= maxJSONResponseBytes && hasStructuredPhoneRequirement(raw) {
+			return ErrPhoneRequired
+		}
+		return fmt.Errorf("%s %s: HTTP %d", method, req.URL.Path, resp.StatusCode)
 	}
 	if len(raw) > maxJSONResponseBytes {
 		return fmt.Errorf("%w: JSON response too large", ErrInvalidAuthState)
@@ -286,6 +304,26 @@ func (c *Client) do(ctx context.Context, method, targetURL string, body io.Reade
 		return fmt.Errorf("%w: JSON response has trailing data", ErrInvalidAuthState)
 	}
 	return nil
+}
+
+func hasStructuredPhoneRequirement(raw []byte) bool {
+	var payload struct {
+		Code  string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return false
+	}
+	for _, value := range []string{payload.Code, payload.Error.Code, payload.Error.Type} {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "phone_required", "phone_verification_required", "add_phone":
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) chatGPTAPIHeaders(referer string) http.Header {

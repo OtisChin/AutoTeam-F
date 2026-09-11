@@ -256,6 +256,16 @@ const largeAccounts = Array.from({ length: LARGE_ACCOUNT_COUNT }, (_, index) => 
   account_type: index % 3 === 0 ? 'plus' : 'free',
   seat_type: index % 3 === 0 ? 'plus' : 'free',
   trial_eligible: index % 7 === 0,
+  promo_checked_at: localDaySeconds + index,
+  promo_selected_methods: ['paypal', 'momo', 'gcash', 'grabpay', 'kakao_pay', 'gopay'],
+  promo_payment_methods: index % 7 === 0 ? ['momo', 'gcash'] : [],
+  promo_payment_status: index % 7 === 0 ? 'available' : '',
+  promo_payment_state: index % 7 === 0 ? 'payment_methods_available' : '',
+  promo_payment_routes: index % 7 === 0 ? [
+    { method: 'momo', country: 'VN', status: 'available' },
+    { method: 'gcash', country: 'PH', status: 'available' },
+  ] : [],
+  promo_payment_error: '',
   two_factor_enabled: index % 8 === 0,
   totp_status: index % 8 === 0 ? 'enabled' : 'disabled',
   is_main_account: index === 0,
@@ -322,7 +332,7 @@ const largeAccounts = Array.from({ length: LARGE_ACCOUNT_COUNT }, (_, index) => 
   },
 }))
 const compactFields = Object.keys(largeAccounts[0])
-assert.equal(compactFields.length, 46, 'the 20k benchmark must cover the full production Dashboard DTO field set')
+assert.equal(compactFields.length, 53, 'the 20k benchmark must cover the full production Dashboard DTO field set')
 const accountOverviewSource = readFileSync(accountOverviewPath, 'utf8')
 function pythonStringTuple(name) {
   const body = accountOverviewSource.match(new RegExp(`${name}\\s*=\\s*\\(([\\s\\S]*?)\\n\\)`))?.[1] || ''

@@ -38,6 +38,7 @@ from autotoken.api_routes.account_login import (
 )
 from autotoken.api_routes.account_management import create_account_management_router
 from autotoken.api_routes.account_overview import create_account_overview_router
+from autotoken.api_routes.account_promo_offer import create_account_promo_offer_router
 from autotoken.api_routes.account_refresh_quota import create_account_refresh_quota_router
 from autotoken.api_routes.account_register_task import (
     ManualRegisterParams as _ManualRegisterParams,
@@ -3151,6 +3152,19 @@ _account_refresh_quota_router = create_account_refresh_quota_router(
     logger=logger,
 )
 app.include_router(_account_refresh_quota_router)
+
+
+_account_promo_offer_router = create_account_promo_offer_router(
+    start_task=lambda *args, **kwargs: _start_task(*args, **kwargs),
+    normalize_email=_normalized_email,
+    is_main_account_email=_is_main_account_email,
+    resolve_status_auth_file=lambda account: _resolve_status_auth_file(account),
+    append_task_progress=lambda task_id, progress: _append_task_progress(task_id, progress),
+    logger=logger,
+)
+app.include_router(_account_promo_offer_router)
+
+
 _account_refresh_quota_endpoints = {
     route.endpoint.__name__: route.endpoint for route in _account_refresh_quota_router.routes
 }

@@ -2064,6 +2064,16 @@ class AuthFlow:
         text = str(exc or "").lower()
         return "invalid_state" in text or "sign-in session is no longer valid" in text
 
+    @staticmethod
+    def _is_account_deactivated_error(exc: object) -> bool:
+        text = str(exc or "").lower()
+        return (
+            "account_deactivated" in text
+            or "account deactivated" in text
+            or "account is deactivated" in text
+            or "deleted or deactivated" in text
+        )
+
     def _reset_authorize_http_session(self, reason: str = "") -> None:
         """Start over with a clean cookie jar after auth.openai.com invalid_state."""
         if reason:
@@ -3818,6 +3828,9 @@ class AuthFlow:
                     continue_url = ""
                     page_type = ""
                     mode = ""
+                    if self._is_account_deactivated_error(e):
+                        logger.warning("login screen_hint 探测返回账号停用/删除，终止补登录: %s", e)
+                        raise
                     if self._is_invalid_state_error(e) and auth_session_only and attempt < login_probe_attempts - 1:
                         logger.warning(
                             "login screen_hint 探测状态已失效，重建干净会话后重试 login 探测: %s/%s: %s",

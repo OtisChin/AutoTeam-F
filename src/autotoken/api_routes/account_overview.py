@@ -21,6 +21,7 @@ CHATGPT_ACCOUNT_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 CHATGPT_ACCOUNT_CHECK_URL = f"https://chatgpt.com{CHATGPT_ACCOUNT_CHECK_PATH}"
 CHATGPT_ACCOUNT_CHECK_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_ACCOUNT_CHECK_PATH}"
 CHATGPT_SUBSCRIPTION_MAX_ATTEMPTS = 3
+PLUS_TRIAL_PROMO_CAMPAIGN_ID = "plus-1-month-free"
 DASHBOARD_GZIP_MINIMUM_SIZE = 1024
 DASHBOARD_GZIP_COMPRESSLEVEL = 5
 DASHBOARD_CACHE_MAX_AGE_SECONDS = 30.0
@@ -34,6 +35,13 @@ DASHBOARD_ACCOUNT_FIELDS = (
     "account_type",
     "seat_type",
     "trial_eligible",
+    "promo_checked_at",
+    "promo_selected_methods",
+    "promo_payment_methods",
+    "promo_payment_status",
+    "promo_payment_state",
+    "promo_payment_routes",
+    "promo_payment_error",
     "two_factor_enabled",
     "totp_status",
     "is_main_account",
@@ -539,6 +547,80 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
     }
 
 
+def _account_check_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(raw.get("account_check"), dict):
+        return raw.get("account_check") or {}
+    return raw
+
+
+def _plus_trial_campaign_id(info: dict[str, Any]) -> str:
+    campaigns = info.get("eligible_promo_campaigns")
+    if not isinstance(campaigns, dict):
+        return ""
+    plus = campaigns.get("plus")
+    if isinstance(plus, dict):
+        return str(plus.get("id") or plus.get("promo_campaign_id") or "").strip()
+    if isinstance(plus, str):
+        return plus.strip()
+    return ""
+
+
+def normalize_chatgpt_trial_eligibility(raw: dict[str, Any], account_id: str = "") -> dict[str, Any]:
+    """Return the Plus trial eligibility state from ChatGPT account-check data.
+
+    This deliberately checks the promotional campaign signal rather than generic
+    upgrade offers: `eligible_promo_campaigns.plus.id == plus-1-month-free`.
+    Generic `eligible_offers`/`available_plans` only means Plus can be bought,
+    not that the account can claim the free trial.
+    """
+
+    account_check_raw = _account_check_payload(raw) if isinstance(raw, dict) else {}
+    info = _first_chatgpt_account(account_check_raw, account_id=account_id) if account_check_raw else {}
+    account = info.get("account") if isinstance(info.get("account"), dict) else {}
+    entitlement = info.get("entitlement") if isinstance(info.get("entitlement"), dict) else {}
+    plan = str(account.get("plan_type") or "").strip().lower()
+    has_active_subscription = _truthy(entitlement.get("has_active_subscription"))
+    campaign_id = _plus_trial_campaign_id(info)
+    checked_at = time.time()
+
+    if _truthy(account.get("is_deactivated")):
+        return {
+            "trial_eligible": False,
+            "trial_available_plans": [],
+            "trial_checked_at": checked_at,
+            "trial_detection_source": "account_check",
+            "trial_detection_reason": "account_deactivated",
+            "trial_status": "banned",
+            "trial_label": "封号",
+            "trial_promo_campaign_id": campaign_id,
+        }
+    if plan == "plus" or has_active_subscription:
+        return {
+            "trial_eligible": False,
+            "trial_available_plans": [],
+            "trial_checked_at": checked_at,
+            "trial_detection_source": "account_check",
+            "trial_detection_reason": "active_subscription",
+            "trial_status": "plus_active",
+            "trial_label": "Plus生效中",
+            "trial_promo_campaign_id": campaign_id,
+        }
+
+    eligible = campaign_id == PLUS_TRIAL_PROMO_CAMPAIGN_ID
+    return {
+        "trial_eligible": eligible,
+        "trial_available_plans": [campaign_id] if eligible else [],
+        "trial_checked_at": checked_at,
+        "trial_detection_source": "account_check",
+        "trial_detection_reason": (
+            "eligible_promo_campaigns.plus" if eligible else "missing_plus_trial_promo_campaign"
+        ),
+        "trial_status": "plus_eligible" if eligible else "free",
+        "trial_label": "可领Plus试用" if eligible else "Free",
+        "trial_promo_campaign_id": campaign_id,
+    }
+
+
 def _browser_timezone_offset_min() -> int:
     import time
 
@@ -587,6 +669,52 @@ def _warmup_chatgpt_subscription_session(session: Any) -> None:
             session.get(url, headers=headers, timeout=10)
         except Exception:
             continue
+
+
+def query_chatgpt_account_check(
+    access_token: str,
+    account_id: str = "",
+    proxy_url: str = "",
+    device_id: str = "",
+) -> dict[str, Any]:
+    session = _new_chatgpt_subscription_session(access_token, proxy_url=proxy_url)
+    try:
+        query = f"?timezone_offset_min={_browser_timezone_offset_min()}"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "x-openai-target-path": CHATGPT_ACCOUNT_CHECK_PATH,
+            "x-openai-target-route": CHATGPT_ACCOUNT_CHECK_PATH,
+            "Accept": "application/json",
+        }
+        if str(account_id or "").strip():
+            headers["ChatGPT-Account-ID"] = str(account_id or "").strip()
+        if str(device_id or "").strip():
+            headers["OAI-Device-Id"] = str(device_id or "").strip()
+
+        last_error: Exception | None = None
+        last_status = 0
+        for url in (CHATGPT_ACCOUNT_CHECK_URL, CHATGPT_ACCOUNT_CHECK_FALLBACK_URL):
+            try:
+                resp = session.get(f"{url}{query}", headers=headers, timeout=30)
+                last_status = int(getattr(resp, "status_code", 0) or 0)
+                if last_status >= 400:
+                    last_error = RuntimeError(f"HTTP {last_status}: {str(getattr(resp, 'text', '') or '')[:200]}")
+                    continue
+                raw = resp.json()
+            except Exception as exc:
+                last_error = exc
+                continue
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=502, detail="ChatGPT 账号检查接口返回格式异常")
+            return {"raw": raw, "queried_url": f"{url}{query}"}
+
+        detail = f"ChatGPT 账号检查接口请求失败: {last_error or f'HTTP {last_status}'}"
+        raise HTTPException(status_code=502, detail=detail)
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
 
 
 def query_chatgpt_subscription(access_token: str, account_id: str = "", proxy_url: str = "") -> dict[str, Any]:
@@ -658,9 +786,13 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "", proxy_ur
         account_check_url = CHATGPT_ACCOUNT_CHECK_FALLBACK_URL
     account_check_query = f"?timezone_offset_min={_browser_timezone_offset_min()}"
     account_check_headers = {
+        "Authorization": f"Bearer {access_token}",
         "x-openai-target-path": CHATGPT_ACCOUNT_CHECK_PATH,
         "x-openai-target-route": CHATGPT_ACCOUNT_CHECK_PATH,
+        "Accept": "application/json",
     }
+    if account_id:
+        account_check_headers["ChatGPT-Account-ID"] = account_id
     account_check_raw: dict[str, Any] = {}
     try:
         resp = session.get(f"{account_check_url}{account_check_query}", headers=account_check_headers, timeout=30)
@@ -1113,24 +1245,31 @@ def create_account_overview_router(
         if not isinstance(raw, dict):
             raise HTTPException(status_code=502, detail="ChatGPT 订阅接口返回格式异常")
         normalized = normalize_chatgpt_subscription(raw, account_id=account_id)
-        available_plans = normalized.get("available_plans") if isinstance(normalized, dict) else []
-        if isinstance(available_plans, list) and available_plans:
-            try:
-                from autotoken.storage.accounts import update_account
+        trial = normalize_chatgpt_trial_eligibility(raw, account_id=account_id)
+        try:
+            from autotoken.storage.accounts import update_account
 
-                update_account(
-                    email,
-                    trial_eligible=True,
-                    trial_available_plans=[str(item) for item in available_plans if str(item or "").strip()],
-                    trial_checked_at=time.time(),
-                )
-            except Exception:
-                pass
+            update_account(
+                email,
+                trial_eligible=bool(trial.get("trial_eligible")),
+                trial_available_plans=[
+                    str(item) for item in (trial.get("trial_available_plans") or []) if str(item or "").strip()
+                ],
+                trial_checked_at=trial.get("trial_checked_at") or time.time(),
+                trial_detection_source=trial.get("trial_detection_source") or "account_check",
+                trial_detection_reason=trial.get("trial_detection_reason") or "",
+                trial_status=trial.get("trial_status") or "",
+                trial_label=trial.get("trial_label") or "",
+                trial_promo_campaign_id=trial.get("trial_promo_campaign_id") or "",
+            )
+        except Exception:
+            pass
         return {
             "email": email,
             "account_id": account_id,
             "subscription": {
                 **normalized,
+                **trial,
                 "jwt_plan_type": _extract_jwt_plan_type(access_token),
             },
             "raw": raw,
