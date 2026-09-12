@@ -158,8 +158,19 @@ async function main() {
       enabledButton.click();
       await waitFor(() => document.body.textContent.includes('2FA 验证码'), '2FA dialog');
       await waitFor(() => document.body.textContent.includes('JBSWY3DPEHPK3PXP')
-        && document.body.textContent.includes('399592'), 'secret and code');
+        && document.body.textContent.includes('399592')
+        && document.body.textContent.includes('FixturePass123'), 'secret, code and password');
       const dialog = [...document.querySelectorAll('[role="dialog"]')].find(element => element.textContent.includes('2FA 验证码'));
+      const codeButton = [...dialog.querySelectorAll('button')]
+        .find(button => button.getAttribute('title') === '点击复制验证码');
+      if (!codeButton) throw new Error('verification code should be a click-to-copy button');
+      const readRemaining = () => {
+        const match = document.body.textContent.match(/剩余\\s*(\\d+)\\s*秒/);
+        return match ? Number(match[1]) : NaN;
+      };
+      const firstRemaining = readRemaining();
+      await sleep(1600);
+      const secondRemaining = readRemaining();
       const refreshButton = [...dialog.querySelectorAll('button')]
         .find(button => button.textContent.trim() === '刷新');
       refreshButton.click();
@@ -174,6 +185,9 @@ async function main() {
         hasDialog: document.body.textContent.includes('2FA 验证码'),
         hasSecret: document.body.textContent.includes('JBSWY3DPEHPK3PXP'),
         hasCode: document.body.textContent.includes('399592'),
+        hasPassword: document.body.textContent.includes('FixturePass123'),
+        firstRemaining,
+        secondRemaining,
         totpRequests: metrics.requests.filter(path => path.includes('/2fa/totp')).length,
       });
     } catch (error) {
@@ -190,6 +204,12 @@ async function main() {
   assert.equal(value.hasDialog, true)
   assert.equal(value.hasSecret, true)
   assert.equal(value.hasCode, true)
+  assert.equal(value.hasPassword, true)
+  assert.ok(Number.isFinite(value.firstRemaining), 'remaining seconds should be rendered')
+  assert.ok(
+    value.secondRemaining < value.firstRemaining,
+    `remaining seconds should count down (${value.firstRemaining} -> ${value.secondRemaining})`,
+  )
   assert.ok(value.totpRequests >= 2, 'refresh should request the latest TOTP details again')
   cdp.close()
   console.log('dashboard 2FA TOTP view browser regression passed')

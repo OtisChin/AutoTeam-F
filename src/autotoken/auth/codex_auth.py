@@ -135,7 +135,9 @@ def _launch_codex_oauth_browser_context(
         force_new_profile=True,
     )
     endpoint = pick_roxybrowser_endpoint(launch.connection)
-    logger.info("[Codex] OAuth RoxyBrowser enabled: email=%s workspace=%s dir=%s", email, launch.workspace_id, launch.dir_id)
+    logger.info(
+        "[Codex] OAuth RoxyBrowser enabled: email=%s workspace=%s dir=%s", email, launch.workspace_id, launch.dir_id
+    )
     browser = playwright.chromium.connect_over_cdp(endpoint_url=endpoint)
     context = browser.contexts[0] if getattr(browser, "contexts", None) else browser.new_context()
 
@@ -252,6 +254,16 @@ def _extract_plan_from_token_claims(claims: dict) -> str:
 
 def _is_personal_codex_plan(plan: str | None) -> bool:
     return (plan or "").strip().lower() in {"free", "plus", "pro"}
+
+
+def is_team_codex_plan(plan: str | None) -> bool:
+    """Team/Business/Enterprise Codex plans, including newer plan names such as
+    ``self_serve_business_prolite``. These are valid bundles for team members and
+    must not be rejected by the personal-mode plan gate."""
+    normalized = str(plan or "").strip().lower()
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in ("team", "business", "enterprise", "edu"))
 
 
 def _build_bundle_from_token_response(token_data: dict, fallback_email=None):
@@ -613,7 +625,9 @@ def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
             time.sleep(2 * attempt)
             continue
         if resp.status_code in {429, 500, 502, 503, 504} and attempt < 3:
-            logger.warning("[Codex] Token 交换临时失败 HTTP %s，重试 %s/3: %s", resp.status_code, attempt + 1, resp.text[:160])
+            logger.warning(
+                "[Codex] Token 交换临时失败 HTTP %s，重试 %s/3: %s", resp.status_code, attempt + 1, resp.text[:160]
+            )
             time.sleep(2 * attempt)
             continue
         break
@@ -669,7 +683,20 @@ def _click_primary_auth_button(page, field, labels):
     """
     只点击当前输入框所在表单的主按钮，避免误点 Continue with Google/Apple/Microsoft。
     """
-    extra_labels = ("Continue", "继续", "繼續", "続行", "Log in", "登录", "登入", "ログイン", "Verify", "Submit", "验证", "確認")
+    extra_labels = (
+        "Continue",
+        "继续",
+        "繼續",
+        "続行",
+        "Log in",
+        "登录",
+        "登入",
+        "ログイン",
+        "Verify",
+        "Submit",
+        "验证",
+        "確認",
+    )
     all_labels = tuple(dict.fromkeys([*(labels or ()), *extra_labels]))
     label_re = re.compile(rf"^(?:{'|'.join(re.escape(label) for label in all_labels)})$", re.I)
 
@@ -1243,7 +1270,9 @@ def _submit_totp_if_present(page, totp_secret: str | None, *, stage: str = "OAut
         if not _fill_otp_input_and_verify(otp_input, code):
             last_status = "fill_failed"
             continue
-        page.locator('button[type="submit"], button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify"), button:has-text("验证")').first.click()
+        page.locator(
+            'button[type="submit"], button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify"), button:has-text("验证")'
+        ).first.click()
         submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=12)
         logger.info(
             "[Codex] %s 已提交2FA验证码: attempt=%s status=%s detail=%s",
@@ -1472,7 +1501,7 @@ def _detect_auth_html_json_error(page) -> str:
     if (
         "not valid json" in lower
         or "unexpected token '<'" in lower
-        or "unexpected token \"<\"" in lower
+        or 'unexpected token "<"' in lower
         or "<!doctype" in lower
     ):
         return (body or "").strip()[:500]
@@ -1486,11 +1515,7 @@ def _is_oauth_cloudflare_challenge_page(page) -> bool:
             "/mfa" in url or "mfa-challenge" in url or "totp" in url or "authenticator" in url
         ):
             return False
-        if (
-            "challenges.cloudflare.com" in url
-            or "challenge-platform" in url
-            or "cdn-cgi/challenge" in url
-        ):
+        if "challenges.cloudflare.com" in url or "challenge-platform" in url or "cdn-cgi/challenge" in url:
             return True
     except Exception:
         pass
@@ -2067,9 +2092,8 @@ _OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES = {
 _OAUTH_DYNAMIC_SMS_COUNTRY_SELECT_TERMS = {
     country_id: (*meta[2], f"+{meta[1]}") for country_id, meta in _OAUTH_DYNAMIC_SMS_COUNTRIES.items()
 }
-_OAUTH_DYNAMIC_SMS_COUNTRY_ISO2 = {
-    country_id: meta[0] for country_id, meta in _OAUTH_DYNAMIC_SMS_COUNTRIES.items()
-}
+_OAUTH_DYNAMIC_SMS_COUNTRY_ISO2 = {country_id: meta[0] for country_id, meta in _OAUTH_DYNAMIC_SMS_COUNTRIES.items()}
+
 
 def _select_oauth_phone_country_if_needed(page, country_id: str | None) -> bool:
     provider_country = str(country_id or "").strip()
@@ -2252,7 +2276,9 @@ def _select_oauth_phone_country_if_needed(page, country_id: str | None) -> bool:
             },
         )
     except Exception as exc:
-        logger.warning("[Codex] add-phone 国家/地区注入异常: country=%s dial=+%s error=%s", provider_country, dial_code, exc)
+        logger.warning(
+            "[Codex] add-phone 国家/地区注入异常: country=%s dial=+%s error=%s", provider_country, dial_code, exc
+        )
         return False
 
     if isinstance(result, dict) and result.get("ok"):
@@ -2653,7 +2679,9 @@ def _oauth_hero_sms_config(country: str | None = None, max_price: str | None = N
         "country": _normalize_oauth_hero_sms_country(country or os.environ.get("OAUTH_HERO_SMS_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_HERO_SMS_SERVICE")),
         "min_price": str(os.environ.get("OAUTH_HERO_SMS_MIN_PRICE") or "").strip(),
-        "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip(),
+        "max_price": str(
+            max_price if max_price is not None else os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or ""
+        ).strip(),
         "price_mode": _normalize_oauth_sms_price_mode(os.environ.get("OAUTH_HERO_SMS_PRICE_MODE")),
     }
 
@@ -2667,21 +2695,23 @@ def _oauth_smsbower_config(country: str | None = None, max_price: str | None = N
         "country": _normalize_oauth_smsbower_country(country or os.environ.get("OAUTH_SMSBOWER_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSBOWER_SERVICE")),
         "min_price": str(os.environ.get("OAUTH_SMSBOWER_MIN_PRICE") or "").strip(),
-        "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip(),
+        "max_price": str(
+            max_price if max_price is not None else os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or ""
+        ).strip(),
         "price_mode": _normalize_oauth_sms_price_mode(os.environ.get("OAUTH_SMSBOWER_PRICE_MODE")),
     }
 
 
 def _oauth_smscloud_config(country: str | None = None, max_price: str | None = None) -> dict[str, str]:
     return {
-        "base_url": str(
-            os.environ.get("OAUTH_SMSCLOUD_BASE_URL") or "https://smscloud.sbs/api/system"
-        ).strip(),
+        "base_url": str(os.environ.get("OAUTH_SMSCLOUD_BASE_URL") or "https://smscloud.sbs/api/system").strip(),
         "api_key": str(os.environ.get("OAUTH_SMSCLOUD_API_KEY") or "").strip(),
         "country": _normalize_oauth_smscloud_country(country or os.environ.get("OAUTH_SMSCLOUD_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSCLOUD_SERVICE")),
         "min_price": str(os.environ.get("OAUTH_SMSCLOUD_MIN_PRICE") or "").strip(),
-        "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_SMSCLOUD_MAX_PRICE") or "").strip(),
+        "max_price": str(
+            max_price if max_price is not None else os.environ.get("OAUTH_SMSCLOUD_MAX_PRICE") or ""
+        ).strip(),
         "price_mode": _normalize_oauth_sms_price_mode(os.environ.get("OAUTH_SMSCLOUD_PRICE_MODE")),
     }
 
@@ -2749,7 +2779,8 @@ def _oauth_hero_sms_activation_used_codes(entry: dict[str, Any]) -> list[str]:
 def _oauth_hero_sms_config_fingerprint(cfg: dict[str, str] | None = None) -> str:
     data = cfg or _oauth_hero_sms_config()
     raw = "|".join(
-        str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "min_price", "max_price", "price_mode")
+        str(data.get(key) or "")
+        for key in ("base_url", "api_key", "country", "service", "min_price", "max_price", "price_mode")
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -3122,7 +3153,8 @@ def _oauth_smsbower_entry_reusable(entry: dict[str, Any], *, now: float | None =
 def _oauth_smsbower_config_fingerprint(cfg: dict[str, str] | None = None) -> str:
     data = cfg or _oauth_smsbower_config()
     raw = "|".join(
-        str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "min_price", "max_price", "price_mode")
+        str(data.get(key) or "")
+        for key in ("base_url", "api_key", "country", "service", "min_price", "max_price", "price_mode")
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -3494,7 +3526,9 @@ def _acquire_oauth_smsbower_phone(
                 and (price_floor is None or float(getattr(item, "price", 0)) >= price_floor)
                 and (price_limit is None or float(getattr(item, "price", 0)) <= price_limit)
             ]
-            prices = sorted(prices, key=lambda item: (float(getattr(item, "price", 0)), str(getattr(item, "provider_id", ""))))
+            prices = sorted(
+                prices, key=lambda item: (float(getattr(item, "price", 0)), str(getattr(item, "provider_id", "")))
+            )
             if not prices:
                 floor_hint = f" >= {price_floor}" if price_floor is not None else ""
                 limit_hint = f" <= {price_limit}" if price_limit is not None else ""
@@ -3532,7 +3566,9 @@ def _acquire_oauth_smsbower_phone(
                                     "maxPrice": float(getattr(price, "price", 0)),
                                 },
                                 "response_data": data,
-                                "price": str(data.get("activationCost") or data.get("price") or getattr(price, "price", "")),
+                                "price": str(
+                                    data.get("activationCost") or data.get("price") or getattr(price, "price", "")
+                                ),
                                 "price_source": "lowest_provider",
                                 "provider_id": provider_id,
                             }
@@ -3541,7 +3577,9 @@ def _acquire_oauth_smsbower_phone(
                     error = f"smsbower getNumberV2 返回无效数据: {data!r}"
         except Exception as exc:
             error = str(exc)
-            logger.warning("[Codex] add-phone smsbower 最低价查询失败，回退普通取号: %s", _safe_error_summary(exc, limit=180))
+            logger.warning(
+                "[Codex] add-phone smsbower 最低价查询失败，回退普通取号: %s", _safe_error_summary(exc, limit=180)
+            )
     if not activation_id or not phone:
         activation_id, phone, error = _smsbower_get_number(
             service_code=cfg["service"] or "dr",
@@ -3746,7 +3784,9 @@ def _release_oauth_sms_activation_phone(
             from autotoken.auth.oauth_phone_records import update_record
 
             record_id = str(phone_item.get("record_id") or f"smscloud:{activation_id}")
-            update_record(record_id, status="success" if finish else ("cancelled" if cancel else "released"), reason=reason)
+            update_record(
+                record_id, status="success" if finish else ("cancelled" if cancel else "released"), reason=reason
+            )
         except Exception:
             logger.debug("[Codex] add-phone 更新 smscloud 记录失败", exc_info=True)
         return
@@ -5186,9 +5226,11 @@ def _login_codex_via_browser_simple(
 
     if use_personal:
         plan = (bundle.get("plan_type") or "").lower()
-        if not _is_personal_codex_plan(plan):
-            logger.error("[Codex] personal 极简 OAuth 拒收非个人 plan_type=%s", plan or "unknown")
+        if not _is_personal_codex_plan(plan) and not is_team_codex_plan(plan):
+            logger.error("[Codex] personal 极简 OAuth 拒收未知 plan_type=%s", plan or "unknown")
             return None
+        if is_team_codex_plan(plan):
+            logger.info("[Codex] personal 极简 OAuth 接受 team/business plan_type=%s(team 成员)", plan)
     return bundle
 
 
@@ -5994,21 +6036,26 @@ def login_codex_via_browser(
     if not bundle:
         return None
 
-    # Personal 模式强校验 plan_type:当子号还挂在 Team workspace(OpenAI 后端 kick 同步延迟 /
-    # default workspace 为 Team)时,auth.openai.com 会默认选 Team 颁发 token,拿到 plan_type=team
-    # 的 bundle —— 这个 token 绑在 Team account_id 上,一旦子号离开 Team 就作废(refresh 401)。
-    # 但 GoPay 绑定成功后的个人账号会返回 plus/pro,这些仍是个人 Codex token,必须接受。
+    # Personal 模式校验 plan_type。接受范围：
+    # - free/plus/pro：个人 Codex token；
+    # - team/business/enterprise（含 self_serve_business_prolite 等新命名）：账号是
+    #   Team/Business workspace 成员的合法 token（Codex CLI 的 workspace/select 流程）。
+    # 其余未知 plan 仍然拒收，避免保存无法识别的 bundle。
     if use_personal:
         plan = (bundle.get("plan_type") or "").lower()
-        if not _is_personal_codex_plan(plan):
+        if not _is_personal_codex_plan(plan) and not is_team_codex_plan(plan):
             logger.error(
-                "[Codex] personal 模式拿到 plan_type=%s(期望 free/plus/pro),account_id=%s。"
-                "说明账号仍在 Team workspace,OAuth 默认选了 Team → token 绑 Team 后会随踢出作废。"
-                "拒收本次 bundle,触发上游 oauth_failed 分类。",
+                "[Codex] personal 模式拿到未知 plan_type=%s,account_id=%s，拒收本次 bundle。",
                 plan or "unknown",
                 bundle.get("account_id"),
             )
             return None
+        if is_team_codex_plan(plan):
+            logger.info(
+                "[Codex] personal 模式接受 team/business plan_type=%s(team 成员),account_id=%s",
+                plan,
+                bundle.get("account_id"),
+            )
 
     return bundle
 
@@ -7026,7 +7073,10 @@ class ChromeCDPCodexAuthFlow:
             return False
         from autotoken.services.totp import generate_totp_candidates, mask_totp_secret
 
-        logger.info("[Codex] Chrome CDP OAuth 检测到2FA验证页，将使用本地TOTP密钥: secret=%s", mask_totp_secret(self.totp_secret))
+        logger.info(
+            "[Codex] Chrome CDP OAuth 检测到2FA验证页，将使用本地TOTP密钥: secret=%s",
+            mask_totp_secret(self.totp_secret),
+        )
         for attempt, code in enumerate(generate_totp_candidates(self.totp_secret), start=1):
             if not await self._fill_otp_code(code):
                 continue
@@ -7659,7 +7709,9 @@ def save_main_auth_file(bundle):
         if delete_auth_file(old, auth_dir=AUTH_DIR):
             logger.info("[Codex] 清理旧主号文件: %s", old.name)
 
-    filepath = codex_auth_path(email=bundle.get("email", "main"), plan_type="", account_id=account_id, auth_dir=AUTH_DIR, main=True)
+    filepath = codex_auth_path(
+        email=bundle.get("email", "main"), plan_type="", account_id=account_id, auth_dir=AUTH_DIR, main=True
+    )
     return _write_auth_file(filepath, bundle)
 
 
@@ -7904,7 +7956,9 @@ def _wham_usage_auth_context_headers(auth_data: dict | None, account_id: str | N
     return headers
 
 
-def _get_wham_usage_response(access_token: str, headers: dict[str, str], *, timeout: int | float, auth_data: dict | None = None):
+def _get_wham_usage_response(
+    access_token: str, headers: dict[str, str], *, timeout: int | float, auth_data: dict | None = None
+):
     context_headers = _wham_usage_auth_context_headers(auth_data, headers.get("Chatgpt-Account-Id"))
     if context_headers:
         try:

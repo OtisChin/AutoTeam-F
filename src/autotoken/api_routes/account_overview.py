@@ -115,11 +115,7 @@ def _dashboard_quota_view(value: Any) -> dict[str, Any] | None:
             source_window = source_windows.get(name)
             if not isinstance(source_window, dict):
                 continue
-            window = {
-                field: source_window[field]
-                for field in DASHBOARD_QUOTA_WINDOW_FIELDS
-                if field in source_window
-            }
+            window = {field: source_window[field] for field in DASHBOARD_QUOTA_WINDOW_FIELDS if field in source_window}
             if window:
                 windows[name] = window
         if windows:
@@ -183,7 +179,9 @@ def _request_accepts_etag(request: Request | None, etag: str) -> bool:
         return False
     candidates = {value.strip() for value in request.headers.get("if-none-match", "").split(",") if value.strip()}
     expected = _weak_etag_value(etag)
-    return "*" in candidates or bool(expected and any(_weak_etag_value(candidate) == expected for candidate in candidates))
+    return "*" in candidates or bool(
+        expected and any(_weak_etag_value(candidate) == expected for candidate in candidates)
+    )
 
 
 def _request_accepts_gzip(request: Request | None) -> bool:
@@ -313,6 +311,10 @@ def _plan_label(plan_key: str, plan_type: str) -> str:
     if normalized_type in {"plus", "pro", "team", "enterprise", "free"}:
         return normalized_type.capitalize()
     normalized_key = str(plan_key or "").strip().lower()
+    # "business" must be checked before "pro": names like
+    # self_serve_business_prolite contain "pro" but are Business plans.
+    if "business" in normalized_type or "business" in normalized_key:
+        return "Business"
     if "plus" in normalized_key:
         return "Plus"
     if "pro" in normalized_key:
@@ -333,6 +335,8 @@ def _plan_key(plan_key: str, plan_type: str) -> str:
     normalized_type = str(plan_type or "").strip().lower()
     if normalized_type in {"free", "plus", "pro", "team", "enterprise"}:
         return f"chatgpt{normalized_type}plan"
+    if "business" in normalized_type:
+        return "chatgptbusinessplan"
     return normalized_type
 
 

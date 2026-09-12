@@ -39,10 +39,11 @@ def get_account_totp_view(
     email: str,
     *,
     credentials_loader: Callable[[str], dict[str, Any] | None] | None = None,
+    account_loader: Callable[[str], dict[str, Any] | None] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Return the locally stored TOTP secret and current code for the dashboard view."""
-    from autotoken.storage.accounts import get_totp_credentials
+    from autotoken.storage.accounts import find_account, get_totp_credentials, load_accounts
 
     normalized = normalized_email(email)
     if not normalized:
@@ -52,6 +53,11 @@ def get_account_totp_view(
     credentials = load_credentials(normalized)
     if not credentials or not credentials.get("secret"):
         raise LookupError("该账号没有本地保存的 2FA 密钥")
+
+    if account_loader is not None:
+        account = account_loader(normalized)
+    else:
+        account = find_account(load_accounts(), normalized)
 
     secret = str(credentials.get("secret") or "").strip()
     period = int(credentials.get("period") or 30)
@@ -79,6 +85,7 @@ def get_account_totp_view(
         "factor_label": str(credentials.get("factor_label") or ""),
         "enabled_at": credentials.get("enabled_at"),
         "status": str(credentials.get("status") or "enabled"),
+        "password": str((account or {}).get("password") or ""),
     }
 
 

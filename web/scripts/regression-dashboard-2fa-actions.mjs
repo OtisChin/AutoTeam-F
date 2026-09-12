@@ -21,6 +21,28 @@ assert.match(dashboardSource, /@click="openTwoFactorTotpDialog\(acc\)"[\s\S]*已
 assert.match(dashboardSource, /2FA 验证码/)
 assert.match(dashboardSource, /复制密钥/)
 assert.match(dashboardSource, /当前验证码/)
+assert.match(dashboardSource, /复制密码/)
+assert.match(dashboardSource, /@click="copyTwoFactorPassword"[\s\S]*?复制密码/)
+assert.match(
+  dashboardSource,
+  /title="点击复制验证码"[\s\S]*?@click="copyTwoFactorCode"/,
+  'the current verification code should be click-to-copy',
+)
+assert.match(
+  dashboardSource,
+  /function startTwoFactorCountdown\(\)[\s\S]*?setInterval\(twoFactorCountdownTick, 1000\)/,
+  'the remaining seconds should tick every second while the 2FA dialog is open',
+)
+assert.match(
+  dashboardSource,
+  /function twoFactorCountdownTick\(\)[\s\S]*?fetchTwoFactorTotp\(dialog\.email, \{ refreshing: true \}\)/,
+  'the countdown should auto-refresh the verification code when it reaches zero',
+)
+assert.match(
+  dashboardSource,
+  /function closeTwoFactorTotpDialog\(\)[\s\S]*?stopTwoFactorCountdown\(\)/,
+  'closing the 2FA dialog should stop the countdown timer',
+)
 assert.match(dashboardSource, /@click="refreshTwoFactorTotpDialog"[\s\S]*刷新/)
 assert.match(
   dashboardSource,

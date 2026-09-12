@@ -792,9 +792,17 @@
         <header class="flex shrink-0 items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
           <div>
             <h3 id="outlook-pool-title" class="text-base font-semibold text-white">管理 {{ accountPoolProviderLabel }} 邮箱池</h3>
-            <p class="mt-1 text-xs text-gray-500">查看邮箱可用状态，批量删除不再使用的邮箱池记录。</p>
+            <p class="mt-1 text-xs text-gray-500">查看邮箱可用状态，导出可用邮箱，批量删除不再使用的邮箱池记录。</p>
           </div>
           <div class="flex items-center gap-2">
+            <button
+              type="button"
+              :disabled="outlookPoolLoading || outlookPoolDeleting || outlookPoolExporting"
+              class="rounded-lg border border-emerald-500/30 bg-emerald-600/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-600/20 disabled:opacity-50"
+              @click="exportOutlookPoolAccounts"
+            >
+              {{ outlookPoolExporting ? '导出中...' : '导出可用' }}
+            </button>
             <button
               type="button"
               :disabled="outlookPoolLoading || outlookPoolDeleting"
@@ -1239,6 +1247,7 @@ const outlookImportDialogOpen = ref(false)
 const outlookPoolDialogOpen = ref(false)
 const outlookPoolLoading = ref(false)
 const outlookPoolDeleting = ref(false)
+const outlookPoolExporting = ref(false)
 const outlookPoolError = ref('')
 const outlookPoolStatus = ref(null)
 const outlookPoolSelectedEmails = ref([])
@@ -2101,6 +2110,46 @@ async function deleteSelectedOutlookPoolEmails() {
     setMessage(`删除 ${accountPoolProviderLabel.value} 邮箱失败: ${e.message}`, false)
   } finally {
     outlookPoolDeleting.value = false
+  }
+}
+
+function downloadTextFile(filename, content, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([String(content || '')], { type })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body?.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+async function exportOutlookPoolAccounts() {
+  if (outlookPoolExporting.value) return
+  outlookPoolExporting.value = true
+  try {
+    const result = isICloudProvider.value
+      ? await api.exportICloudAccounts()
+      : isGenericApiProvider.value
+        ? await api.exportGenericApiAccounts()
+        : await api.exportOutlookAccounts()
+    const content = String(result?.content || '')
+    const count = Number(result?.count || 0)
+    if (!content.trim()) {
+      setMessage(`${accountPoolProviderLabel.value} 邮箱池暂无可导出的可用邮箱`, false)
+      return
+    }
+    const providerSlug = isICloudProvider.value ? 'icloud' : isGenericApiProvider.value ? 'generic-api' : 'outlook'
+    downloadTextFile(
+      `${providerSlug}-available-emails-${new Date().toISOString().slice(0, 10)}.txt`,
+      content,
+    )
+    setMessage(`已导出 ${accountPoolProviderLabel.value} 邮箱池可用邮箱 ${count} 个`, true)
+  } catch (e) {
+    setMessage(`导出 ${accountPoolProviderLabel.value} 可用邮箱失败: ${e.message}`, false)
+  } finally {
+    outlookPoolExporting.value = false
   }
 }
 

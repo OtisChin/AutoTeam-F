@@ -13,10 +13,16 @@ type RegisterOptions struct {
 	Impersonate    string `json:"impersonate"`
 }
 
+type Identity struct {
+	Name      string `json:"name"`
+	Birthdate string `json:"birthdate"`
+}
+
 type RegisterRequest struct {
 	RequestID string          `json:"request_id"`
 	Email     string          `json:"email"`
 	Password  string          `json:"password"`
+	Identity  Identity        `json:"identity"`
 	ProxyURL  string          `json:"proxy_url"`
 	Mail      MailConfig      `json:"mail"`
 	Options   RegisterOptions `json:"options"`

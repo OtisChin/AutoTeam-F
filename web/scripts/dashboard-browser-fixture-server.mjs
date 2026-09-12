@@ -162,6 +162,7 @@ const server = createServer((request, response) => {
       enabled: true,
       secret: 'JBSWY3DPEHPK3PXP',
       code: '399592',
+      password: 'FixturePass123',
       period: 30,
       remaining: 18,
     })

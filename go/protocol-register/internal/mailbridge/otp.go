@@ -1,7 +1,9 @@
 package mailbridge
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -14,6 +16,11 @@ var htmlTagPattern = regexp.MustCompile(`(?is)<[^>]+>`)
 var htmlCommentPattern = regexp.MustCompile(`(?is)<!--.*?-->`)
 var htmlScriptPattern = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>`)
 var htmlStylePattern = regexp.MustCompile(`(?is)<style\b[^>]*>.*?</style>`)
+var detailBasePattern = regexp.MustCompile(`(?is)\bvar\s+detailBase\s*=\s*["']([^"']*)["']`)
+var detailSuffixPattern = regexp.MustCompile(`(?is)\bvar\s+detailSuffix\s*=\s*["']([^"']*)["']`)
+var detailMessageIDPattern = regexp.MustCompile(`(?is)\bdata-id\s*=\s*["']?(\d+)["']?`)
+var detailHashIDPattern = regexp.MustCompile(`(?is)href\s*=\s*["']#mail-(\d+)["']`)
+var otpContextPattern = regexp.MustCompile(`(?i)(?:temporary\s+(?:openai|chatgpt)\s+(?:login|verification)\s+code|verification\s+code|login\s+code|验证码|认证码)\D{0,80}(\d{6})`)
 
 func ExtractOTP(payload []byte) string {
 	return ExtractOTPWithOptions(payload, WaitOptions{})
@@ -139,4 +146,153 @@ func findCode(value any) string {
 		return otpPattern.FindString(typed)
 	}
 	return ""
+}
+
+// DetailURLs derives mail-detail URLs from a receive-code listing page.
+//
+// Vendors such as icloudyang.com render the list as metadata only and load the
+// message body (which carries the OTP) from a JS-derived detail endpoint:
+//
+//	var detailBase='/message/'; var detailSuffix='/token/email'
+//	<a class="item" href="#mail-1771556" data-id="1771556">
+//
+// Following these links is required because the listing itself contains no code.
+func DetailURLs(listURL string, payload []byte) []string {
+	html := string(payload)
+	base := firstMatchString(detailBasePattern, html)
+	suffix := firstMatchString(detailSuffixPattern, html)
+	if base == "" || suffix == "" {
+		return nil
+	}
+	ids := []string{}
+	seenID := map[string]bool{}
+	for _, pattern := range []*regexp.Regexp{detailMessageIDPattern, detailHashIDPattern} {
+		for _, match := range pattern.FindAllStringSubmatch(html, -1) {
+			id := match[1]
+			if id != "" && !seenID[id] {
+				seenID[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	baseURL, err := url.Parse(listURL)
+	if err != nil {
+		return nil
+	}
+	urls := make([]string, 0, len(ids))
+	seenURL := map[string]bool{}
+	for _, id := range ids {
+		ref, err := url.Parse(base + id + suffix)
+		if err != nil {
+			continue
+		}
+		full := baseURL.ResolveReference(ref).String()
+		if full != "" && !seenURL[full] {
+			seenURL[full] = true
+			urls = append(urls, full)
+		}
+	}
+	return urls
+}
+
+// ExtractOTPFromDetail parses a mail-detail response. Vendors return JSON with
+// the body embedded as a data URI (base64 HTML); some return plain HTML instead.
+func ExtractOTPFromDetail(payload []byte, opts WaitOptions) string {
+	var data map[string]any
+	if json.Unmarshal(payload, &data) == nil {
+		if code := explicitCode(data); code != "" {
+			if !opts.ExcludeCodes[code] {
+				return code
+			}
+			return ""
+		}
+		if opts.IssuedAfterUnix > 0 {
+			if received, ok := data["receivedAt"].(string); ok {
+				if timestamp := parseUnixTime(received); timestamp > 0 && timestamp+30 < opts.IssuedAfterUnix {
+					return ""
+				}
+			}
+		}
+		if body, ok := data["body"].(string); ok && body != "" {
+			if decoded := decodeDataURI(body); decoded != "" {
+				if code := extractOTPFromVisibleHTML(decoded, opts); code != "" {
+					return code
+				}
+			}
+		}
+	}
+	if looksLikeHTML(payload) {
+		if code := extractOTPFromVisibleHTML(string(payload), opts); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+func explicitCode(data map[string]any) string {
+	for _, key := range []string{"code", "otp", "verification_code", "verificationCode"} {
+		raw, ok := data[key].(string)
+		if !ok {
+			continue
+		}
+		if code := otpPattern.FindString(raw); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+func extractOTPFromVisibleHTML(html string, opts WaitOptions) string {
+	text := stripHTML(html)
+	if text == "" {
+		return ""
+	}
+	if match := otpContextPattern.FindStringSubmatch(text); match != nil {
+		if !opts.ExcludeCodes[match[1]] {
+			return match[1]
+		}
+	}
+	for _, code := range otpPattern.FindAllString(text, -1) {
+		if !opts.ExcludeCodes[code] {
+			return code
+		}
+	}
+	return ""
+}
+
+func decodeDataURI(value string) string {
+	text := strings.TrimSpace(value)
+	if !strings.HasPrefix(strings.ToLower(text), "data:") {
+		return ""
+	}
+	index := strings.Index(text, ",")
+	if index < 0 {
+		return ""
+	}
+	header := strings.ToLower(text[:index])
+	payload := text[index+1:]
+	if strings.Contains(header, ";base64") {
+		if decoded, err := base64.StdEncoding.DecodeString(payload); err == nil {
+			return string(decoded)
+		}
+		if decoded, err := base64.RawStdEncoding.DecodeString(payload); err == nil {
+			return string(decoded)
+		}
+		return ""
+	}
+	if decoded, err := url.QueryUnescape(payload); err == nil {
+		return decoded
+	}
+	return payload
+}
+
+func firstMatchString(pattern *regexp.Regexp, value string) string {
+	match := pattern.FindStringSubmatch(value)
+	if match == nil {
+		return ""
+	}
+	return match[1]
 }

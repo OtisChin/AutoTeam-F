@@ -974,7 +974,9 @@ def _append_oauth_batch_emails(task_id: str, account_emails: list[str]) -> dict[
     with _task_runtime_controls_lock:
         control = _task_runtime_controls.setdefault(normalized_task_id, {})
         all_emails = control.get("all_account_emails") if isinstance(control.get("all_account_emails"), list) else []
-        pending = control.get("pending_account_emails") if isinstance(control.get("pending_account_emails"), list) else []
+        pending = (
+            control.get("pending_account_emails") if isinstance(control.get("pending_account_emails"), list) else []
+        )
         task = _tasks.get(normalized_task_id)
         if task:
             params = task.get("params") if isinstance(task.get("params"), dict) else {}
@@ -1817,7 +1819,9 @@ def _refresh_account_access_token(email: str) -> str:
         return access_token
     except Exception as exc:
         logger.info(
-            "[checkout] refresh access token from session failed: email=%s error=%s", _safe_email_summary(normalized), exc
+            "[checkout] refresh access token from session failed: email=%s error=%s",
+            _safe_email_summary(normalized),
+            exc,
         )
         return ""
     finally:
@@ -2064,7 +2068,9 @@ def _open_bind_checkout_with_auth_session(
     session_token = str(session_data.get("sessionToken") or session_data.get("session_token") or "").strip()
     cookie_header = str(session_data.get("cookie_header") or "").strip()
     if not session_token and not cookie_header:
-        raise HTTPException(status_code=400, detail=f"账号 auth_session 缺少 sessionToken/cookie_header: {normalized_email}")
+        raise HTTPException(
+            status_code=400, detail=f"账号 auth_session 缺少 sessionToken/cookie_header: {normalized_email}"
+        )
 
     user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
     account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
@@ -2725,30 +2731,25 @@ def _run_account_codex_login_once(
             if provider_key == "hero_sms":
                 effective_oauth_phone_sms_country = str(oauth_phone_cfg.get("hero_sms_country") or "").strip()
                 effective_oauth_phone_sms_max_price = (
-                    effective_oauth_phone_sms_max_price
-                    or str(oauth_phone_cfg.get("hero_sms_max_price") or "").strip()
+                    effective_oauth_phone_sms_max_price or str(oauth_phone_cfg.get("hero_sms_max_price") or "").strip()
                 )
             elif provider_key == "smsbower":
                 effective_oauth_phone_sms_country = str(oauth_phone_cfg.get("smsbower_country") or "").strip()
                 effective_oauth_phone_sms_max_price = (
-                    effective_oauth_phone_sms_max_price
-                    or str(oauth_phone_cfg.get("smsbower_max_price") or "").strip()
+                    effective_oauth_phone_sms_max_price or str(oauth_phone_cfg.get("smsbower_max_price") or "").strip()
                 )
             elif provider_key == "smscloud":
                 effective_oauth_phone_sms_country = str(oauth_phone_cfg.get("smscloud_country") or "").strip()
                 effective_oauth_phone_sms_max_price = (
-                    effective_oauth_phone_sms_max_price
-                    or str(oauth_phone_cfg.get("smscloud_max_price") or "").strip()
+                    effective_oauth_phone_sms_max_price or str(oauth_phone_cfg.get("smscloud_max_price") or "").strip()
                 )
             elif provider_key == "oasis":
                 effective_oauth_oasis_sms_cdks = (
-                    effective_oauth_oasis_sms_cdks
-                    or str(oauth_phone_cfg.get("oasis_sms_cdks") or "").strip()
+                    effective_oauth_oasis_sms_cdks or str(oauth_phone_cfg.get("oasis_sms_cdks") or "").strip()
                 )
             elif provider_key == "tujie":
                 effective_oauth_oasis_sms_cdks = (
-                    effective_oauth_oasis_sms_cdks
-                    or str(oauth_phone_cfg.get("tujie_sms_cdks") or "").strip()
+                    effective_oauth_oasis_sms_cdks or str(oauth_phone_cfg.get("tujie_sms_cdks") or "").strip()
                 )
     session_payload: dict | None = None
 
@@ -2905,9 +2906,16 @@ def _run_account_codex_login_once(
             )
             bundle = (oauth_result or {}).get("bundle")
             protocol_plan = (bundle or {}).get("plan_type", "")
-            if bundle and use_personal and str(protocol_plan).lower() not in {"free", "plus", "pro"}:
+            from autotoken.auth.codex_auth import is_team_codex_plan
+
+            if (
+                bundle
+                and use_personal
+                and str(protocol_plan).lower() not in {"free", "plus", "pro"}
+                and not is_team_codex_plan(protocol_plan)
+            ):
                 logger.warning(
-                    "[账号登录] auth_session 协议 OAuth 返回非个人 plan=%s，回退浏览器 OAuth: %s",
+                    "[账号登录] auth_session 协议 OAuth 返回未识别 plan=%s，回退浏览器 OAuth: %s",
                     protocol_plan or "unknown",
                     email,
                 )
@@ -2996,7 +3004,9 @@ def _run_account_codex_login_once(
             else:
                 auth_session_refresh_outcome.update({"status": "failed", "reason": "Codex 认证文件缺少 access_token"})
         except Exception as exc:
-            auth_session_refresh_outcome.update({"status": "failed", "reason": f"保存 Codex access_token 到 auth_session 失败: {exc}"})
+            auth_session_refresh_outcome.update(
+                {"status": "failed", "reason": f"保存 Codex access_token 到 auth_session 失败: {exc}"}
+            )
     auth_session_refresh_warning = ""
     if refresh_auth_session and auth_session_refresh_outcome.get("status") != "success":
         auth_session_refresh_warning = auth_session_refresh_outcome.get("reason") or f"刷新 auth_session 失败: {email}"
@@ -3022,13 +3032,17 @@ def _run_account_codex_login_once(
         account_id=session_account_id,
     )
     auth_file = save_auth_file(bundle)
-    plan_type = (bundle.get("plan_type") or "").lower()
-    next_account_type = {
-        "free": ACCOUNT_TYPE_FREE,
-        "team": ACCOUNT_TYPE_TEAM,
-        "plus": ACCOUNT_TYPE_PLUS,
-        "pro": ACCOUNT_TYPE_PRO,
-    }.get(plan_type, account_type)
+    plan_type = str(bundle.get("plan_type") or "").strip().lower()
+    from autotoken.auth.codex_auth import is_team_codex_plan
+
+    if is_team_codex_plan(plan_type):
+        next_account_type = ACCOUNT_TYPE_TEAM
+    else:
+        next_account_type = {
+            "free": ACCOUNT_TYPE_FREE,
+            "plus": ACCOUNT_TYPE_PLUS,
+            "pro": ACCOUNT_TYPE_PRO,
+        }.get(plan_type, account_type)
     if account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO} and next_account_type == ACCOUNT_TYPE_FREE:
         next_account_type = account_type
 
@@ -3045,7 +3059,11 @@ def _run_account_codex_login_once(
         update_fields["cloudmail_account_id"] = acc.get("cloudmail_account_id")
     if effective_mail_provider:
         update_fields["mail_provider"] = effective_mail_provider
-    if protocol_only and session_payload and not (refresh_auth_session and auth_session_refresh_outcome.get("status") == "success"):
+    if (
+        protocol_only
+        and session_payload
+        and not (refresh_auth_session and auth_session_refresh_outcome.get("status") == "success")
+    ):
         if actual_email:
             try:
                 save_auth_session(actual_email, session_payload)
@@ -3645,13 +3663,19 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             if invalid_domains:
                 raise HTTPException(status_code=400, detail=f"自动注册域名未配置: {', '.join(invalid_domains)}")
         auto_register_domains = requested_domains
-        if auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"} and not auto_register_domains:
+        if (
+            auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"}
+            and not auto_register_domains
+        ):
             default_domain = str(get_register_domain() or "").strip().lstrip("@")
             if default_domain:
                 auto_register_domains = [default_domain]
             elif configured_domains:
                 auto_register_domains = [configured_domains[0]]
-        if auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"} and not auto_register_domains:
+        if (
+            auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"}
+            and not auto_register_domains
+        ):
             raise HTTPException(status_code=400, detail="未配置可用注册域名")
         account_emails = []
     elif checkout_url:
@@ -5340,7 +5364,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 auto_register_domains[(index - 1) % len(auto_register_domains)] if auto_register_domains else ""
             )
             register_domain = str(register_domain or "").strip().lstrip("@")
-            if auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"} and not register_domain:
+            if (
+                auto_register_mail_provider not in {"luckmail", "outlook", "icloud", "generic-api"}
+                and not register_domain
+            ):
                 raise RuntimeError("未配置可用注册域名")
             luckmail_register_domain = (
                 auto_register_luckmail_preferred_domains[(index - 1) % len(auto_register_luckmail_preferred_domains)]
@@ -7522,7 +7549,6 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     return task
 
 
-
 _account_register_task_router = create_account_register_task_router(
     start_task=lambda *args, **kwargs: _start_task(*args, **kwargs),
     normalize_proxy_url=normalize_proxy_url,
@@ -8003,6 +8029,7 @@ def start_server(host: str = "0.0.0.0", port: int = 8787, build: bool = False):
 
     if build:
         import subprocess
+
         web_dir = Path(__file__).resolve().parents[3] / "web"
         logger.info("[API] --build 已指定，正在编译前端...")
         result = subprocess.run(

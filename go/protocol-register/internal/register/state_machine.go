@@ -149,6 +149,15 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 	}
 	metadata["fingerprint_profile"] = profile.Name
 
+	identityName, identityBirthdate := resolveIdentity(req.Identity)
+	req.Identity = model.Identity{Name: identityName, Birthdate: identityBirthdate}
+	metadata["identity_name"] = identityName
+	metadata["identity_birthdate"] = identityBirthdate
+	if strings.TrimSpace(req.Password) == "" {
+		req.Password = randomPassword()
+		metadata["generated_password"] = req.Password
+	}
+
 	timeout := time.Duration(req.Options.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 60 * time.Second
@@ -309,7 +318,7 @@ func (a *registrationAttempt) runFinalAuthPhase(deviceID, code string) (map[stri
 	if err != nil {
 		return nil, a.authFailure(err, "create_account", "register_failed", true)
 	}
-	createStep, err := a.api.CreateAccount(a.ctx, createToken, "Alex Chen", "1993-01-01")
+	createStep, err := a.api.CreateAccount(a.ctx, createToken, a.request.Identity.Name, a.request.Identity.Birthdate)
 	if err != nil {
 		return nil, a.authFailure(err, "create_account", "register_failed", true)
 	}

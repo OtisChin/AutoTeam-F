@@ -1244,15 +1244,32 @@
                 </div>
                 <div class="break-all font-mono text-sm text-gray-200">{{ twoFactorTotpDialog.secret || '-' }}</div>
               </div>
+              <div class="rounded-xl border border-gray-800 bg-gray-950/70 p-4">
+                <div class="mb-2 flex items-center justify-between gap-3">
+                  <span class="text-xs font-medium text-gray-500">密码</span>
+                  <button
+                    type="button"
+                    :disabled="!twoFactorTotpDialog.password"
+                    class="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    @click="copyTwoFactorPassword">
+                    复制密码
+                  </button>
+                </div>
+                <div class="break-all font-mono text-sm text-gray-200">{{ twoFactorTotpDialog.password || '-' }}</div>
+              </div>
               <div class="flex items-center justify-between gap-3">
                 <div>
                   <div class="text-xs font-medium text-gray-500">当前验证码</div>
-                  <div class="mt-1 text-[11px] text-gray-500">剩余 {{ twoFactorTotpDialog.remaining || 0 }} 秒</div>
+                  <div class="mt-1 text-[11px] text-gray-500">剩余 {{ twoFactorTotpDialog.remaining || 0 }} 秒 · 点击验证码即可复制</div>
                 </div>
                 <div class="inline-flex items-center gap-3">
-                  <span class="rounded-full border border-blue-500/25 bg-blue-500/10 px-4 py-2 font-mono text-lg font-bold tracking-[0.18em] text-blue-200">
+                  <button
+                    type="button"
+                    title="点击复制验证码"
+                    @click="copyTwoFactorCode"
+                    class="rounded-full border border-blue-500/25 bg-blue-500/10 px-4 py-2 font-mono text-lg font-bold tracking-[0.18em] text-blue-200 transition hover:bg-blue-500/20 active:scale-95">
                     {{ formatTwoFactorCode(twoFactorTotpDialog.code) }}
-                  </span>
+                  </button>
                   <button
                     type="button"
                     data-two-factor-refresh
@@ -2054,11 +2071,13 @@ const twoFactorTotpDialog = ref({
   error: '',
   secret: '',
   code: '',
+  password: '',
   remaining: 0,
   period: 30,
 })
 const twoFactorTotpRequestId = ref(0)
 let twoFactorPendingClearTimer = null
+let twoFactorCountdownTimer = null
 const batchReloggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const promoOfferOpen = ref(false)
@@ -2922,6 +2941,7 @@ watch(emailFilter, value => {
 onBeforeUnmount(() => {
   if (emailFilterTimer !== null) clearTimeout(emailFilterTimer)
   if (twoFactorPendingClearTimer !== null) clearTimeout(twoFactorPendingClearTimer)
+  stopTwoFactorCountdown()
   messageClearScheduler.dispose()
   restoreAccountActionBackgroundInert()
 })
@@ -4038,6 +4058,35 @@ function formatTwoFactorCode(code) {
   return digits ? digits.padStart(6, '0').slice(-6) : '-'
 }
 
+function stopTwoFactorCountdown() {
+  if (twoFactorCountdownTimer !== null) {
+    clearInterval(twoFactorCountdownTimer)
+    twoFactorCountdownTimer = null
+  }
+}
+
+function twoFactorCountdownTick() {
+  const dialog = twoFactorTotpDialog.value
+  if (!dialog.open) {
+    stopTwoFactorCountdown()
+    return
+  }
+  const next = Number(dialog.remaining || 0) - 1
+  if (next > 0) {
+    twoFactorTotpDialog.value = { ...dialog, remaining: next }
+    return
+  }
+  twoFactorTotpDialog.value = { ...dialog, remaining: 0 }
+  if (!dialog.refreshing && !dialog.loading) {
+    void fetchTwoFactorTotp(dialog.email, { refreshing: true })
+  }
+}
+
+function startTwoFactorCountdown() {
+  stopTwoFactorCountdown()
+  twoFactorCountdownTimer = setInterval(twoFactorCountdownTick, 1000)
+}
+
 function applyTwoFactorTotpPayload(payload) {
   twoFactorTotpDialog.value = {
     ...twoFactorTotpDialog.value,
@@ -4047,9 +4096,11 @@ function applyTwoFactorTotpPayload(payload) {
     email: String(payload?.email || twoFactorTotpDialog.value.email || '').trim(),
     secret: String(payload?.secret || ''),
     code: String(payload?.code || ''),
+    password: String(payload?.password || ''),
     remaining: Number(payload?.remaining || 0),
     period: Number(payload?.period || 30),
   }
+  startTwoFactorCountdown()
 }
 
 async function fetchTwoFactorTotp(email, { refreshing = false } = {}) {
@@ -4070,6 +4121,7 @@ async function fetchTwoFactorTotp(email, { refreshing = false } = {}) {
     applyTwoFactorTotpPayload(result)
   } catch (error) {
     if (requestId !== twoFactorTotpRequestId.value || !twoFactorTotpDialog.value.open) return
+    stopTwoFactorCountdown()
     twoFactorTotpDialog.value = {
       ...twoFactorTotpDialog.value,
       loading: false,
@@ -4090,6 +4142,7 @@ function openTwoFactorTotpDialog(account) {
     error: '',
     secret: '',
     code: '',
+    password: '',
     remaining: 0,
     period: 30,
   }
@@ -4098,6 +4151,7 @@ function openTwoFactorTotpDialog(account) {
 
 function closeTwoFactorTotpDialog() {
   twoFactorTotpRequestId.value += 1
+  stopTwoFactorCountdown()
   twoFactorTotpDialog.value = {
     open: false,
     email: '',
@@ -4106,6 +4160,7 @@ function closeTwoFactorTotpDialog() {
     error: '',
     secret: '',
     code: '',
+    password: '',
     remaining: 0,
     period: 30,
   }
@@ -4121,6 +4176,24 @@ async function copyTwoFactorSecret() {
   if (!secret) return
   await writeClipboard(secret)
   message.value = `已复制 ${twoFactorTotpDialog.value.email} 的 2FA 密钥`
+  messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+  scheduleMessageClear(6000)
+}
+
+async function copyTwoFactorCode() {
+  const code = formatTwoFactorCode(twoFactorTotpDialog.value.code)
+  if (!code || code === '-') return
+  await writeClipboard(code)
+  message.value = `已复制 ${twoFactorTotpDialog.value.email} 的验证码 ${code}`
+  messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+  scheduleMessageClear(6000)
+}
+
+async function copyTwoFactorPassword() {
+  const password = String(twoFactorTotpDialog.value.password || '')
+  if (!password) return
+  await writeClipboard(password)
+  message.value = `已复制 ${twoFactorTotpDialog.value.email} 的密码`
   messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
   scheduleMessageClear(6000)
 }

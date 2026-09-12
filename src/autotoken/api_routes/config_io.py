@@ -252,7 +252,9 @@ def _load_outlook_pool_status(target: Path) -> dict[str, Any]:
     from autotoken.storage.outlook_pool import list_registered_emails
 
     content = read_text(target) if target.exists() else ""
-    registered_emails = {normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")}
+    registered_emails = {
+        normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")
+    }
     registered_emails.update(list_registered_emails())
     skipped_emails = OutlookMailProvider._registered_emails()
 
@@ -305,9 +307,7 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
 
     content = read_text(target) if target.exists() else ""
     local_accounts = {
-        normalize_email_addr(account.get("email")): account
-        for account in load_accounts()
-        if account.get("email")
+        normalize_email_addr(account.get("email")): account for account in load_accounts() if account.get("email")
     }
     unavailable_records = unavailable_email_records()
     registered_records = registered_email_records()
@@ -331,9 +331,7 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
         unavailable_record = unavailable_records.get(email) or {}
         unavailable_source = str(unavailable_record.get("source") or "").strip().lower()
         local_unavailable = (
-            email in unavailable_records
-            or local_status == "fail"
-            or "account_deactivated" in last_error
+            email in unavailable_records or local_status == "fail" or "account_deactivated" in last_error
         )
         registered = (email in registered_records or bool(local_account)) and not local_unavailable
         unavailable = local_unavailable or (email in skipped_emails and not registered)
@@ -385,9 +383,7 @@ def _load_generic_api_pool_status(target: Path, *, include_all: bool = False) ->
 
     content = read_text(target) if target.exists() else ""
     local_accounts = {
-        normalize_email_addr(account.get("email")): account
-        for account in load_accounts()
-        if account.get("email")
+        normalize_email_addr(account.get("email")): account for account in load_accounts() if account.get("email")
     }
     registered_records = registered_email_records()
     unavailable_records = unavailable_email_records()
@@ -412,9 +408,7 @@ def _load_generic_api_pool_status(target: Path, *, include_all: bool = False) ->
         unavailable_record = unavailable_records.get(email) or {}
         unavailable_source = str(unavailable_record.get("source") or "").strip().lower()
         local_unavailable = (
-            email in unavailable_records
-            or local_status == "fail"
-            or "account_deactivated" in last_error
+            email in unavailable_records or local_status == "fail" or "account_deactivated" in last_error
         )
         registered = (email in registered_records or bool(local_account)) and not local_unavailable
         unavailable = local_unavailable or (email in skipped_emails and not registered)
@@ -575,6 +569,128 @@ def _delete_generic_api_pool_accounts(target: Path, emails: list[str]) -> dict[s
     }
 
 
+def _export_outlook_pool_accounts(target: Path) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.outlook import OutlookMailProvider
+    from autotoken.storage.accounts import load_accounts
+    from autotoken.storage.outlook_pool import list_registered_emails
+
+    content = read_text(target) if target.exists() else ""
+    registered_emails = {
+        normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")
+    }
+    registered_emails.update(list_registered_emails())
+    skipped_emails = OutlookMailProvider._registered_emails()
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in _split_outlook_account_lines(content):
+        account = OutlookMailProvider._parse_account_line(line)
+        if not account or not account.validate():
+            continue
+        email = account.email.lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        registered = email in registered_emails
+        unavailable = email in skipped_emails and not registered
+        if registered or unavailable:
+            continue
+        lines.append(line)
+
+    return {
+        "file": str(target),
+        "count": len(lines),
+        "content": "\n".join(lines) + ("\n" if lines else ""),
+    }
+
+
+def _export_icloud_pool_accounts(target: Path) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.icloud import ICloudMailProvider
+    from autotoken.storage.accounts import load_accounts
+    from autotoken.storage.icloud_pool import registered_email_records, unavailable_email_records
+
+    content = read_text(target) if target.exists() else ""
+    local_accounts = {
+        normalize_email_addr(account.get("email")): account for account in load_accounts() if account.get("email")
+    }
+    unavailable_records = unavailable_email_records()
+    registered_records = registered_email_records()
+    skipped_emails = ICloudMailProvider._registered_emails()
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in _split_icloud_account_lines(content):
+        account = ICloudMailProvider._parse_account_line(line)
+        if not account or not account.validate():
+            continue
+        email = account.email.lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        local_account = local_accounts.get(email) or {}
+        local_status = str(local_account.get("status") or "").strip().lower()
+        last_error = str(local_account.get("last_error") or "").strip().lower()
+        local_unavailable = (
+            email in unavailable_records or local_status == "fail" or "account_deactivated" in last_error
+        )
+        registered = (email in registered_records or bool(local_account)) and not local_unavailable
+        unavailable = local_unavailable or (email in skipped_emails and not registered)
+        if registered or unavailable:
+            continue
+        lines.append(line)
+
+    return {
+        "file": str(target),
+        "count": len(lines),
+        "content": "\n".join(lines) + ("\n" if lines else ""),
+    }
+
+
+def _export_generic_api_pool_accounts(target: Path) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.generic_api import GenericApiMailProvider
+    from autotoken.storage.accounts import load_accounts
+    from autotoken.storage.generic_api_pool import registered_email_records, unavailable_email_records
+
+    content = read_text(target) if target.exists() else ""
+    local_accounts = {
+        normalize_email_addr(account.get("email")): account for account in load_accounts() if account.get("email")
+    }
+    registered_records = registered_email_records()
+    unavailable_records = unavailable_email_records()
+    skipped_emails = GenericApiMailProvider._registered_emails()
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in _split_generic_api_account_lines(content):
+        account = GenericApiMailProvider._parse_account_line(line)
+        if not account or not account.validate():
+            continue
+        email = account.email.lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        local_account = local_accounts.get(email) or {}
+        local_status = str(local_account.get("status") or "").strip().lower()
+        last_error = str(local_account.get("last_error") or "").strip().lower()
+        local_unavailable = (
+            email in unavailable_records or local_status == "fail" or "account_deactivated" in last_error
+        )
+        registered = (email in registered_records or bool(local_account)) and not local_unavailable
+        unavailable = local_unavailable or (email in skipped_emails and not registered)
+        if registered or unavailable:
+            continue
+        lines.append(line)
+
+    return {
+        "file": str(target),
+        "count": len(lines),
+        "content": "\n".join(lines) + ("\n" if lines else ""),
+    }
+
+
 def create_config_io_router(
     *,
     auto_check_config: dict[str, Any],
@@ -662,7 +778,9 @@ def create_config_io_router(
                 {
                     "enabled": bool(cfg.get("enabled", auto_check_config.get("enabled", True))),
                     "interval": max(60, int(cfg.get("interval") or auto_check_config.get("interval") or 300)),
-                    "threshold": max(1, min(100, int(cfg.get("threshold") or auto_check_config.get("threshold") or 10))),
+                    "threshold": max(
+                        1, min(100, int(cfg.get("threshold") or auto_check_config.get("threshold") or 10))
+                    ),
                     "min_low": max(1, int(cfg.get("min_low") or auto_check_config.get("min_low") or 1)),
                 }
             )
@@ -760,6 +878,16 @@ def create_config_io_router(
             raise HTTPException(status_code=400, detail="现有 Outlook 账号池文件过大，最多支持 2MB txt")
         return _load_outlook_pool_status(target)
 
+    @router.get("/api/config/outlook-accounts/export")
+    def get_outlook_accounts_export():
+        """导出 Outlook 邮箱池中仍可用的邮箱，保持导入时的原始行格式。"""
+        target = _resolve_outlook_accounts_file()
+        if target.exists() and target.stat().st_size > OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 Outlook 账号池文件过大，最多支持 2MB txt")
+        result = _export_outlook_pool_accounts(target)
+        route_logger.info("[outlook] 导出可用邮箱: file=%s count=%d", target, result["count"])
+        return result
+
     @router.post("/api/config/outlook-accounts/delete")
     def post_delete_outlook_accounts(params: OutlookAccountsDeleteParams):
         """从 Outlook 邮箱池文件删除指定邮箱行，不删除本地已注册账号。"""
@@ -846,6 +974,16 @@ def create_config_io_router(
             raise HTTPException(status_code=400, detail="现有 iCloud 账号池文件过大，最多支持 2MB txt")
         return _load_icloud_pool_status(target, include_all=include_all)
 
+    @router.get("/api/config/icloud-accounts/export")
+    def get_icloud_accounts_export():
+        """导出 iCloud 邮箱池中仍可用的邮箱，保持导入时的原始行格式。"""
+        target = _resolve_icloud_accounts_file()
+        if target.exists() and target.stat().st_size > ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 iCloud 账号池文件过大，最多支持 2MB txt")
+        result = _export_icloud_pool_accounts(target)
+        route_logger.info("[icloud] 导出可用邮箱: file=%s count=%d", target, result["count"])
+        return result
+
     @router.post("/api/config/icloud-accounts/delete")
     def post_delete_icloud_accounts(params: ICloudAccountsDeleteParams):
         """从 iCloud 邮箱池删除指定邮箱行，不删除本地已注册账号。"""
@@ -931,6 +1069,16 @@ def create_config_io_router(
         if target.exists() and target.stat().st_size > GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES:
             raise HTTPException(status_code=400, detail="现有通用API账号池文件过大，最多支持 2MB txt")
         return _load_generic_api_pool_status(target, include_all=include_all)
+
+    @router.get("/api/config/generic-api-accounts/export")
+    def get_generic_api_accounts_export():
+        """导出通用API邮箱池中仍可用的邮箱，保持导入时的原始行格式。"""
+        target = _resolve_generic_api_accounts_file()
+        if target.exists() and target.stat().st_size > GENERIC_API_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有通用API账号池文件过大，最多支持 2MB txt")
+        result = _export_generic_api_pool_accounts(target)
+        route_logger.info("[generic-api] 导出可用邮箱: file=%s count=%d", target, result["count"])
+        return result
 
     @router.post("/api/config/generic-api-accounts/delete")
     def post_delete_generic_api_accounts(params: GenericApiAccountsDeleteParams):

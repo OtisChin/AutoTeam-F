@@ -17,6 +17,21 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _identity_payload() -> dict[str, str]:
+    """Random human-like name/birthdate so protocol registrations are not identical."""
+    from autotoken.core.identity import random_identity
+
+    identity = random_identity()
+    birthday = identity.get("birthday") or {}
+    name = str(identity.get("full_name") or "").strip()
+    if not name:
+        name = f"{identity.get('first_name', '')} {identity.get('last_name', '')}".strip()
+    return {
+        "name": name,
+        "birthdate": f"{birthday.get('year', '')}-{birthday.get('month', '')}-{birthday.get('day', '')}",
+    }
+
+
 def _mail_payload(
     mail_client,
     *,
@@ -59,11 +74,17 @@ def register_once(
     profile = str(fingerprint_profile or "").strip()
     if profile:
         options["impersonate"] = profile
+    resolved_password = str(password or "").strip()
+    if not resolved_password:
+        from autotoken.core.identity import random_password
+
+        resolved_password = random_password()
     response = client.register(
         {
             "request_id": str(uuid.uuid4()),
             "email": email,
-            "password": password,
+            "password": resolved_password,
+            "identity": _identity_payload(),
             "proxy_url": proxy or "",
             "mail": _mail_payload(mail_client, email=email, account_id=account_id),
             "options": options,
