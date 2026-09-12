@@ -169,7 +169,7 @@ body {
   min-height: 100dvh;
   background: var(--surface-base);
   color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-feature-settings: "kern" 1, "tnum" 1;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -1124,3 +1124,114 @@ html[data-theme="light"] .page-loading-spinner { border-color: var(--surface-mut
 }
 
 @keyframes theme-sheet-in { from { opacity: 0; transform: translate3d(0, 18px, 0); } to { opacity: 1; transform: none; } }
+
+/* Appica-inspired finishing layer: cool slate materials, subtle gradient
+   edges and purposeful elevation. These enhancements stay token-driven so
+   dark/light themes retain identical geometry and accessibility contrast. */
+:root {
+  --appica-radius-sm: 10px;
+  --appica-radius-md: 14px;
+  --appica-radius-lg: 18px;
+  --appica-shadow-soft: 0 2px 8px color-mix(in srgb, #000 12%, transparent);
+  --appica-shadow-float: 0 18px 40px color-mix(in srgb, #000 18%, transparent);
+  --appica-grid-line: color-mix(in srgb, var(--text-main) 5%, transparent);
+}
+
+@supports (color: oklch(0 0 0)) {
+  html[data-theme="dark"] {
+    --surface-base: oklch(15% 0.018 260);
+    --surface-sidebar: oklch(18% 0.018 258);
+    --surface-window: oklch(20% 0.016 260);
+    --surface-panel: oklch(23% 0.018 258);
+    --surface-panel-strong: oklch(26% 0.02 258);
+    --surface-inset: oklch(17% 0.018 260);
+    --surface-muted: oklch(31% 0.022 258);
+    --accent: oklch(70% 0.19 250);
+    --accent-strong: oklch(62% 0.2 250);
+  }
+  html[data-theme="light"] {
+    --surface-base: oklch(97% 0.008 260);
+    --surface-sidebar: oklch(95% 0.01 260);
+    --surface-window: oklch(100% 0 0);
+    --surface-panel: oklch(99% 0.003 260);
+    --surface-panel-strong: oklch(96% 0.008 260);
+    --surface-inset: oklch(95% 0.01 260);
+    --surface-muted: oklch(92% 0.014 260);
+    --accent: oklch(56% 0.21 250);
+    --accent-strong: oklch(50% 0.22 250);
+  }
+}
+
+body {
+  background-image:
+    radial-gradient(circle at 8% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 34rem),
+    radial-gradient(circle at 92% 110%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 32rem);
+}
+
+.workspace-chrome {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--surface-window), var(--surface-window)) padding-box,
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 28%, var(--surface-line)), var(--surface-line) 42%, color-mix(in srgb, var(--text-main) 10%, var(--surface-line))) border-box;
+  box-shadow: var(--shadow-window);
+}
+
+.workspace-main {
+  background-image: linear-gradient(transparent 31px, var(--appica-grid-line) 32px), linear-gradient(90deg, transparent 31px, var(--appica-grid-line) 32px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+  background-blend-mode: soft-light;
+}
+
+.dashboard-summary-card,
+.dashboard-table-shell {
+  box-shadow: var(--appica-shadow-soft), inset 0 1px color-mix(in srgb, var(--text-main) 5%, transparent);
+  transition: transform 180ms var(--ease-out), box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.dashboard-summary-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--surface-line));
+  box-shadow: var(--appica-shadow-float), inset 0 1px color-mix(in srgb, var(--text-main) 8%, transparent);
+}
+
+.dashboard-summary-value { font-variant-numeric: tabular-nums; }
+
+.dashboard-tabs,
+.ui-segmented,
+.theme-switcher-segmented {
+  box-shadow: inset 0 1px color-mix(in srgb, var(--text-main) 5%, transparent), var(--appica-shadow-soft);
+}
+
+.nav-item-active {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent), 0 4px 12px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.toolbar-button:hover:not(:disabled),
+.nav-utility:hover:not(:disabled),
+.theme-switcher-trigger:hover,
+.page-load-retry:hover {
+  transform: translateY(-1px);
+}
+
+input,
+select,
+textarea {
+  border-radius: var(--appica-radius-sm) !important;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-summary-card:hover,
+  .toolbar-button:hover:not(:disabled),
+  .nav-utility:hover:not(:disabled),
+  .theme-switcher-trigger:hover,
+  .page-load-retry:hover { transform: none; }
+}
