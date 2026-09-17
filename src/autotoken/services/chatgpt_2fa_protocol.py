@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import uuid
 from collections.abc import Callable
@@ -31,6 +32,10 @@ _MFA_ACTIVATE_URL = f"{_CHATGPT_ORIGIN}/backend-api/accounts/mfa/user/activate_e
 # unchunked cookie carried over from the saved auth session then shadows the
 # fresh chunked cookie, so ``/api/auth/session`` reads a stale session.
 _LEGACY_SESSION_COOKIE = "__Secure-next-auth.session-token"
+# Cloudflare can answer a burst of first-party requests with these transient
+# codes while the client is still being evaluated; retrying after a short
+# jittered backoff succeeds without changing request semantics.
+_RETRYABLE_STATUS = frozenset({403, 429, 503})
 
 
 class ChatGPT2FAProtocolSetupExecutor:
@@ -73,6 +78,9 @@ class ChatGPT2FAProtocolSetupExecutor:
             logger.info("[2FA] 进入2FA设置流程: email={} mode=protocol", target_email)
             emit({"stage": "totp_setup_started", "email": safe_email_summary(target_email)})
             http, device_id, user_agent = self._build_session(payload, session_token, cookie_header)
+            # Establish Cloudflare cookies on the entry page before the CSRF
+            # call; hitting /api/auth/csrf cold is a common source of 403s.
+            self._warmup(http, user_agent)
             reauth_started_at = time.time()
             auth_url = self._trigger_reauth(http, target_email, device_id, user_agent)
             self._follow_reauth(http, auth_url, user_agent)
@@ -92,9 +100,12 @@ class ChatGPT2FAProtocolSetupExecutor:
                         reason="OpenAI recent-auth email verification code was not available",
                     )
                 used_codes.add(code)
-                response = http.post(
+                response = self._request_with_retry(
+                    http,
+                    "post",
                     f"{_AUTH_ORIGIN}/api/accounts/email-otp/validate",
-                    headers=_auth_api_headers(user_agent),
+                    action="validate recent-auth email code",
+                    headers={**_auth_api_headers(user_agent), **_datadog_headers()},
                     data=json.dumps({"code": code}),
                     timeout=self.timeout,
                 )
@@ -185,10 +196,69 @@ class ChatGPT2FAProtocolSetupExecutor:
             _set_cookie(http, "oai-did", device_id, domain=".chatgpt.com")
         return http, device_id, user_agent
 
+    def _request_with_retry(
+        self,
+        http: Any,
+        method: str,
+        url: str,
+        *,
+        action: str,
+        attempts: int = 3,
+        base_delay: float = 1.5,
+        **kwargs: Any,
+    ) -> Any:
+        """Issue one request, retrying transient Cloudflare rejections.
+
+        The batch 2FA job runs several accounts in parallel from the same exit
+        IP, so chatgpt.com intermittently answers with 403/429/503 before the
+        client is trusted. Those responses are not processed, so replaying the
+        request after a jittered backoff is safe and usually succeeds.
+        """
+        response = None
+        for attempt in range(attempts):
+            response = getattr(http, method)(url, **kwargs)
+            status = _status_code(response)
+            if status not in _RETRYABLE_STATUS or attempt >= attempts - 1:
+                return response
+            delay = base_delay * (2**attempt) + random.uniform(0.0, 1.0)
+            logger.warning(
+                "[2FA] {} 返回 HTTP {}，{:.1f}s 后重试 ({}/{})",
+                action,
+                status,
+                delay,
+                attempt + 1,
+                attempts,
+            )
+            time.sleep(delay)
+        return response
+
+    def _warmup(self, http: Any, user_agent: str) -> None:
+        """Load the ChatGPT entry page so Cloudflare cookies exist before the CSRF call.
+
+        A small random delay spreads the parallel batch workers so their first
+        requests do not hit Cloudflare as one burst from the same exit IP.
+        """
+        time.sleep(random.uniform(0.0, 2.5))
+        try:
+            self._request_with_retry(
+                http,
+                "get",
+                f"{_CHATGPT_ORIGIN}/",
+                action="warmup ChatGPT",
+                headers={**_navigate_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"), **_datadog_headers()},
+                allow_redirects=True,
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            logger.debug("[2FA] ChatGPT 预热失败，继续尝试 CSRF: {}", exc)
+
     def _trigger_reauth(self, http: Any, email: str, device_id: str, user_agent: str) -> str:
-        csrf_response = http.get(
+        csrf_response = self._request_with_retry(
+            http,
+            "get",
             f"{_CHATGPT_ORIGIN}/api/auth/csrf",
-            headers=_chatgpt_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"),
+            action="fetch recent-auth CSRF",
+            headers={**_chatgpt_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"), **_datadog_headers()},
             timeout=self.timeout,
         )
         _require_ok(csrf_response, "fetch recent-auth CSRF")
@@ -204,10 +274,14 @@ class ChatGPT2FAProtocolSetupExecutor:
                 "ext-oai-did": device_id,
             }
         )
-        response = http.post(
+        response = self._request_with_retry(
+            http,
+            "post",
             f"{_CHATGPT_ORIGIN}/api/auth/signin/openai?{query}",
+            action="start password reauthentication",
             headers={
                 **_chatgpt_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"),
+                **_datadog_headers(),
                 "content-type": "application/x-www-form-urlencoded",
                 "origin": _CHATGPT_ORIGIN,
             },
@@ -227,9 +301,12 @@ class ChatGPT2FAProtocolSetupExecutor:
         return auth_url
 
     def _follow_reauth(self, http: Any, auth_url: str, user_agent: str) -> None:
-        response = http.get(
+        response = self._request_with_retry(
+            http,
+            "get",
             auth_url,
-            headers=_navigate_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"),
+            action="follow password reauthentication",
+            headers={**_navigate_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"), **_datadog_headers()},
             allow_redirects=True,
             timeout=self.timeout,
         )
@@ -259,9 +336,12 @@ class ChatGPT2FAProtocolSetupExecutor:
             if "auth.openai.com" in origin
             else _chatgpt_headers(user_agent, referer=referer)
         )
-        response = http.get(
+        response = self._request_with_retry(
+            http,
+            "get",
             continue_url,
-            headers=headers,
+            action="complete password reauthentication callback",
+            headers={**headers, **_datadog_headers()},
             allow_redirects=True,
             timeout=self.timeout,
         )
@@ -279,9 +359,12 @@ class ChatGPT2FAProtocolSetupExecutor:
         return token
 
     def _read_session_access_token(self, http: Any, user_agent: str) -> str:
-        response = http.get(
+        response = self._request_with_retry(
+            http,
+            "get",
             f"{_CHATGPT_ORIGIN}/api/auth/session",
-            headers=_chatgpt_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"),
+            action="fetch refreshed ChatGPT session",
+            headers={**_chatgpt_headers(user_agent, referer=f"{_CHATGPT_ORIGIN}/"), **_datadog_headers()},
             timeout=self.timeout,
         )
         _require_ok(response, "fetch refreshed ChatGPT session")
@@ -373,6 +456,26 @@ def _set_cookie(http: Any, name: str, value: str, *, domain: str) -> None:
         http.cookies.set(name, value, domain=domain, path="/")
     except TypeError:
         http.cookies.set(name, value)
+
+
+def _datadog_headers() -> dict[str, str]:
+    """Mirror the Datadog RUM headers every real browser sends.
+
+    OpenAI attaches Datadog RUM to its front end; requests without these headers
+    are more likely to be treated as non-browser traffic and challenged.
+    """
+    trace_id = str(random.getrandbits(64))
+    parent_id = str(random.getrandbits(64))
+    trace_hex = format(int(trace_id), "016x")
+    parent_hex = format(int(parent_id), "016x")
+    return {
+        "traceparent": f"00-0000000000000000{trace_hex}-{parent_hex}-01",
+        "tracestate": "dd=s:1;o:rum",
+        "x-datadog-origin": "rum",
+        "x-datadog-parent-id": parent_id,
+        "x-datadog-sampling-priority": "1",
+        "x-datadog-trace-id": trace_id,
+    }
 
 
 def _chatgpt_headers(user_agent: str, *, referer: str) -> dict[str, str]:
