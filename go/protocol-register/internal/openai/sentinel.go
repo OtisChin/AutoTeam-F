@@ -20,6 +20,9 @@ type SentinelProvider interface {
 
 type SentinelResult struct {
 	Token      string
+	// SoToken is the browser's openai-sentinel-so-token (the raw
+	// requirements/proof input) paired with Token for stateful auth calls.
+	SoToken    string
 	SDKVersion string
 }
 

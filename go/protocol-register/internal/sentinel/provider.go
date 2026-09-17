@@ -59,6 +59,7 @@ type finalToken struct {
 	C    string `json:"c"`
 	ID   string `json:"id"`
 	Flow string `json:"flow"`
+	So   string `json:"so,omitempty"`
 }
 
 func NewProvider(cfg Config, resolver *Resolver, compiler *Compiler, runtime *Runtime) (*Provider, error) {
@@ -141,6 +142,7 @@ func (p *Provider) Token(
 		}
 		solved, err := p.runtime.Solve(ctx, compiled, profile, SolveInput{
 			DeviceID:  deviceID,
+			Flow:      flow,
 			RequestP:  requestP,
 			Challenge: challenge.Payload,
 		})
@@ -157,7 +159,11 @@ func (p *Provider) Token(
 
 		_ = p.resolver.MarkGood(sdk)
 		p.storeStatus(Status{Ready: true, SDKVersion: sdk.Version})
-		return openai.SentinelResult{Token: token, SDKVersion: sdk.Version}, nil
+		soToken, err := encodeSoToken(solved.So, challenge.Token, deviceID, flow)
+		if err != nil {
+			continue
+		}
+		return openai.SentinelResult{Token: token, SoToken: soToken, SDKVersion: sdk.Version}, nil
 	}
 	return openai.SentinelResult{}, providerUnavailable(ctx)
 }
@@ -236,6 +242,7 @@ func encodeFinalToken(solved SolveOutput, challengeToken, deviceID, flow string)
 		C:    strings.TrimSpace(challengeToken),
 		ID:   strings.TrimSpace(deviceID),
 		Flow: strings.TrimSpace(flow),
+		So:   strings.TrimSpace(solved.So),
 	}
 	if token.P == "" || token.T == "" || token.C == "" || token.ID == "" || token.Flow == "" {
 		return "", ErrInvalidRuntimeOutput
@@ -246,6 +253,29 @@ func encodeFinalToken(solved SolveOutput, challengeToken, deviceID, flow string)
 	}
 	if len(payload) > maxRuntimeOutputBytes {
 		return "", ErrRuntimeOutputTooLarge
+	}
+	return string(payload), nil
+}
+
+func encodeSoToken(so, challengeToken, deviceID, flow string) (string, error) {
+	so = strings.TrimSpace(so)
+	challengeToken = strings.TrimSpace(challengeToken)
+	deviceID = strings.TrimSpace(deviceID)
+	flow = strings.TrimSpace(flow)
+	if so == "" {
+		return "", nil
+	}
+	if challengeToken == "" || deviceID == "" || flow == "" {
+		return "", ErrInvalidRuntimeOutput
+	}
+	payload, err := json.Marshal(struct {
+		So   string `json:"so"`
+		C    string `json:"c"`
+		ID   string `json:"id"`
+		Flow string `json:"flow"`
+	}{So: so, C: challengeToken, ID: deviceID, Flow: flow})
+	if err != nil || len(payload) > maxRuntimeOutputBytes {
+		return "", ErrInvalidRuntimeOutput
 	}
 	return string(payload), nil
 }

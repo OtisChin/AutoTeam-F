@@ -2887,9 +2887,8 @@ def _submit_direct_controlled_form(anchor_locator) -> dict:
     if anchor_locator is None:
         return {"ok": False, "reason": "missing_anchor"}
     try:
-        return (
-            anchor_locator.evaluate(
-                r"""(input) => {
+        return anchor_locator.evaluate(
+            r"""(input) => {
                 const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
                   && getComputedStyle(el).visibility !== 'hidden'
                   && getComputedStyle(el).display !== 'none'
@@ -2943,9 +2942,7 @@ def _submit_direct_controlled_form(anchor_locator) -> dict:
                   url: location.href
                 };
             }"""
-            )
-            or {"ok": False, "reason": "empty_result"}
-        )
+        ) or {"ok": False, "reason": "empty_result"}
     except Exception as exc:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -3001,12 +2998,9 @@ def _click_direct_primary_auth_button(anchor_locator, labels) -> bool:
                     return {clicked, submitDispatched};
                 }"""
             )
-            if isinstance(confirmation, dict) and (
-                confirmation.get("clicked") or confirmation.get("submitDispatched")
-            ):
+            if isinstance(confirmation, dict) and (confirmation.get("clicked") or confirmation.get("submitDispatched")):
                 logger.info(
-                    "[直接注册] Continue 点击已确认: method=dom-sync "
-                    "click=%s submit=%s",
+                    "[直接注册] Continue 点击已确认: method=dom-sync click=%s submit=%s",
                     bool(confirmation.get("clicked")),
                     bool(confirmation.get("submitDispatched")),
                 )
@@ -3370,9 +3364,8 @@ def _fill_direct_about_you_profile_dom(page, *, name: str, birthday: dict, age: 
         "age": str(age or "").strip(),
     }
     try:
-        return (
-            page.evaluate(
-                r"""(data) => {
+        return page.evaluate(
+            r"""(data) => {
                 const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
                   && getComputedStyle(el).visibility !== 'hidden'
                   && getComputedStyle(el).display !== 'none'
@@ -3448,10 +3441,8 @@ def _fill_direct_about_you_profile_dom(page, *, name: str, birthday: dict, age: 
                   url: location.href
                 };
             }""",
-                payload,
-            )
-            or {"ok": False, "reason": "empty_result"}
-        )
+            payload,
+        ) or {"ok": False, "reason": "empty_result"}
     except Exception as exc:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -3459,9 +3450,8 @@ def _fill_direct_about_you_profile_dom(page, *, name: str, birthday: dict, age: 
 def _submit_direct_profile_form_dom(page) -> dict:
     """Schedule the enabled about-you form submit and return immediately."""
     try:
-        return (
-            page.evaluate(
-                r"""() => {
+        return page.evaluate(
+            r"""() => {
                 const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
                   && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
                 const form = [...document.querySelectorAll('form')].find(visible);
@@ -3479,9 +3469,7 @@ def _submit_direct_profile_form_dom(page) -> dict:
                 }, 80);
                 return {ok:true, reason:submit ? 'async_submit_click' : 'async_request_submit'};
             }"""
-            )
-            or {"ok": False, "reason": "empty_result"}
-        )
+        ) or {"ok": False, "reason": "empty_result"}
     except Exception as exc:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -3511,9 +3499,8 @@ def _direct_profile_dom_state(page) -> dict:
 def _direct_email_otp_dom_state(page) -> dict:
     """Read explicit OTP validation markers without relying on localized body text."""
     try:
-        return (
-            page.evaluate(
-                r"""() => {
+        return page.evaluate(
+            r"""() => {
                 const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
                 const otpInputs = [...document.querySelectorAll(
                   'input[name*="code" i],input[name*="otp" i],input[autocomplete="one-time-code"],input[inputmode="numeric"]'
@@ -3527,9 +3514,7 @@ def _direct_email_otp_dom_state(page) -> dict:
                   values: otpInputs.map(el => String(el.value || ''))
                 };
             }"""
-            )
-            or {"invalid": False, "errors": [], "values": []}
-        )
+        ) or {"invalid": False, "errors": [], "values": []}
     except Exception:
         return {"invalid": False, "errors": [], "values": []}
 
@@ -3673,8 +3658,9 @@ def _switch_direct_signup_to_password(page, *, timeout=15):
 
     try:
         if not click_result.get("clicked"):
-            click_result = page.evaluate(
-            r"""() => {
+            click_result = (
+                page.evaluate(
+                    r"""() => {
                 const visible = el => {
                     if (!el) return false;
                     const style = getComputedStyle(el);
@@ -3707,7 +3693,9 @@ def _switch_direct_signup_to_password(page, *, timeout=15):
                 control.click();
                 return {clicked:true, href};
             }"""
-            ) or {}
+                )
+                or {}
+            )
     except Exception as exc:
         logger.debug("[直接注册] 密码注册入口 DOM 点击失败，改用地址跳转: %s", exc)
 
@@ -4034,7 +4022,9 @@ def _complete_direct_about_you_dom(page, *, identity_name: str, identity_bday: d
         except Exception as exc:
             logger.warning("[直接注册] 无头资料页主动跳转失败: %s", exc)
 
-    logger.warning("[直接注册] 无头 about-you 页面仍未完成 | URL: %s | state=%s", page.url, _direct_profile_dom_state(page))
+    logger.warning(
+        "[直接注册] 无头 about-you 页面仍未完成 | URL: %s | state=%s", page.url, _direct_profile_dom_state(page)
+    )
     return False
 
 
@@ -4637,9 +4627,7 @@ def _register_direct_once(
                             otp_state = _direct_email_otp_dom_state(page)
                     resend_allowed = bool(otp_state.get("invalid"))
                     if post_code_step == "code" and not resend_allowed:
-                        logger.warning(
-                            "[直接注册] 无头验证码提交后仍未跳转但无校验错误，不重发以免作废已接受验证码"
-                        )
+                        logger.warning("[直接注册] 无头验证码提交后仍未跳转但无校验错误，不重发以免作废已接受验证码")
                 if post_code_step == "code" and resend_allowed:
                     # iCloud/generic receive-code pages can keep an already
                     # consumed message and synthesize a current timestamp for
@@ -5136,17 +5124,16 @@ def create_account_direct(
                 }
                 if register_mode == "go_protocol":
                     protocol_kwargs["fingerprint_profile"] = str(go_protocol_profile or "").strip() or None
+                    # A previous attempt that timed out fetching the code has
+                    # already created the account on OpenAI's side.  Ask the Go
+                    # engine to resume that passwordless login instead of
+                    # reporting it as a duplicate and burning the mailbox.
+                    protocol_kwargs["salvage_existing"] = last_failure_status == "email_code_timeout"
                 if register_mode == "protocol":
                     protocol_kwargs.update(
-                        oauth_phone_sms_provider=(
-                            oauth_phone_sms_provider if post_register_oauth_enabled else None
-                        ),
-                        oauth_phone_sms_country=(
-                            oauth_phone_sms_country if post_register_oauth_enabled else None
-                        ),
-                        oauth_oasis_sms_cdks=(
-                            oauth_oasis_sms_cdks if post_register_oauth_enabled else None
-                        ),
+                        oauth_phone_sms_provider=(oauth_phone_sms_provider if post_register_oauth_enabled else None),
+                        oauth_phone_sms_country=(oauth_phone_sms_country if post_register_oauth_enabled else None),
+                        oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks if post_register_oauth_enabled else None),
                     )
                 result = _register_by_mode(register_mode, mail_client, **protocol_kwargs)
             else:
@@ -5316,6 +5303,48 @@ def create_account_direct(
             else:
                 last_failure_status = ""
 
+        # Go protocol explicitly reports an existing address instead of
+        # entering the passwordless OTP login branch.  Treat it exactly like
+        # the browser duplicate path so a pre-owned mailbox is never returned
+        # as a newly registered (trial-eligible) account.
+        if not success and last_failure_status == "duplicate":
+            _sync_provider_registered_email(
+                email,
+                mail_client,
+                password=password,
+                source="email_already_in_use",
+            )
+            duplicate_swaps += 1
+            if duplicate_swaps > MAX_DUPLICATE_SWAPS:
+                logger.error("[直接注册] duplicate 换邮箱已达上限 %d，放弃", MAX_DUPLICATE_SWAPS)
+                _discard_email("duplicate_exhausted")
+                record_failure(
+                    email,
+                    "duplicate_exhausted",
+                    f"duplicate 换邮箱已达上限 {MAX_DUPLICATE_SWAPS}",
+                    duplicate_swaps=duplicate_swaps,
+                )
+                _record_outcome("duplicate_exhausted", reason=f"duplicate 换邮箱 {duplicate_swaps} 次仍失败")
+                return None
+            logger.info(
+                "[直接注册] duplicate(%s)，保留临时邮箱服务账号: %s id=%s",
+                last_failure_reason or "email_already_registered",
+                email,
+                account_id,
+            )
+            _progress(
+                "register_duplicate_swap",
+                f"邮箱重复，切换临时邮箱后重试: {email}",
+                email=email,
+                level="warn",
+                duplicate_swaps=duplicate_swaps,
+            )
+            account_id, email = _create_registration_mailbox(_with_random_suffix_prefix(email_prefix))
+            password = chosen_password
+            logger.info("[直接注册] 已换新临时邮箱: %s", email)
+            _progress("register_email_created", f"已换新临时邮箱: {email}", email=email)
+            continue
+
         if not success and last_failure_status == "phone_blocked":
             failure_reason = last_failure_reason or "OpenAI 明确要求手机号验证"
             logger.warning("[直接注册] %s 需要手机号验证，停止重试当前邮箱", email)
@@ -5367,6 +5396,7 @@ def create_account_direct(
                             proxy_url=proxy_url,
                         )
                     if session_auth:
+
                         def _queue_totp_if_requested(auth_result, target_email=email):
                             if enable_totp_mfa and isinstance(auth_result, dict):
                                 return _enable_totp_mfa_after_auth_session(

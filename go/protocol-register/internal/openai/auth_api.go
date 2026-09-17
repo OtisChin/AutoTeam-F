@@ -78,6 +78,65 @@ func (s AuthStep) RequiresPhoneVerification() bool {
 	return path == "/add-phone" || path == "/verify-phone" || path == "/phone-verification"
 }
 
+// IsLogin reports whether the step points at the login page.  An already
+// registered address answers an authorize/continue submitted with the signup
+// screen hint by redirecting to login instead of the password creation page.
+func (s AuthStep) IsLogin() bool {
+	switch strings.ToLower(strings.TrimSpace(s.PageType)) {
+	case "login", "login_password":
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(s.ContinueURL))
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(strings.ToLower(parsed.Path), "/")
+	return path == "/log-in" || path == "/login" ||
+		strings.HasPrefix(path, "/log-in/") || strings.HasPrefix(path, "/login/")
+}
+
+// Summary returns a short, log-safe description of the step (page type, OTP
+// mode and continuation path only).  It never includes query strings or the
+// host so it can be surfaced in failure messages without leaking state.
+func (s AuthStep) Summary() string {
+	path := strings.TrimSpace(s.ContinueURL)
+	if parsed, err := url.Parse(path); err == nil {
+		path = parsed.Path
+	}
+	summary := "page_type=" + strings.TrimSpace(s.PageType)
+	if mode := strings.TrimSpace(s.EmailVerificationMode); mode != "" {
+		summary += " mode=" + mode
+	}
+	if path != "" {
+		summary += " continue_path=" + path
+	}
+	return summary
+}
+
+// IsPasswordlessLogin reports an email_otp_verification step in the
+// passwordless_login mode.  Unlike a login-page redirect, this branch can be
+// resumed to finish a half-registered account without a password.
+func (s AuthStep) IsPasswordlessLogin() bool {
+	return strings.EqualFold(strings.TrimSpace(s.PageType), "email_otp_verification") &&
+		strings.EqualFold(strings.TrimSpace(s.EmailVerificationMode), "passwordless_login")
+}
+
+// IsExistingAccount reports whether the step proves the submitted email already
+// owns an account.  The reliable signal is a redirect to the login page after
+// the email is submitted with the signup screen hint; an explicit
+// passwordless_login OTP mode is also conclusive.  A passwordless_signup mode,
+// an empty mode, or a create_account_password step all belong to the signup
+// flow and must not be treated as duplicates.
+func (s AuthStep) IsExistingAccount() bool {
+	if s.IsLogin() {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(s.PageType), "email_otp_verification") {
+		return strings.EqualFold(strings.TrimSpace(s.EmailVerificationMode), "passwordless_login")
+	}
+	return false
+}
+
 type Client struct {
 	HTTP           *http.Client
 	BaseURL        string
@@ -155,13 +214,13 @@ func (c *Client) SigninOpenAI(ctx context.Context, csrf string) error {
 	return err
 }
 
-func (c *Client) AuthorizeContinue(ctx context.Context, email, sentinelToken string) (AuthStep, error) {
+func (c *Client) AuthorizeContinue(ctx context.Context, email, sentinelToken string, sentinelSoTokens ...string) (AuthStep, error) {
 	if strings.TrimSpace(sentinelToken) == "" {
 		return AuthStep{}, ErrSentinelUnavailable
 	}
 	var out authStepResponse
 	headers := c.authAPIHeaders(c.BaseURL + "/create-account")
-	headers.Set("openai-sentinel-token", sentinelToken)
+	setSentinelHeaders(headers, sentinelToken, sentinelSoTokens)
 	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/authorize/continue", map[string]any{"username": map[string]any{"value": email, "kind": "email"}, "screen_hint": "signup"}, &out, headers)
 	if err != nil {
 		return AuthStep{}, err
@@ -169,12 +228,12 @@ func (c *Client) AuthorizeContinue(ctx context.Context, email, sentinelToken str
 	return out.authStep()
 }
 
-func (c *Client) RegisterPassword(ctx context.Context, email, password, sentinelToken string) error {
+func (c *Client) RegisterPassword(ctx context.Context, email, password, sentinelToken string, sentinelSoTokens ...string) error {
 	if strings.TrimSpace(sentinelToken) == "" {
 		return ErrSentinelUnavailable
 	}
 	headers := c.authAPIHeaders(c.BaseURL + "/create-account/password")
-	headers.Set("openai-sentinel-token", sentinelToken)
+	setSentinelHeaders(headers, sentinelToken, sentinelSoTokens)
 	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/user/register", map[string]any{"password": password, "username": email}, nil, headers)
 }
 
@@ -186,26 +245,56 @@ func (c *Client) BeginPasswordSignup(ctx context.Context) error {
 	return c.navigate(ctx, target, c.BaseURL+"/email-verification")
 }
 
-func (c *Client) SendEmailOTP(ctx context.Context) error {
-	return c.doJSON(ctx, http.MethodGet, c.BaseURL+"/api/accounts/email-otp/send", nil, nil, c.authAPIHeaders(c.BaseURL+"/create-account/password"))
+func (c *Client) SendEmailOTP(ctx context.Context, sentinelTokens ...string) error {
+	headers := c.authAPIHeaders(c.BaseURL + "/create-account/password")
+	setSentinelHeaders(headers, firstSentinelToken(sentinelTokens), remainingSentinelTokens(sentinelTokens))
+	return c.doJSON(ctx, http.MethodGet, c.BaseURL+"/api/accounts/email-otp/send", nil, nil, headers)
 }
 
-func (c *Client) ResendEmailOTP(ctx context.Context) error {
+func (c *Client) ResendEmailOTP(ctx context.Context, sentinelTokens ...string) error {
 	headers := c.authAPIHeaders(c.BaseURL + "/email-verification")
 	headers.Set("Content-Type", "application/json")
+	setSentinelHeaders(headers, firstSentinelToken(sentinelTokens), remainingSentinelTokens(sentinelTokens))
 	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/email-otp/resend", map[string]any{}, nil, headers)
 }
 
-func (c *Client) VerifyEmailOTP(ctx context.Context, code string) (AuthStep, error) {
+func (c *Client) VerifyEmailOTP(ctx context.Context, code string, sentinelTokens ...string) (AuthStep, error) {
 	var out authStepResponse
-	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/email-otp/validate", map[string]any{"code": code}, &out, c.authAPIHeaders(c.BaseURL+"/email-verification"))
+	headers := c.authAPIHeaders(c.BaseURL + "/email-verification")
+	setSentinelHeaders(headers, firstSentinelToken(sentinelTokens), remainingSentinelTokens(sentinelTokens))
+	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/email-otp/validate", map[string]any{"code": code}, &out, headers)
 	if err != nil {
 		return AuthStep{}, err
 	}
 	return out.authStep()
 }
 
-func (c *Client) CreateAccount(ctx context.Context, sentinelToken, name, birthdate string) (AuthStep, error) {
+func firstSentinelToken(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	return tokens[0]
+}
+
+func remainingSentinelTokens(tokens []string) []string {
+	if len(tokens) < 2 {
+		return nil
+	}
+	return tokens[1:]
+}
+
+func setSentinelHeaders(headers http.Header, token string, soTokens []string) {
+	if token = strings.TrimSpace(token); token != "" {
+		headers.Set("openai-sentinel-token", token)
+	}
+	if len(soTokens) > 0 {
+		if soToken := strings.TrimSpace(soTokens[0]); soToken != "" {
+			headers.Set("openai-sentinel-so-token", soToken)
+		}
+	}
+}
+
+func (c *Client) CreateAccount(ctx context.Context, sentinelToken, name, birthdate string, sentinelSoTokens ...string) (AuthStep, error) {
 	if strings.TrimSpace(sentinelToken) == "" {
 		return AuthStep{}, ErrSentinelUnavailable
 	}
@@ -213,7 +302,7 @@ func (c *Client) CreateAccount(ctx context.Context, sentinelToken, name, birthda
 		return AuthStep{}, fmt.Errorf("%w: account profile missing", ErrInvalidAuthState)
 	}
 	headers := c.authAPIHeaders(c.BaseURL + "/about-you")
-	headers.Set("openai-sentinel-token", sentinelToken)
+	setSentinelHeaders(headers, sentinelToken, sentinelSoTokens)
 	var out authStepResponse
 	err := c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/accounts/create_account", map[string]any{"name": name, "birthdate": birthdate}, &out, headers)
 	if err != nil {
@@ -327,11 +416,19 @@ func hasStructuredPhoneRequirement(raw []byte) bool {
 }
 
 func (c *Client) chatGPTAPIHeaders(referer string) http.Header {
-	return APIHeaders(baseOrigin(c.ChatGPTBaseURL), referer, c.Profile)
+	headers := APIHeaders(baseOrigin(c.ChatGPTBaseURL), referer, c.Profile)
+	if deviceID := c.DeviceID(); deviceID != "" {
+		headers.Set("oai-device-id", deviceID)
+	}
+	return headers
 }
 
 func (c *Client) authAPIHeaders(referer string) http.Header {
-	return APIHeaders(baseOrigin(c.BaseURL), referer, c.Profile)
+	headers := APIHeaders(baseOrigin(c.BaseURL), referer, c.Profile)
+	if deviceID := c.DeviceID(); deviceID != "" {
+		headers.Set("oai-device-id", deviceID)
+	}
+	return headers
 }
 
 func (c *Client) DeviceID() string {
@@ -471,7 +568,7 @@ func sameOriginURL(left, right *url.URL) bool {
 
 func validateAuthStep(step AuthStep) error {
 	switch step.PageType {
-	case "", "create_account_password", "email_otp_verification", "about_you":
+	case "", "create_account_password", "email_otp_verification", "about_you", "login", "login_password":
 	default:
 		return fmt.Errorf("%w: unsupported page", ErrInvalidAuthState)
 	}

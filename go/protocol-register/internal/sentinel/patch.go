@@ -28,6 +28,9 @@ var (
 	publicExportPattern = regexp.MustCompile(
 		`,\s*(` + identifierPattern + `)\.token\s*=\s*(` + identifierPattern + `)\s*,\s*(` + identifierPattern + `)\s*\}\s*\(\s*\{\s*\}\s*\)\s*;\s*$`,
 	)
+	sessionObserverPattern = regexp.MustCompile(
+		`function\s+(` + identifierPattern + `)\s*\(\s*` + identifierPattern + `\s*,\s*` + identifierPattern + `\s*\)\s*\{[^{}]*sessionObserverCollectorActive`,
+	)
 )
 
 func PatchSDKSource(source []byte) ([]byte, error) {
@@ -74,14 +77,23 @@ func PatchSDKSource(source []byte) ([]byte, error) {
 	if sdkObjectName != capture(patched, exportMatch, 3) {
 		return nil, unsupportedSDK("public export", 0)
 	}
+	sessionObserverName := ""
+	if match := sessionObserverPattern.FindStringSubmatchIndex(string(patched)); len(match) > 0 {
+		sessionObserverName = capture(patched, match, 1)
+	}
+	observerExport := ""
+	if sessionObserverName != "" {
+		observerExport = fmt.Sprintf(",%s.__debug_bindSessionObserver=%s", sdkObjectName, sessionObserverName)
+	}
 	exports := []byte(fmt.Sprintf(
-		",%s.token=%s,%s.__debug_n=%s,%s.__debug_bindProof=%s,%s}({});",
+		",%s.token=%s,%s.__debug_n=%s,%s.__debug_bindProof=%s%s,%s}({});",
 		sdkObjectName,
 		tokenFunctionName,
 		sdkObjectName,
 		turnstileSolverName,
 		sdkObjectName,
 		bindProofName,
+		observerExport,
 		sdkObjectName,
 	))
 	return replaceMatch(patched, exportMatch, exports), nil

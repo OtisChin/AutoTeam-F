@@ -61,6 +61,7 @@ def register_once(
     account_id: str | int | None = None,
     proxy: str | None = None,
     fingerprint_profile: str | None = None,
+    salvage_existing: bool = False,
 ) -> tuple[bool, dict]:
     provider_name = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
     default_timeout = "120" if provider_name == "icloud" else "60"
@@ -70,6 +71,7 @@ def register_once(
     options = {
         "timeout_seconds": timeout_seconds,
         "trace": _env_flag("GO_PROTOCOL_TRACE", "0"),
+        "salvage_existing": bool(salvage_existing),
     }
     profile = str(fingerprint_profile or "").strip()
     if profile:

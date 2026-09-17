@@ -9,8 +9,9 @@ import (
 )
 
 type Client struct {
-	httpClient   *http.Client
-	pollInterval time.Duration
+	httpClient     *http.Client
+	pollInterval   time.Duration
+	defaultHeaders http.Header
 }
 
 type WaitOptions struct {
@@ -19,13 +20,23 @@ type WaitOptions struct {
 }
 
 func NewClient(httpClient *http.Client, pollInterval time.Duration) *Client {
+	return NewClientWithHeaders(httpClient, pollInterval, nil)
+}
+
+// NewClientWithHeaders builds a client that applies browser-like default
+// headers (User-Agent, client hints) to every receive-code request.  Bot
+// protection on those listing pages rejects requests without them.
+func NewClientWithHeaders(httpClient *http.Client, pollInterval time.Duration, headers http.Header) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	if pollInterval <= 0 {
 		pollInterval = 3 * time.Second
 	}
-	return &Client{httpClient: httpClient, pollInterval: pollInterval}
+	if len(headers) > 0 {
+		headers = headers.Clone()
+	}
+	return &Client{httpClient: httpClient, pollInterval: pollInterval, defaultHeaders: headers}
 }
 
 func (c *Client) WaitForOTP(ctx context.Context, receiveCodeURL string) (string, error) {
@@ -85,6 +96,14 @@ func (c *Client) fetch(ctx context.Context, url string) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json,text/html,*/*")
+	for name, values := range c.defaultHeaders {
+		if req.Header.Get(name) != "" {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, 0, err

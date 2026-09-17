@@ -11,6 +11,11 @@ type RegisterOptions struct {
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	Trace          bool   `json:"trace"`
 	Impersonate    string `json:"impersonate"`
+	// SalvageExisting resumes the passwordless OTP login branch for an address
+	// that a previous attempt already registered but never verified (for
+	// example when the verification code could not be fetched).  Without it the
+	// engine treats such an address as a duplicate and asks for a new mailbox.
+	SalvageExisting bool `json:"salvage_existing"`
 }
 
 type Identity struct {

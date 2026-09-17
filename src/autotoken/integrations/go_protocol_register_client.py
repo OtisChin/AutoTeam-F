@@ -197,7 +197,14 @@ def go_response_to_protocol_result(response: dict[str, Any]) -> tuple[bool, dict
     error = dict(response.get("error") or {})
     reason = str(error.get("message") or response.get("status") or "go protocol register failed")
     status = str(response.get("status") or "").strip().lower()
-    if status not in {"email_code_timeout", "phone_blocked", "account_deactivated", "register_failed", "exception"}:
+    if status not in {
+        "email_code_timeout",
+        "phone_blocked",
+        "account_deactivated",
+        "duplicate",
+        "register_failed",
+        "exception",
+    }:
         status = "register_failed"
     return False, {
         "status": status,

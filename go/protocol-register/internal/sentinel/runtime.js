@@ -387,9 +387,19 @@ globalThis.__sentinelSolve = async function sentinelSolve(payload) {
     throw new Error("patched solve exports are unavailable");
   }
   const challenge = payload && payload.challenge ? payload.challenge : {};
-  const finalP = await globalThis.__debugP.getEnforcementToken(challenge);
+  const flow = payload && payload.flow ? String(payload.flow) : "";
   globalThis.SentinelSDK.__debug_bindProof(challenge, payload.request_p);
+  if (flow && typeof globalThis.SentinelSDK.__debug_bindSessionObserver === "function") {
+    await globalThis.SentinelSDK.__debug_bindSessionObserver(flow, challenge);
+  }
+  const finalP = await globalThis.__debugP.getEnforcementToken(challenge);
   const dx = challenge && challenge.turnstile ? challenge.turnstile.dx : null;
   const t = dx ? await globalThis.SentinelSDK.__debug_n(challenge, dx) : "";
-  return { final_p: finalP, t };
+  let so = "";
+  if (flow && typeof globalThis.SentinelSDK.sessionObserverToken === "function") {
+    const soResult = await globalThis.SentinelSDK.sessionObserverToken(flow);
+    if (typeof soResult === "string") so = soResult;
+    else if (soResult && typeof soResult.so === "string") so = soResult.so;
+  }
+  return { final_p: finalP, t, so };
 };

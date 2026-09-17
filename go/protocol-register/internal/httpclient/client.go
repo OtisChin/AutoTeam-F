@@ -41,6 +41,27 @@ func NewStandard(timeout time.Duration) *http.Client {
 	return &http.Client{Transport: transport, Jar: jar, Timeout: timeout}
 }
 
+// NewMailbox returns a client that impersonates a browser TLS/HTTP2
+// fingerprint and follows redirects.  Mail receive-code endpoints (e.g. the
+// iCloud listing pages) sit behind bot protection that rejects Go's default
+// TLS fingerprint, so a plain net/http client can never retrieve the OTP.
+func NewMailbox(profile fingerprint.Profile, timeout time.Duration) (*http.Client, error) {
+	timeout = normalizeTimeout(timeout)
+	inner, err := tls_client.NewHttpClient(nil,
+		tls_client.WithClientProfile(profile.TLSProfile),
+		tls_client.WithTimeoutMilliseconds(int(timeout.Milliseconds())),
+	)
+	if err != nil {
+		return nil, err
+	}
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{
+		Transport: newRoundTripper(inner, profile),
+		Jar:       jar,
+		Timeout:   timeout,
+	}, nil
+}
+
 func normalizeTimeout(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
 		return defaultTimeout

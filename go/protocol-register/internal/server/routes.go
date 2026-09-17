@@ -138,6 +138,7 @@ var allowedFailureStatuses = map[string]struct{}{
 	"service_not_ready":   {},
 	"busy":                {},
 	"email_code_timeout":  {},
+	"duplicate":           {},
 	"phone_blocked":       {},
 	"account_deactivated": {},
 	"register_failed":     {},

@@ -34,6 +34,7 @@ const (
 
 type SolveInput struct {
 	DeviceID  string
+	Flow      string
 	RequestP  string
 	Challenge map[string]any
 }
@@ -41,6 +42,7 @@ type SolveInput struct {
 type SolveOutput struct {
 	FinalP string `json:"final_p"`
 	T      string `json:"t"`
+	So     string `json:"so,omitempty"`
 }
 
 type Runtime struct {
@@ -56,6 +58,7 @@ type runtimePayload struct {
 	Languages           []string       `json:"languages"`
 	HardwareConcurrency int            `json:"hardware_concurrency"`
 	DeviceMemory        int            `json:"device_memory"`
+	Flow                string         `json:"flow,omitempty"`
 	ScreenWidth         int            `json:"screen_width"`
 	ScreenHeight        int            `json:"screen_height"`
 	RequestP            string         `json:"request_p,omitempty"`
@@ -105,6 +108,7 @@ func (r *Runtime) Solve(ctx context.Context, compiled *CompiledSDK, profile fing
 		return SolveOutput{}, err
 	}
 	payload.RequestP = input.RequestP
+	payload.Flow = input.Flow
 	payload.Challenge = input.Challenge
 	vm, result, err := r.runAction(ctx, compiled, "__sentinelSolve", payload)
 	if err != nil {
@@ -118,7 +122,11 @@ func (r *Runtime) Solve(ctx context.Context, compiled *CompiledSDK, profile fing
 	if err != nil {
 		return SolveOutput{}, err
 	}
-	output := SolveOutput{FinalP: finalP, T: token}
+	so, err := optionalStringField(vm, result, "so")
+	if err != nil {
+		return SolveOutput{}, err
+	}
+	output := SolveOutput{FinalP: finalP, T: token, So: so}
 	if err := enforceRuntimeOutputLimit(output); err != nil {
 		return SolveOutput{}, err
 	}
@@ -335,6 +343,26 @@ func requiredStringField(vm *goja.Runtime, value goja.Value, field string) (stri
 	if text == "" {
 		return "", ErrInvalidRuntimeOutput
 	}
+	if len(text) > maxRuntimeOutputBytes {
+		return "", ErrRuntimeOutputTooLarge
+	}
+	return text, nil
+}
+
+func optionalStringField(_ *goja.Runtime, value goja.Value, field string) (string, error) {
+	object, ok := value.(*goja.Object)
+	if !ok || object == nil {
+		return "", nil
+	}
+	fieldValue := object.Get(field)
+	if fieldValue == nil || goja.IsUndefined(fieldValue) || goja.IsNull(fieldValue) {
+		return "", nil
+	}
+	text, ok := fieldValue.Export().(string)
+	if !ok {
+		return "", ErrInvalidRuntimeOutput
+	}
+	text = strings.TrimSpace(text)
 	if len(text) > maxRuntimeOutputBytes {
 		return "", ErrRuntimeOutputTooLarge
 	}

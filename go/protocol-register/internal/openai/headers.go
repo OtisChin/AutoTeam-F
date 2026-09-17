@@ -1,9 +1,13 @@
 package openai
 
 import (
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"autoteam-f/protocol-register/internal/fingerprint"
@@ -18,6 +22,8 @@ func APIHeaders(origin, referer string, profile fingerprint.Profile) http.Header
 	h.Set("Sec-Fetch-Mode", "cors")
 	h.Set("Sec-Fetch-Site", "same-origin")
 	h.Set("Priority", "u=1, i")
+	addDatadogTraceHeaders(h)
+	addAccessFlowInvocationID(h)
 	if origin != "" {
 		h.Set("Origin", origin)
 	}
@@ -27,8 +33,38 @@ func APIHeaders(origin, referer string, profile fingerprint.Profile) http.Header
 	return h
 }
 
+func addAccessFlowInvocationID(h http.Header) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return
+	}
+	// Browser auth requests attach a fresh UUID to every state-machine call.
+	h.Set("x-access-flow-invocation-id", hex.EncodeToString(raw[0:4])+"-"+hex.EncodeToString(raw[4:6])+"-"+hex.EncodeToString(raw[6:8])+"-"+hex.EncodeToString(raw[8:10])+"-"+hex.EncodeToString(raw[10:]))
+}
+
+func addDatadogTraceHeaders(h http.Header) {
+	var traceBytes, parentBytes [8]byte
+	if _, err := rand.Read(traceBytes[:]); err != nil {
+		return
+	}
+	if _, err := rand.Read(parentBytes[:]); err != nil {
+		return
+	}
+	traceID := binary.BigEndian.Uint64(traceBytes[:])
+	parentID := binary.BigEndian.Uint64(parentBytes[:])
+	traceHex := strconv.FormatUint(traceID, 16)
+	parentHex := strconv.FormatUint(parentID, 16)
+	h.Set("traceparent", "00-0000000000000000"+strings.Repeat("0", 16-len(traceHex))+traceHex+"-"+strings.Repeat("0", 16-len(parentHex))+parentHex+"-01")
+	h.Set("tracestate", "dd=s:1;o:rum")
+	h.Set("x-datadog-origin", "rum")
+	h.Set("x-datadog-parent-id", strconv.FormatUint(parentID, 10))
+	h.Set("x-datadog-sampling-priority", "1")
+	h.Set("x-datadog-trace-id", strconv.FormatUint(traceID, 10))
+}
+
 func NavigationHeaders(target, referer string, profile fingerprint.Profile) http.Header {
 	h := profileHeaders(profile)
+	addDatadogTraceHeaders(h)
 	h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	h.Set("Sec-Fetch-Dest", "document")
 	h.Set("Sec-Fetch-Mode", "navigate")

@@ -21,6 +21,9 @@ var detailSuffixPattern = regexp.MustCompile(`(?is)\bvar\s+detailSuffix\s*=\s*["
 var detailMessageIDPattern = regexp.MustCompile(`(?is)\bdata-id\s*=\s*["']?(\d+)["']?`)
 var detailHashIDPattern = regexp.MustCompile(`(?is)href\s*=\s*["']#mail-(\d+)["']`)
 var otpContextPattern = regexp.MustCompile(`(?i)(?:temporary\s+(?:openai|chatgpt)\s+(?:login|verification)\s+code|verification\s+code|login\s+code|验证码|认证码)\D{0,80}(\d{6})`)
+var mailCardStartPattern = regexp.MustCompile(`(?is)<(?:article|div|li|section)\b[^>]*class=["'][^"']*\bmail-card\b[^"']*["'][^>]*>`)
+var mailCardSubjectPattern = regexp.MustCompile(`(?is)<[^>]*class=["'][^"']*\bsubject\b[^"']*["'][^>]*>(.*?)</[^>]+>`)
+var mailCardDatePattern = regexp.MustCompile(`(?is)<[^>]*class=["'][^"']*\bdate\b[^"']*["'][^>]*>(.*?)</[^>]+>`)
 
 func ExtractOTP(payload []byte) string {
 	return ExtractOTPWithOptions(payload, WaitOptions{})
@@ -28,6 +31,9 @@ func ExtractOTP(payload []byte) string {
 
 func ExtractOTPWithOptions(payload []byte, opts WaitOptions) string {
 	if code := extractStaticCardOTP(payload, opts); code != "" {
+		return code
+	}
+	if code := extractMailCardOTP(payload, opts); code != "" {
 		return code
 	}
 	var data any
@@ -80,6 +86,41 @@ func extractStaticCardOTP(payload []byte, opts WaitOptions) string {
 			continue
 		}
 		return code
+	}
+	return ""
+}
+
+// extractMailCardOTP parses listing pages such as mail.ai1998.xyz whose
+// messages are rendered as <article class="mail-card"> blocks carrying a
+// <span class="subject">, <span class="date"> and a rich <div class="body">.
+// The generic digit fallback is disabled whenever a freshness filter is set, so
+// these cards must be recognised explicitly or every code is treated as stale.
+func extractMailCardOTP(payload []byte, opts WaitOptions) string {
+	html := string(payload)
+	starts := mailCardStartPattern.FindAllStringIndex(html, -1)
+	if len(starts) == 0 {
+		return ""
+	}
+	for index, start := range starts {
+		end := len(html)
+		if index+1 < len(starts) {
+			end = starts[index+1][0]
+		}
+		card := html[start[0]:end]
+		subject := stripHTML(firstMatchString(mailCardSubjectPattern, card))
+		combined := strings.ToLower(subject + " " + stripHTML(card))
+		if !strings.Contains(combined, "openai") && !strings.Contains(combined, "chatgpt") {
+			continue
+		}
+		if opts.IssuedAfterUnix > 0 {
+			timestamp := parseUnixTime(stripHTML(firstMatchString(mailCardDatePattern, card)))
+			if timestamp > 0 && timestamp+30 < opts.IssuedAfterUnix {
+				continue
+			}
+		}
+		if code := extractOTPFromVisibleHTML(card, opts); code != "" {
+			return code
+		}
 	}
 	return ""
 }

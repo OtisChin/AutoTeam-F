@@ -18,7 +18,10 @@ var sessionCookieNames = []string{
 	"authjs.session-token",
 }
 
-func ExtractSession(raw map[string]any, jar http.CookieJar, chatGPTBaseURL string) (map[string]any, error) {
+// ExtractSession normalizes the auth session and carries the browser device
+// identity forward when it is available. The optional deviceID keeps the
+// original call contract compatible with existing callers.
+func ExtractSession(raw map[string]any, jar http.CookieJar, chatGPTBaseURL string, deviceIDs ...string) (map[string]any, error) {
 	accessToken, _ := raw["accessToken"].(string)
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" || jar == nil {
@@ -39,6 +42,12 @@ func ExtractSession(raw map[string]any, jar http.CookieJar, chatGPTBaseURL strin
 	}
 	out["accessToken"] = accessToken
 	out["sessionToken"] = sessionToken
+	if len(deviceIDs) > 0 {
+		if deviceID := strings.TrimSpace(deviceIDs[0]); deviceID != "" {
+			out["device_id"] = deviceID
+			out["oai_device_id"] = deviceID
+		}
+	}
 	return out, nil
 }
 

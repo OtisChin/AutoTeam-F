@@ -52,7 +52,11 @@ func NewHTTPRegisterEngine(cfg HTTPRegisterEngineConfig) *HTTPRegisterEngine {
 	}
 	if cfg.MailboxClientFactory == nil {
 		cfg.MailboxClientFactory = func(timeout time.Duration) (*http.Client, error) {
-			return httpclient.NewStandard(timeout), nil
+			profile, err := cfg.FingerprintPool.Select(cfg.Draw)
+			if err != nil {
+				return nil, err
+			}
+			return httpclient.NewMailbox(profile, timeout)
 		}
 	}
 	if cfg.AuthConcurrency <= 0 {
@@ -195,7 +199,13 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 		return *attempt.failure("network_error", errors.New("mailbox client unavailable"), "mail_client", true)
 	}
 	defer mailHTTPClient.CloseIdleConnections()
-	mailClient := mailbridge.NewClient(mailHTTPClient, 3*time.Second)
+	// Mail vendors sit behind bot protection, so the request needs a browser
+	// User-Agent.  Keep it to the bare minimum: never forward the OpenAI
+	// client hints or cookies to a third-party mailbox host.
+	mailHeaders := http.Header{}
+	mailHeaders.Set("User-Agent", profile.UserAgent)
+	mailHeaders.Set("Accept-Language", profile.AcceptLanguage)
+	mailClient := mailbridge.NewClientWithHeaders(mailHTTPClient, 3*time.Second, mailHeaders)
 	excludeCodes := map[string]bool{}
 	issuedAfterUnix := req.Mail.IssuedAfterUnix
 	if attempt.emailOtpIssuedAfterUnix > 0 {
@@ -220,7 +230,7 @@ func (e *HTTPRegisterEngine) Register(r *http.Request, req model.RegisterRequest
 			return *failure
 		}
 		issuedAfterUnix = time.Now().Unix()
-		if err := api.ResendEmailOTP(ctx); err != nil {
+		if err := api.ResendEmailOTP(ctx, attempt.lastSentinelToken); err != nil {
 			return *attempt.failure("register_failed", err, "resend_email_otp", true)
 		}
 	}
@@ -246,6 +256,8 @@ type registrationAttempt struct {
 	progress                *Progress
 	metadata                map[string]string
 	emailOtpIssuedAfterUnix int64
+	lastSentinelToken       string
+	lastSentinelSoToken     string
 }
 
 func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResponse) {
@@ -264,15 +276,38 @@ func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResp
 	if err != nil {
 		return "", a.authFailure(err, "signin_openai", "network_error", true)
 	}
-	authorizeToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "authorize_continue", a.metadata)
+	authorizeResult, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "authorize_continue", a.metadata)
 	if err != nil {
 		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
 	}
-	authStep, err := a.api.AuthorizeContinue(a.ctx, a.request.Email, authorizeToken)
+	a.lastSentinelToken = authorizeResult.Token
+	a.lastSentinelSoToken = authorizeResult.SoToken
+	authStep, err := a.api.AuthorizeContinue(a.ctx, a.request.Email, authorizeResult.Token, authorizeResult.SoToken)
 	if err != nil {
 		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
 	}
 	a.progress.Add("email_submitted", "email accepted", map[string]any{"page_type": authStep.PageType})
+	// A redirect to the login page (or an explicit passwordless_login OTP
+	// mode) means the submitted address already owns an account.  Do not
+	// continue through the signup branch: that would return an existing free
+	// account as if it were a newly registered one (and therefore never
+	// receive signup trial eligibility).  The caller can discard this mailbox
+	// and select a genuinely unused address instead.  An empty OTP mode is a
+	// passwordless *signup* and must keep flowing through registration.
+	if authStep.IsExistingAccount() {
+		// A passwordless_login response can belong to an address this system
+		// already registered but failed to verify (typically because the OTP
+		// could not be fetched).  When the caller asks to salvage, continue
+		// through the OTP login branch to finish the account instead of asking
+		// for a new mailbox.  Login-page redirects still need a password we do
+		// not own, so they stay duplicates.
+		if !(a.request.Options.SalvageExisting && authStep.IsPasswordlessLogin()) {
+			response := a.failure("duplicate", errors.New("email already registered"), "authorize_continue", false)
+			response.Error.Message = fmt.Sprintf("email already registered (%s)", authStep.Summary())
+			return "", response
+		}
+		a.progress.Add("salvage_existing", "resuming passwordless login to finish account", map[string]any{"page_type": authStep.PageType})
+	}
 	if err := a.api.FollowContinue(a.ctx, authStep.ContinueURL); err != nil {
 		return "", a.authFailure(err, "authorize_continue", "register_failed", true)
 	}
@@ -284,16 +319,18 @@ func (a *registrationAttempt) runInitialAuthPhase() (string, *model.RegisterResp
 		}
 	}
 	if passwordSignup {
-		passwordToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "username_password_create", a.metadata)
+		passwordResult, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "username_password_create", a.metadata)
 		if err != nil {
 			return "", a.authFailure(err, "register_password", "register_failed", true)
 		}
-		if err := a.api.RegisterPassword(a.ctx, a.request.Email, a.request.Password, passwordToken); err != nil {
+		a.lastSentinelToken = passwordResult.Token
+		a.lastSentinelSoToken = passwordResult.SoToken
+		if err := a.api.RegisterPassword(a.ctx, a.request.Email, a.request.Password, passwordResult.Token, passwordResult.SoToken); err != nil {
 			return "", a.authFailure(err, "register_password", "register_failed", true)
 		}
 	}
 	a.emailOtpIssuedAfterUnix = time.Now().Unix()
-	if err := a.api.SendEmailOTP(a.ctx); err != nil {
+	if err := a.api.SendEmailOTP(a.ctx, a.lastSentinelToken, a.currentSentinelSoToken()); err != nil {
 		return "", a.failure("register_failed", err, "send_email_otp", true)
 	}
 	return deviceID, nil
@@ -306,7 +343,7 @@ func (a *registrationAttempt) runFinalAuthPhase(deviceID, code string) (map[stri
 	}
 	defer release()
 
-	otpStep, err := a.api.VerifyEmailOTP(a.ctx, code)
+	otpStep, err := a.api.VerifyEmailOTP(a.ctx, code, a.lastSentinelToken, a.currentSentinelSoToken())
 	if err != nil {
 		return nil, a.authFailure(err, "verify_email_otp", "register_failed", true)
 	}
@@ -314,11 +351,13 @@ func (a *registrationAttempt) runFinalAuthPhase(deviceID, code string) (map[stri
 		return nil, a.authFailure(openai.ErrInvalidAuthState, "verify_email_otp", "register_failed", true)
 	}
 	a.progress.Add("otp_verified", "email OTP verified", nil)
-	createToken, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "create_account", a.metadata)
+	createResult, err := a.engine.sentinelToken(a.ctx, a.client, a.profile, deviceID, "create_account", a.metadata)
 	if err != nil {
 		return nil, a.authFailure(err, "create_account", "register_failed", true)
 	}
-	createStep, err := a.api.CreateAccount(a.ctx, createToken, a.request.Identity.Name, a.request.Identity.Birthdate)
+	a.lastSentinelToken = createResult.Token
+	a.lastSentinelSoToken = createResult.SoToken
+	createStep, err := a.api.CreateAccount(a.ctx, createResult.Token, a.request.Identity.Name, a.request.Identity.Birthdate, createResult.SoToken)
 	if err != nil {
 		return nil, a.authFailure(err, "create_account", "register_failed", true)
 	}
@@ -332,9 +371,12 @@ func (a *registrationAttempt) runFinalAuthPhase(deviceID, code string) (map[stri
 	if err != nil {
 		return nil, a.failure("register_failed", err, "auth_session", true)
 	}
-	sessionData, err := openai.ExtractSession(rawSession, a.client.Jar, a.api.ChatGPTBaseURL)
+	sessionData, err := openai.ExtractSession(rawSession, a.client.Jar, a.api.ChatGPTBaseURL, deviceID)
 	if err != nil {
 		return nil, a.failure("session_missing", err, "auth_session", false)
+	}
+	if token := strings.TrimSpace(a.lastSentinelToken); token != "" {
+		sessionData["openai_sentinel_token"] = token
 	}
 	return sessionData, nil
 }
@@ -353,18 +395,26 @@ func (a *registrationAttempt) authFailure(err error, step, fallbackStatus string
 	return &response
 }
 
-func (e *HTTPRegisterEngine) sentinelToken(ctx context.Context, client *http.Client, profile fingerprint.Profile, deviceID, flow string, metadata map[string]string) (string, error) {
+func (e *HTTPRegisterEngine) sentinelToken(ctx context.Context, client *http.Client, profile fingerprint.Profile, deviceID, flow string, metadata map[string]string) (openai.SentinelResult, error) {
 	result, err := e.cfg.SentinelProvider.Token(ctx, client, profile, deviceID, flow)
 	token := strings.TrimSpace(result.Token)
 	if err != nil || token == "" {
-		return "", openai.ErrSentinelUnavailable
+		return openai.SentinelResult{}, openai.ErrSentinelUnavailable
 	}
 	if _, recorded := metadata["sentinel_sdk_version"]; !recorded {
 		if sdkVersion := strings.TrimSpace(result.SDKVersion); sdkVersion != "" {
 			metadata["sentinel_sdk_version"] = sdkVersion
 		}
 	}
-	return token, nil
+	result.Token = token
+	result.SoToken = strings.TrimSpace(result.SoToken)
+	return result, nil
+}
+
+func (a *registrationAttempt) currentSentinelSoToken() string {
+	// The requirements token is paired with the most recently generated final
+	// token. It is kept in-memory only and never returned in session metadata.
+	return a.lastSentinelSoToken
 }
 
 func authFailure(email string, err error, step, fallbackStatus string, fallbackRetryable bool, events []model.Event, metadata map[string]string) model.RegisterResponse {
