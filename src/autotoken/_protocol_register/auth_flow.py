@@ -1083,9 +1083,17 @@ class AuthFlow:
 
     @staticmethod
     def _extract_totp_factor_id(payload: Any = None, continue_url: str = "") -> str:
+        """提取 TOTP factor id。
+
+        只信任 ``oai-client-auth-session`` 里的 factor 列表，以及
+        ``/mfa-challenge/<id>`` 路径段。
+
+        绝不做「回退到 payload 顶层 id」：状态机响应顶层常有与 MFA 无关的
+        ``id`` 字段，拿它当 factor id 提交给 ``mfa/issue_challenge`` /
+        ``mfa/verify`` 会被服务端一律判为无效请求，表现为 2FA 登录必然失败。
+        """
         candidates: list[Any] = []
         if isinstance(payload, dict):
-            candidates.append(payload)
             page = payload.get("page")
             if isinstance(page, dict):
                 page_payload = page.get("payload")
@@ -1096,10 +1104,6 @@ class AuthFlow:
                 candidates.append(client_session)
 
         for item in candidates:
-            for key in ("factor_id", "id", "mfa_factor_id"):
-                value = str(item.get(key) or "").strip()
-                if value:
-                    return value
             for list_key in ("factors", "mfa_challenge_factors", "mfa_factors"):
                 factors = item.get(list_key)
                 if not isinstance(factors, list):
@@ -1109,8 +1113,14 @@ class AuthFlow:
                         continue
                     factor_type = str(factor.get("factor_type") or factor.get("type") or "").strip().lower()
                     factor_id = str(factor.get("id") or factor.get("factor_id") or "").strip()
-                    if factor_id and (not factor_type or factor_type == "totp"):
+                    if factor_id and factor_type == "totp":
                         return factor_id
+            # 只有显式声明为 TOTP 的字段才接受
+            declared_type = str(item.get("factor_type") or item.get("type") or "").strip().lower()
+            for key in ("factor_id", "mfa_factor_id"):
+                value = str(item.get(key) or "").strip()
+                if value and declared_type == "totp":
+                    return value
 
         url = str(continue_url or "").strip()
         match = re.search(r"/mfa(?:-challenge)?/([^/?#]+)", url)
@@ -1118,12 +1128,24 @@ class AuthFlow:
 
     @classmethod
     def _is_totp_challenge_state(cls, page_type: str = "", continue_url: str = "", payload: Any = None) -> bool:
+        """判断当前是否停在 TOTP 2FA 挑战。
+
+        用 **路径语义** 判定，不用 URL 子串：``?action=enable&factor=totp`` 这类
+        启用 2FA 的回调、以及邮箱验证页带上的 ``next=/mfa-challenge/...`` 查询参数
+        都会被子串匹配误判成登录挑战，把非 2FA 流程错误地导向 TOTP 提交。
+        """
         pt = (page_type or "").strip().lower()
-        cu = (continue_url or "").strip().lower()
-        if any(token in pt for token in ("totp", "mfa", "authenticator")) or any(
-            token in cu for token in ("/mfa", "totp", "authenticator")
-        ):
+        if any(token in pt for token in ("totp", "mfa", "authenticator")):
             return True
+
+        path = ""
+        try:
+            path = (urlparse(str(continue_url or "").strip()).path or "").lower()
+        except Exception:
+            path = ""
+        if path.startswith("/mfa-challenge") or path.startswith("/mfa"):
+            return True
+
         if isinstance(payload, dict):
             page = payload.get("page")
             if isinstance(page, dict):
@@ -1132,6 +1154,35 @@ class AuthFlow:
                     return True
             return bool(cls._extract_totp_factor_id(payload, continue_url))
         return False
+
+    def _mfa_sentinel_headers(self) -> dict:
+        """为 MFA 接口刷新并返回 ``openai-sentinel-token`` 头。
+
+        ``mfa/issue_challenge`` 与 ``mfa/verify`` 都要求 Sentinel，且 flow 必须为
+        ``password_verify``。这里每次都重新取一枚 token：MFA 挑战消耗一次性的
+        状态，复用旧 token 会被服务端判为过期。
+
+        取不到时返回空 dict，让调用方记录告警后继续（而不是直接中断），
+        这样在 Sentinel runtime 不可用的环境下仍能观察到服务端的真实错误。
+        """
+        device_id = str(getattr(self.result, "device_id", "") or "").strip()
+        if not device_id:
+            device_id = str(self.session.cookies.get("oai-did", "") or "").strip()
+        if not device_id:
+            logger.warning("[OAuth登陆] MFA 接口缺少 device_id，跳过 Sentinel 刷新")
+            return {}
+        try:
+            from sentinel import get_sentinel_token as _get_st
+
+            token = _get_st(self.session, device_id=device_id, flow="password_verify")
+        except Exception as e:
+            logger.warning("[OAuth登陆] MFA Sentinel 获取失败: %s", e)
+            return {}
+        token = str(token or "").strip()
+        if not token:
+            return {}
+        self._last_sentinel_token = token
+        return {"openai-sentinel-token": token}
 
     def _handle_totp_challenge(self, *, continue_url: str = "", page_type: str = "", payload: dict | None = None) -> str:
         """Complete an existing-account TOTP challenge using a stored local secret.
@@ -1200,13 +1251,25 @@ class AuthFlow:
 
         headers = self._common_headers(continue_url or "https://auth.openai.com/")
         headers["Content-Type"] = "application/json"
+
+        # MFA 两个接口都要求 openai-sentinel-token（flow=password_verify）。
+        # 缺失时服务端返回 4xx 且不推进状态机，表现为"2FA 怎么试都过不去"。
+        sentinel_headers = self._mfa_sentinel_headers()
+        if sentinel_headers:
+            headers.update(sentinel_headers)
+        else:
+            logger.warning(
+                "[OAuth登陆] 2FA接口未取得 Sentinel token，服务端可能拒绝 mfa/issue_challenge 与 mfa/verify"
+            )
+
         last_error = ""
         totp_errors: list[str] = []
         issue_data: dict[str, Any] = {}
         issue_payloads = [{"type": "totp"}]
         if factor_id:
-            issue_payloads.insert(0, {"type": "totp", "id": factor_id})
-            issue_payloads.insert(1, {"type": "totp", "factor_id": factor_id})
+            issue_payloads.insert(0, {"type": "totp", "id": factor_id, "force_fresh_challenge": False})
+            issue_payloads.insert(1, {"type": "totp", "id": factor_id})
+            issue_payloads.insert(2, {"type": "totp", "factor_id": factor_id})
             issue_payloads.append({"id": factor_id})
             issue_payloads.append({"factor_id": factor_id})
         for request_payload in issue_payloads:
@@ -1244,26 +1307,30 @@ class AuthFlow:
             or ""
         ).strip()
         for code in generate_totp_candidates(secret):
-            payload_variants = [{"type": "totp", "code": code}]
+            # mfa/verify 必须同时带 type 与 factor id。
+            # 只发 {type, code}（缺 id）服务端一律判为无效请求，
+            # 这就是"TOTP 验证码正确却始终失败"的直接原因。
+            payload_variants: list[dict[str, Any]] = []
             if factor_id:
                 payload_variants.extend(
                     [
                         {"type": "totp", "id": factor_id, "code": code},
                         {"type": "totp", "factor_id": factor_id, "code": code},
                         {"type": "totp", "mfa_factor_id": factor_id, "code": code},
-                        {"id": factor_id, "code": code},
-                        {"factor_id": factor_id, "code": code},
-                        {"mfa_factor_id": factor_id, "code": code},
                     ]
                 )
             if challenge_id:
                 payload_variants.extend(
                     [
+                        {"type": "totp", "id": factor_id or challenge_id, "challenge_id": challenge_id, "code": code},
                         {"type": "totp", "challenge_id": challenge_id, "code": code},
                         {"type": "totp", "mfa_challenge_id": challenge_id, "code": code},
                     ]
                 )
-            payload_variants.append({"code": code})
+            # 只有在拿不到 factor id 时才退到不带 id 的形态（例如服务端
+            # 直接以 challenge_id 作为标识的滚动版本）
+            if not factor_id:
+                payload_variants.append({"type": "totp", "code": code})
             for candidate_endpoint in deduped_endpoints:
                 for request_payload in payload_variants:
                     resp = self.session.post(candidate_endpoint, headers=headers, json=request_payload, timeout=30)

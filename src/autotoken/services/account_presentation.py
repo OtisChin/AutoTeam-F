@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from pathlib import Path
 
+from autotoken.core.plans import normalize_plan_type
 from autotoken.storage.auth_files import iter_auth_files_for_email, read_auth_json_file, trusted_auth_file_path
 
 
@@ -147,18 +148,18 @@ def display_account_status(
 
 def display_account_type(acc: dict) -> str:
     last_quota = acc.get("last_quota") if isinstance(acc.get("last_quota"), dict) else {}
-    quota_plan = str((last_quota or {}).get("plan_type") or "").strip().lower()
+    # Normalize unstable plan names (``self_serve_business_prolite``,
+    # ``chatgptteamplan`` ...) to the internal account types.
+    quota_plan = normalize_plan_type((last_quota or {}).get("plan_type"))
     paid_plans = {"plus", "pro", "team"}
     if quota_plan in paid_plans:
         return quota_plan
-    if quota_plan in {"business", "enterprise", "edu"}:
-        return "team"
-    account_type = (acc.get("account_type") or "").strip().lower()
+    account_type = normalize_plan_type(acc.get("account_type"))
     if account_type in paid_plans:
         return account_type
     if quota_plan == "free":
         return "free"
-    if account_type in {"free", "team", "plus", "pro"}:
+    if account_type:
         return account_type
     status = (acc.get("status") or "").strip().lower()
     if status == "plus":
@@ -168,6 +169,21 @@ def display_account_type(acc: dict) -> str:
     if status in {"active", "exhausted", "standby"}:
         return "team"
     return "free"
+
+
+_ACCOUNT_TYPE_LABELS = {"free": "Free", "team": "Team", "plus": "Plus", "pro": "Pro"}
+
+
+def display_account_type_label(acc: dict) -> str:
+    """Human label for the type column, e.g. ``Team 5x`` for business_prolite."""
+    base = display_account_type(acc)
+    label = _ACCOUNT_TYPE_LABELS.get(base, base)
+    last_quota = acc.get("last_quota") if isinstance(acc.get("last_quota"), dict) else {}
+    plan_type = str((last_quota or {}).get("plan_type") or "").strip().lower()
+    # ``*prolite`` plans are the 5x variants (chatgptprolite / self_serve_business_prolite).
+    if base in {"team", "pro"} and "prolite" in plan_type:
+        return f"{label} 5x"
+    return label
 
 
 def sanitize_account(
@@ -277,7 +293,9 @@ def sanitize_account_with_indexes(
     email = normalize_email(acc.get("email"))
     outlook_source = (outlook_accounts or {}).get(email, {}) if isinstance(outlook_accounts, dict) else {}
     source_email = str((outlook_source or {}).get("email") or "").strip()
-    display_email = str(source_email or acc.get("original_email") or acc.get("display_email") or acc.get("email") or "").strip()
+    display_email = str(
+        source_email or acc.get("original_email") or acc.get("display_email") or acc.get("email") or ""
+    ).strip()
     is_main = bool(email and main_email and email == main_email)
     sanitized["is_main_account"] = is_main
     sanitized["display_email"] = display_email or email
@@ -290,6 +308,7 @@ def sanitize_account_with_indexes(
     sanitized["raw_status"] = raw_status
     sanitized["status"] = status
     sanitized["account_type"] = display_account_type(acc)
+    sanitized["account_type_label"] = display_account_type_label(acc)
     bind_provider = str(acc.get("last_bind_provider") or "").strip().lower()
     sanitized["last_bind_provider"] = bind_provider
     sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
@@ -316,8 +335,10 @@ def sanitize_account_with_indexes(
     else:
         sanitized["codex_auth_synthetic"] = codex_auth_file_is_synthetic(codex_auth_file)
     imported_external_auth = bind_provider == "external_import" and bool(codex_auth_file)
-    sanitized["needs_codex_login"] = not sanitized["is_main_account"] and not imported_external_auth and (
-        not bool(codex_auth_file) or bool(sanitized["codex_auth_synthetic"])
+    sanitized["needs_codex_login"] = (
+        not sanitized["is_main_account"]
+        and not imported_external_auth
+        and (not bool(codex_auth_file) or bool(sanitized["codex_auth_synthetic"]))
     )
     auth_session_file = auth_session_files.get(email, "")
     sanitized["auth_session_file"] = auth_session_file

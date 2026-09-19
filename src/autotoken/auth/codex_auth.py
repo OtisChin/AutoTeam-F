@@ -8101,6 +8101,12 @@ def check_codex_quota(access_token, account_id=None, *, timeout=30, auth_data: d
 
     rate_limit = data.get("rate_limit") or {}
     quota_info = _normalize_wham_usage_quota(data)
+    if not quota_info.get("plan_type"):
+        # Some responses omit plan_type; fall back to the access-token claim so
+        # Team/Plus accounts are still recognized by the quota refresh.
+        claim_plan = _extract_plan_from_token_claims(_parse_jwt_payload(access_token))
+        if claim_plan and claim_plan != "unknown":
+            quota_info["plan_type"] = claim_plan
 
     exhausted_info = get_quota_exhausted_info(quota_info, limit_reached=bool(rate_limit.get("limit_reached")))
     if exhausted_info:

@@ -57,6 +57,15 @@
             {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}
           </button>
           <button
+            @click="exportEmails"
+            :disabled="!exportableAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!exportableAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-amber-600/10 text-amber-300 border-amber-500/30 hover:bg-amber-600/20'">
+            {{ selectedEmails.length ? `导出邮箱 (${selectedEmails.length})` : `导出邮箱 (${filteredAccounts.length})` }}
+          </button>
+          <button
             v-if="selectedEmails.length"
             @click="exportSelectedAccessTokens"
             :disabled="accessTokenExporting"
@@ -1000,7 +1009,7 @@
                   <div class="flex flex-wrap items-center gap-1.5">
                     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
                       :class="accountTypeClass(acc.account_type)">
-                      {{ accountTypeLabel(acc.account_type) }}
+                      {{ acc.account_type_label || accountTypeLabel(acc.account_type) }}
                     </span>
                     <span
                       v-if="acc.trial_eligible"
@@ -4201,7 +4210,7 @@ async function copyTwoFactorPassword() {
 function accountTypeClass(type) {
   return {
     free: 'bg-fuchsia-500/10 text-fuchsia-400',
-    team: 'bg-violet-500/10 text-violet-300',
+    team: 'bg-yellow-500/10 text-yellow-300',
     plus: 'bg-sky-500/10 text-sky-400',
     pro: 'bg-cyan-500/10 text-cyan-300',
   }[type] || 'bg-gray-500/10 text-gray-400'
@@ -4658,6 +4667,28 @@ function exportAccounts() {
   a.click()
   URL.revokeObjectURL(url)
   message.value = `已导出 ${rows.length} 个账号`
+  messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+  scheduleMessageClear(5000)
+}
+
+function exportEmails() {
+  const emails = Array.from(
+    new Set(
+      exportableAccounts.value
+        .map(acc => String(acc.email || '').trim())
+        .filter(Boolean),
+    ),
+  )
+  if (!emails.length) return
+  const blob = new Blob([`${emails.join('\n')}\n`], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const scope = selectedEmails.value.length ? 'selected' : 'filtered'
+  a.href = url
+  a.download = `emails-${scope}-${new Date().toISOString().slice(0, 10)}.txt`
+  a.click()
+  URL.revokeObjectURL(url)
+  message.value = `已导出 ${emails.length} 个邮箱`
   messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
   scheduleMessageClear(5000)
 }
@@ -5255,9 +5286,9 @@ async function saveBatchAccountMetadata() {
 
 function canOauthAuthorize(acc) {
   if (!acc?.email || acc.is_main_account) return false
-  if (['auth_invalid', 'auth_revoked', 'orphan'].includes(String(acc.status || '').toLowerCase())) return true
-  if (Boolean(acc.codex_auth_synthetic)) return true
-  return needsCodexLogin(acc)
+  // Any non-main account can (re)run OAuth, including ones that already hold a
+  // valid credential: re-authorization refreshes/replaces the stored auth file.
+  return true
 }
 
 function canRelogin(acc) {
@@ -5271,7 +5302,7 @@ function isPhoneOnlyAccount(acc) {
 
 function oauthAuthorizeLabel(acc) {
   if (isPhoneOnlyAccount(acc)) return 'OAuth授权/绑邮箱'
-  if (Boolean(acc.codex_auth_synthetic)) return '重新OAuth授权'
+  if (Boolean(acc.codex_auth_synthetic) || hasCodexAuthFile(acc)) return '重新OAuth授权'
   return 'OAuth授权'
 }
 
@@ -5289,12 +5320,6 @@ function accountHasPersistedCodexAuthFile(acc) {
   if (acc.has_codex_auth_file !== undefined) return !!acc.has_codex_auth_file
   const file = String(acc.codex_auth_file || acc.auth_file || '').replace(/\\/g, '/').toLowerCase()
   return file.includes('/data/auths/') || file.includes('/auths/codex-') || file.includes('data/auths/')
-}
-
-function needsCodexLogin(acc) {
-  if (acc.is_main_account) return false
-  if (acc.needs_codex_login !== undefined) return !!acc.needs_codex_login
-  return !hasCodexAuthFile(acc)
 }
 
 async function oauthAuthorizeAccount(email) {

@@ -49,6 +49,26 @@ class AccountSessionCpaConvertParams(BaseModel):
     emails: list[str] = Field(default_factory=list, max_length=MAX_ACCOUNT_EXPORT_EMAILS)
 
 
+def _force_team_sub_plan_type(
+    payload: dict,
+    team_emails: set[str],
+    normalize_email: Callable[[str | None], str],
+) -> None:
+    """Rewrite ``credentials.plan_type`` to ``Team`` for team accounts.
+
+    Team auth files may carry raw plan names such as ``self_serve_business_prolite``;
+    the exported Sub2API JSON should expose the canonical ``Team`` label instead.
+    """
+    if not team_emails:
+        return
+    for item in payload.get("accounts") or []:
+        credentials = item.get("credentials") if isinstance(item, dict) else None
+        if not isinstance(credentials, dict):
+            continue
+        if normalize_email(credentials.get("email")) in team_emails:
+            credentials["plan_type"] = "Team"
+
+
 def _read_auth_export_content(
     path: Path,
     *,
@@ -520,7 +540,7 @@ def create_account_cpa_auths_router(
             generate_default_filename,
             inspect_sources,
         )
-        from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS, load_accounts
+        from autotoken.storage.accounts import ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_TEAM, load_accounts
 
         if resolve_codex_auth_file is None:
             raise RuntimeError("resolve_codex_auth_file dependency is required")
@@ -584,6 +604,16 @@ def create_account_cpa_auths_router(
         except ConversionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        # Team accounts may carry raw plan names in their auth file (for example
+        # ``self_serve_business_prolite``); force the exported Sub2API plan_type
+        # to the canonical Team label.
+        team_emails = {
+            email
+            for email, account in accounts_by_email.items()
+            if str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_TEAM
+        }
+        _force_team_sub_plan_type(payload, team_emails, _normalize_email)
+
         valid_filenames = {record.file_name for record in records if record.is_valid and record.selected}
         exported_sources = [item for item in sources if item["filename"] in valid_filenames]
         invalid = [
@@ -595,9 +625,7 @@ def create_account_cpa_auths_router(
             if not record.is_valid
         ]
 
-        exported_emails = [
-            email for item in exported_sources if (email := _normalize_email(item.get("email")))
-        ]
+        exported_emails = [email for item in exported_sources if (email := _normalize_email(item.get("email")))]
 
         content = json.dumps(payload, ensure_ascii=False, indent=2)
         _check_export_total_bytes(len(content.encode("utf-8")))

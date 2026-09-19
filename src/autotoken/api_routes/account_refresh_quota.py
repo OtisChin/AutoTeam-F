@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from autotoken.api_routes.account_login import AccountEmailBatchParams
+from autotoken.core.plans import normalize_plan_type
 from autotoken.storage.auth_files import read_auth_json_file, trusted_auth_or_session_path
 
 
@@ -102,12 +103,11 @@ def create_account_refresh_quota_router(
             def _account_type_from_quota_info(info: dict | None) -> str:
                 if not isinstance(info, dict):
                     return ""
-                plan_type = str(info.get("plan_type") or "").strip().lower()
-                if plan_type in {ACCOUNT_TYPE_FREE, ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}:
-                    return plan_type
-                if plan_type in {"business", "enterprise", "edu"}:
-                    return ACCOUNT_TYPE_TEAM
-                return ""
+                # Team plans are reported under unstable names such as
+                # ``self_serve_business_prolite`` / ``chatgptteamplan``; the
+                # shared classifier maps those (and plus/pro variants) instead
+                # of only matching the four canonical strings.
+                return normalize_plan_type(info.get("plan_type"))
 
             def _existing_paid_plan(current_account_type: str, current_last_quota: dict | None = None) -> str:
                 normalized_account_type = str(current_account_type or "").strip().lower()
@@ -410,9 +410,8 @@ def create_account_refresh_quota_router(
                         "reason": "main_account",
                         "message": f"跳过主账号: {email}",
                     }
-                if (
-                    str(acc.get("status") or "").strip().lower() == STATUS_FAIL
-                    and not _is_token_expired_quota_failure(acc)
+                if str(acc.get("status") or "").strip().lower() == STATUS_FAIL and not _is_token_expired_quota_failure(
+                    acc
                 ):
                     return {
                         "kind": "skipped",
@@ -509,7 +508,7 @@ def create_account_refresh_quota_router(
                             account_id=account_id,
                             info=info,
                             current_account_type=account_type,
-                    )
+                        )
                     update_payload = {
                         "last_quota": info,
                         "last_quota_check_at": now_ts,
@@ -685,10 +684,7 @@ def create_account_refresh_quota_router(
                         if auth_error_detail:
                             failed_item["error_detail"] = auth_error_detail
                         return failed_item
-                    if (
-                        auth_error_code == "auth_revoked"
-                        or auth_error_detail_lower.startswith("auth_revoked")
-                    ):
+                    if auth_error_code == "auth_revoked" or auth_error_detail_lower.startswith("auth_revoked"):
                         return {
                             "kind": "network_error",
                             "email": email,
